@@ -76,6 +76,51 @@ XNU 8796 (their root is macOS/iOS 17 on XNU 10063 with their own
 trustcache/cryptex/VerifiedRoot flow). **Decision: keep the sweet route for
 picasso, harvest the driver code and the architecture ideas.**
 
+**The whole UniXNU organisation (26 repositories), studied 2026-10-20 evening.**
+Layers: `ABL -> BootShim + UEFI volume + DTB -> UniXNU (UEFI boot manager) ->
+DarwinBoot (XNU loader) -> prelinked XNU -> IPSW userland`. Repositories:
+`UniXNU` (build driver + boot manager + generic drivers + kits + patches + docs,
+214 stars), `UniXNU-sheng` (the only board, Xiaomi Pad 6S Pro / SM8550),
+`uefi-sheng` (Mu-Silicium fork), driver modules (`ArmCpu`, `ArmDTPlatform`,
+`ArmVirtPlatform`, `DarwinBoot`, `NativeAES`, `NativeGeniSpi`, `NativeHidInput`,
+`NativeKeyStoreEvents`, `NativeMobileDisplay`, `NativeRamBlock`, `NativeUfs`,
+`NativeVirtioBlock`, `NativeVirtioConsole`, `NativeNovatekTouch`,
+`NativeAdreno`, `NativeMetal`) and kits (`AdrenoFirmware`, `AdrenoPM4`,
+`AirNir`, `ArmSmmu4K`, `NativePrelink`, `VerifiedRoot`, `ShengPreflight`).
+
+Four things worth remembering from it:
+
+1. **The prelink is the core idea.** `kits/NativePrelink/emit_prelink.py` builds
+   a kernel from Apple's source and then binds it to the *original* Apple
+   kernelcache: it reads `__PRELINK_INFO`, picks the components named in
+   `[kernel.prelink] roots` plus the kernel interfaces they import, copies their
+   segments into the native kernel's coalesced ranges, rebinds every pointer,
+   applies the slide, rewrites the module headers and emits one `kernel.macho`.
+   The result keeps Apple's own kexts (AppleImage4, AMFI, IOKit) working next to
+   the native platform code. Sweet has no equivalent - it substitutes stand-ins.
+2. **They keep Apple's security chain instead of disabling it.** DarwinBoot
+   validates the Mach-O (header, entry in an executable segment, aligned
+   non-overlapping segments inside a 256 MiB window), the ADT and the trust
+   cache (count 1..128, version 2, 24 byte entries, sorted hashes).
+   `/chosen/amfi-only-platform-code` keeps AMFI in platform code policy and
+   `early_security_init` runs the original `AppleMobileFileIntegrity`
+   initializer. `kits/VerifiedRoot` adds a signed policy bundle whose reads are
+   authenticated. The 4 KiB code signing patch derives one hash per 4 KiB page
+   from the verified 16 KiB blocks.
+3. **Three driver layers**: UEFI driver, built-in XNU driver (static archive
+   linked into the kernel, matched through `IOKitPersonalities` in
+   `KernelConfigTables.cpp`) and kext bundle staged by UEFI.
+4. **They test the whole chain in QEMU** (`package/Scripts/qemu-run.py`): the
+   UEFI menu, DarwinBoot and the kernel entry run on an aarch64 machine with
+   serial log, screenshots, key injection and `--expect/--reject` assertions;
+   `smoke.sh` runs five scenarios. A test harness that needs no phone is worth
+   copying.
+
+Honest state of the project: CPU/GIC/timer, UFS, HID, Novatek touch, AES,
+KeyStore, display plus GPU scanout, Metal device, GPU blit and a GPU
+composited desktop all work on sheng. Display vblank, 120 FPS and a
+precompiled shader pack do not. One board, one author group, macOS only build.
+
 ### >>> UPDATE 2026-10-20 (picasso / SM7250 port groundwork; read first) <<<
 
 **NEW DEVICE: the user's Redmi K30 5G (`picasso`, SM7250 / Snapdragon 765G), currently
