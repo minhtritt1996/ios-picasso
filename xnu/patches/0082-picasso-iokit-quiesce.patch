@@ -12,7 +12,7 @@
  }
 --- a/iokit/Kernel/IOStartIOKit.cpp
 +++ b/iokit/Kernel/IOStartIOKit.cpp
-@@ -188,7 +188,16 @@ StartIOKitMatching(void)
+@@ -188,7 +188,18 @@ StartIOKitMatching(void)
  	}
  
  #if !NO_KEXTD
