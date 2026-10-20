@@ -721,3 +721,32 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+**2026-10-20 evening, after the community scan.** New commits in the topaz port
+(three more: 0131 refuses the calls that answer with a lock result, 0132 wraps
+client images and memory, 0133 keeps values, bulk attachments and purgeability
+- the IOSurface semantics CoreAnimation's GL renderer reads) and in UniXNU
+(publish the Metal device, grant the render server its GPU client). The
+upstream has no new kernel commit and is still at 0081, but the fork count
+went from 149 to 171 within four hours.
+
+Forks that matter for picasso, with what they did today:
+
+| Fork | What | Why it matters here |
+| --- | --- | --- |
+| ry-diffusion/ios-beryllium | touch series for the **NT36672A** (0082 board keys/touch/display, 0085 bit-bang plus USB diagnostics, 0086 no ghosts, 0101 both IRQ edges), 0116 sandbox extensions so Photos works | the NT36672A is the same chip family as our NT36672C. They also added `bsd/dev/sweet_board.h`, a board layer that reads the name from the ADT root compatible - the pattern a three-board tree needs |
+| RiverKawa271828/ios-meizu-m2381 | "UFS wall broken on-device": SSU wake, LUN0 ready, iOSRoot mounted. Also "full cmdline canonized" | they hit the same UFS wall we know and broke it |
+| zsariboga/ios-sweet | 0106 publishes an IORTC because the boot waited 30 s for one; 0103-0105 fix silent IOSurface failures and the pixel formats | ported here as patch 0083 |
+| palazik/ios-dodge | shim finds the payload after `_end` instead of trusting the bootloader's ramdisk; kernel-only CI artifact | our shim reads `linux,initrd-start` and `linux,initrd-end` from the device tree, which is the better way, so no change needed |
+| lvyufeng/ios-gauguin | root image must be **journaled HFS+**; USB gadget register map; three and a half minute userland run | our root image is journaled already (tools/mkiosroot.sh) |
+| JopangJovan/ios-sm8250 | bit-bang I2C touch for ST FTS | I2C, not our SPI, but the technique is the same |
+| ibragruslan/ios-sweet (nabu) | GMU RPMH_CTRL bit 4, uncached VBIF3 SMMU, three HFI queues | more GPU work |
+
+**The hunk count trap hit four projects today** - ours, JopangJovan, xNekom and
+ibragruslan all shipped a patch the build driver skipped. A patch is now
+generated against the file as the earlier patches leave it (0016 creates
+SweetPlatformExpert.cpp, 0046 and 0059 change it, so the 0016 version is not
+the one to diff against) and checked with `patch --dry-run` before it is
+committed.
+
+Kernel 0083 has both fixes: the IOKit quiesce one and the IORTC one.
+Image `shim/out/shim-boot-0083.img` (md5 d1dffb81c22e7d29c84f6cb6dfcefcab).
