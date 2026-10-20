@@ -72,8 +72,10 @@ int fdt_iter_next(const struct fdt *f, struct fdt_iter *it, struct fdt_node *out
 {
 	uintptr_t p = it->cursor;
 	uintptr_t end = f->struct_off + f->struct_size;
+	/* A tree we made up must not spin forever. */
+	int guard = 0;
 
-	while (p < end) {
+	while (p < end && guard++ < 8192) {
 		uint32_t tok = be32(p);
 		switch (tok) {
 		case FDT_BEGIN_NODE: {

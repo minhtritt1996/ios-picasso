@@ -372,6 +372,10 @@ static int bootargs_have(const char *key)
 /* The registers the bootloader entered us with (start.S keeps them). */
 uint64_t boot_regs[4];
 
+/* Where the device tree was found, and what the discovery made of it. */
+static uintptr_t g_tree;
+static const char *g_why;
+
 /* The board facts, on the screen: this is the only log channel a board
  * without a UART has until the USB gadget works. */
 static void probe_report(void)
@@ -379,10 +383,25 @@ static void probe_report(void)
 	con_str("BOARD", "discovered from the device tree");
 	con_skip();
 
+	con_hex("DTB at", g_tree);
+	if (g_why)
+		con_str("  state", g_why);
+	else
+		con_str("  state", "read");
+	con_skip();
+
 	con_hex("REG x0", boot_regs[0]);
 	con_hex("REG x1", boot_regs[1]);
 	con_hex("REG x2", boot_regs[2]);
 	con_hex("REG x3", boot_regs[3]);
+	con_skip();
+
+	/* What is at the addresses a boot image puts the tree at? */
+	for (unsigned a = 0; a < 4; a++) {
+		static const uintptr_t known[] = { 0x1728000, 0x1f00000, 0x1000000, 0x2000000 };
+		con_hex("AT", known[a]);
+		con_hex("  word", *(volatile uint32_t *)known[a]);
+	}
 	con_skip();
 
 	con_str("FB", hw.fb_src ? hw.fb_src : "not found");
@@ -428,9 +447,13 @@ static void probe_report(void)
  *
  * The bootloader is supposed to pass its address in x0, and on sweet it
  * does. On picasso it does not: the first probe there printed "no FDT from
- * ABL" and every board number came out as zero. So look at the other
- * registers, then at the addresses a boot image usually puts the tree at,
- * and finally scan the low memory for the magic.
+ * ABL" and every board number came out as zero.
+ *
+ * Only known addresses are tried. Reading an address we do not know is not
+ * safe here: the protected regions of the boot chain (the XBL and the RPM
+ * live in the low memory) answer a read with a *secure fault*, and the
+ * trust zone kills the core - the shim then hangs with the last line it
+ * drew, with no panic screen to show why.
  */
 static uintptr_t find_dtb(uintptr_t x0)
 {
@@ -445,18 +468,15 @@ static uintptr_t find_dtb(uintptr_t x0)
 	};
 	int i;
 
-	if (x0 && fdt_magic_ok(x0))
-		return x0;
-	for (i = 0; i < 4; i++)
-		if (boot_regs[i] && fdt_magic_ok((uintptr_t)boot_regs[i]))
-			return (uintptr_t)boot_regs[i];
-	for (i = 0; i < (int)(sizeof(known) / sizeof(known[0])); i++)
+	(void)x0;	/* not probed: it may hold anything at all */
+	for (i = 0; i < (int)(sizeof(known) / sizeof(known[0])); i++) {
+		/* say where we are before every read: a read that faults kills
+		 * the core and the screen keeps only what was drawn last */
+		con_hex("PROBE", known[i]);
+		con_skip();
 		if (fdt_magic_ok(known[i]))
 			return known[i];
-	/* scan the first 32 MB in 4 KB steps */
-	for (uintptr_t a = 0x1000; a < 0x2000000; a += 0x1000)
-		if (fdt_magic_ok(a))
-			return a;
+	}
 	return 0;
 }
 
@@ -494,19 +514,34 @@ void shim_main(uint64_t dtb)
 	 * only way to learn where the RAM is.
 	 */
 	stage = "discover";
+
+	/*
+	 * Draw first: the console must be up before anything can go wrong.
+	 * The framebuffer is the board's default here; the device tree, if it
+	 * can be found, only confirms it.
+	 */
+	con_clear(RED);
+	con_str("SHIM", "picasso probe");
+	con_skip();
+
+	con_hex("REG x0", boot_regs[0]);
+	con_hex("REG x1", boot_regs[1]);
+	con_hex("REG x2", boot_regs[2]);
+	con_hex("REG x3", boot_regs[3]);
+	con_skip();
+
 	uintptr_t tree = find_dtb(dtb);
+	con_str("STEP", "tree found");
+	con_skip();
+
 	const char *why = hw_discover(tree);
+	con_str("STEP", "discovered");
+	con_skip();
+
+	g_tree = tree;
+	g_why = why;
 	if (why == 0 && hw.fb_base)
 		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, hw.fb_stride);
-
-	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
-	stage = "loader";
-	con_clear(RED);
-	if (why)
-		con_str("BOARD", why);
-	else
-		con_str("SHIM", "sweet milestone 4: xnu loader");
-	con_skip();
 	probe_report();
 	con_skip();
 

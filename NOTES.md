@@ -81,11 +81,33 @@ with **0 failed edits**.
    boot is not possible; the shim has to be **flashed** to `boot`
    (and the Droidian image flashed back afterwards).
 
+**WHAT THE HARDWARE SHOWS (probe of 2026-10-20, on the phone):**
+
+- The shim runs on picasso: the console draws on the panel (red background,
+  yellow/white text) at `cont_splash_region` 0xa0000000, 1080x2400 - the
+  address and the geometry of the phone's own splash.
+- **The UFS host works**: `ver=300 cap=1587031F`, TUR/CAP/READ all rc=0, and
+  the GPT is read: `EFI PART`, 64 entries, `persist` lba 0xC000, `persistbak`
+  0x10000, `logdump` 0x14000, `rawdump` 0x18000, `minidump` 0x20000,
+  `recovery` 0x28000. LUN0 is 0x1D82BBF+1 blocks of 4 KB = 118 GiB, while the
+  GPT only covers 15.8 GB - **about 103 GiB are free at the end of the disk**,
+  so the iOS root can go into a new partition without touching `userdata`
+  (where Droidian's rootfs.img lives).
+- **The bootloader does not pass the device tree in x0** on picasso (it does on
+  sweet): the first probe printed "no FDT from ABL" and every board number
+  came out as zero.
+- **Reading an unknown address is not safe.** A read of a protected address
+  (the XBL/RPM live in the low memory) answers with a *secure fault*: the
+  trust zone kills the core, the shim hangs with the last line it drew and
+  there is no panic screen. The shim therefore only reads known addresses and
+  prints the registers it was entered with instead of dereferencing them.
+  (The shim's own exception handler exists, but a secure fault never reaches
+  it.)
+
 **NOT DONE / next:**
-1. **The shim has not run on the phone yet.** `fastboot boot` is not an option
-   (see above), so the next step is `fastboot flash boot shim-boot.img` and then
-   `fastboot reboot` - and `fastboot flash boot halium-boot-picasso.img` to put
-   Droidian back. **This needs the user's OK: it writes the boot partition.**
+1. **The shim has not produced a full report yet.** The probe is being
+   narrowed down step by step; the last line on the screen says where it
+   stops.
 2. The RAM banks are still unknown (the static DTB has none). The probe will
    print them: the bootloader fills /memory in the tree it hands the shim.
 3. The stride/bpp of the splash buffer: the probe reads them from the display
@@ -99,6 +121,7 @@ with **0 failed edits**.
    from the topaz fork (0088) are still to do.
 6. The kernel itself is still the SWEET one: the GIC, UFS and SPMI code is the
    same, but the display, touch and keys drivers are not written for picasso.
+
 
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
