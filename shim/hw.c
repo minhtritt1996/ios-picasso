@@ -74,6 +74,58 @@ static void find_panel_name(void)
 		}
 }
 
+/*
+ * The splash buffer's real address and stride, from the display pipe.
+ *
+ * The tree gives the MDSS window and the offset of every SSPP; the pipe that
+ * scans the bootloader's splash has its source address inside the splash
+ * region. Reading the pipe is the only way to be sure about the stride: the
+ * panel is 1080 pixels wide, but the pipe may fetch it with a different
+ * pitch, and a wrong pitch shows a skewed picture.
+ */
+static void find_fb_format(const struct fdt *f)
+{
+	struct fdt_node n;
+	uint32_t ac, sc;
+	uint64_t mdss, size;
+
+	if (!fdt_find_compatible(f, "qcom,sde-kms", &n))
+		return;
+	fdt_reg_cells_of(f, &n, &ac, &sc);
+	if (!fdt_reg(f, n.props, ac, sc, 0, &mdss, &size))
+		return;
+
+	uintptr_t val;
+	uint32_t len;
+	if (!fdt_prop(f, n.props, "qcom,sde-sspp-off", &val, &len))
+		return;
+#ifdef HOST_NO_MMIO
+	(void)mdss;	/* host test: there are no display registers here */
+#else
+	for (uint32_t i = 0; i + 4 <= len; i += 4) {
+		uint32_t off = __builtin_bswap32(*(volatile uint32_t *)(val + i));
+		uintptr_t sspp = (uintptr_t)(mdss + off);
+		uint32_t src = *(volatile uint32_t *)(sspp + 0x14);	/* SRC0_ADDR */
+		uint32_t stride = *(volatile uint32_t *)(sspp + 0x24);	/* SRC_YSTRIDE0 */
+		uint32_t fmt = *(volatile uint32_t *)(sspp + 0x30);	/* SRC_FORMAT */
+		if (src == 0)
+			continue;
+		if (hw.fb_base && (src < hw.fb_base || src >= hw.fb_base + hw.fb_size))
+			continue;	/* not the splash pipe */
+		hw.fb_src_addr = src;
+		hw.fb_pipe = off;
+		hw.fb_format = fmt;
+		if (stride)
+			hw.fb_stride = stride;
+		hw.fb_bpp = 4;		/* a8r8g8b8 / xrgb8888 */
+		if (!hw.fb_base) {
+			hw.fb_base = src;
+			hw.fb_src = "display pipe";
+		}
+	}
+#endif
+}
+
 static void find_panel_size(const struct fdt *f)
 {
 	struct fdt_iter it;
@@ -82,8 +134,21 @@ static void find_panel_size(const struct fdt *f)
 
 	hw.fb_w = 0;
 	hw.fb_h = 0;
-	if (!hw.panel[0])
+	if (!hw.panel[0]) {
+		/* No name from the bootargs: take the first DSI timing node. */
+		fdt_iter_start(f, &it);
+		while (fdt_iter_next(f, &it, &n)) {
+			uint32_t w, h;
+			if (fdt_prop_u32(f, n.props, "qcom,mdss-dsi-panel-width", &w) &&
+			    fdt_prop_u32(f, n.props, "qcom,mdss-dsi-panel-height", &h) &&
+			    w >= 320 && h >= 320 && w <= 4096 && h <= 4096) {
+				hw.fb_w = w;
+				hw.fb_h = h;
+				return;
+			}
+		}
 		return;
+	}
 	fdt_iter_start(f, &it);
 	while (fdt_iter_next(f, &it, &n)) {
 		if (depth >= 0 && it.depth <= depth)
@@ -323,6 +388,7 @@ const char *hw_discover(uintptr_t dtb)
 	find_panel_name();
 	find_memory(&f);
 	find_framebuffer(&f);
+	find_fb_format(&f);
 	find_panel_size(&f);
 	find_gic(&f);
 	find_timer(&f);

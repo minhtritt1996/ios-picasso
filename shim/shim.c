@@ -382,6 +382,8 @@ static void probe_report(void)
 	con_dec("  width", hw.fb_w);
 	con_dec("  height", hw.fb_h);
 	con_dec("  stride", hw.fb_stride);
+	con_hex("  pipe src", hw.fb_src_addr);
+	con_hex("  format", hw.fb_format);
 	con_skip();
 
 	con_dec("RAM banks", hw.nmem);
@@ -447,7 +449,7 @@ void shim_main(uint64_t dtb)
 	stage = "discover";
 	const char *why = hw_discover(dtb);
 	if (why == 0 && hw.fb_base)
-		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, 0);
+		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, hw.fb_stride);
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
@@ -463,7 +465,7 @@ void shim_main(uint64_t dtb)
 	/* "sweetprobe" in the bootargs: show the board report and stop. */
 	if (bootargs_have("sweetprobe")) {
 		con_str("SHIM", "probe mode: report above, not booting");
-		delay_ms(600000);
+		delay_ms(180000);
 		reset(20);
 	}
 

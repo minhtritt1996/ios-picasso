@@ -26,6 +26,8 @@ struct hw {
 	/* Splash framebuffer: the bootloader keeps scanning this out. */
 	uint64_t fb_base, fb_size;
 	uint32_t fb_w, fb_h, fb_stride, fb_bpp;
+	uint32_t fb_pipe, fb_format;	/* display pipe that scans the splash */
+	uint32_t fb_src_addr;		/* what that pipe actually fetches */
 	const char *fb_src;
 
 	/* GICv3 */

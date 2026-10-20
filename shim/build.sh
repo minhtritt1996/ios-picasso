@@ -21,12 +21,18 @@ payload=""
 dtb="../dtb/boot_unpacked/dtb"
 ramdisk_offset=0x1000000
 dtb_offset=0x1f00000
+# The bootloader reads a few things from the command line (which USB
+# controller to set up, which DTB overlay to apply), so on picasso we keep
+# the stock one and only append our own flags.
+cmdline="console=null"
+extra=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--picasso)
 		ramdisk_offset=0x1200000
 		dtb_offset=0x1728000
+		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"
 		;;
 	--dtb)
 		dtb="$2"
@@ -35,12 +41,27 @@ while [ $# -gt 0 ]; do
 	--dtb=*)
 		dtb="${1#--dtb=}"
 		;;
+	--cmdline)
+		cmdline="$2"
+		shift
+		;;
+	--cmdline=*)
+		cmdline="${1#--cmdline=}"
+		;;
+	--extra)
+		extra="$2"
+		shift
+		;;
+	--extra=*)
+		extra="${1#--extra=}"
+		;;
 	*)
 		payload="$1"
 		;;
 	esac
 	shift
 done
+[ -n "$extra" ] && cmdline="$cmdline $extra"
 
 mkdir -p out
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
@@ -80,7 +101,7 @@ mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
 	"${dtb_arg[@]}" --base 0 --kernel_offset 0x8000 --ramdisk_offset $ramdisk_offset \
 	--tags_offset 0x100 --dtb_offset $dtb_offset --pagesize 4096 \
 	--os_version 17.0.0 --os_patch_level 2035-06 \
-	--cmdline "console=null" -o out/shim-boot.img
+	--cmdline "$cmdline" -o out/shim-boot.img
 # Host render of the console layout.
 gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img
