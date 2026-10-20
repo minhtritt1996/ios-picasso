@@ -16,6 +16,23 @@
 #define RAM_ALIGN	(32UL << 20)
 #define RAM_MAX		(8ULL << 30)
 
+/*
+ * The RAM the kernel gets, when the device tree cannot be read.
+ *
+ * On picasso the bootloader does not pass the tree in x0 and everything
+ * below 0x10000000 is protected (a read there is a secure fault), so the
+ * shim cannot learn the banks by itself. These are the banks the
+ * bootloader hands the kernel: 0x80000000+0x3cc00000, 0x140000000+3 GiB
+ * and 0xc0000000+2 GiB; the middle one is the largest contiguous range
+ * and no carve-out reaches it.
+ */
+#ifndef RAM_FALLBACK_BASE
+#define RAM_FALLBACK_BASE	0
+#endif
+#ifndef RAM_FALLBACK_SIZE
+#define RAM_FALLBACK_SIZE	0
+#endif
+
 int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
     uint64_t excl_base, uint64_t excl_size)
 {
@@ -31,8 +48,13 @@ int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
 		excl[nexcl].size = excl_size;
 		nexcl++;
 	}
-	if (!hw_pick_ram(excl, nexcl, RAM_ALIGN, RAM_MAX, &out))
-		return 0;
+	if (!hw_pick_ram(excl, nexcl, RAM_ALIGN, RAM_MAX, &out)) {
+		if (!RAM_FALLBACK_SIZE)
+			return 0;
+		*phys_base = RAM_FALLBACK_BASE;
+		*mem_size = RAM_FALLBACK_SIZE;
+		return 1;
+	}
 	*phys_base = out.base;
 	*mem_size = out.size;
 	return 1;

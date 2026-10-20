@@ -49,6 +49,10 @@ while [ $# -gt 0 ]; do
 		# cannot be read: without it the console would draw into the
 		# wrong memory and the screen would keep the bootloader's logo.
 		cflags="$cflags -DFB_BASE=0xa0000000UL"
+		# The kernel's RAM, for the same reason: the bootloader does not
+		# pass the tree in x0 here, and everything below 0x10000000 is
+		# protected. These are the banks it hands the kernel.
+		cflags="$cflags -DRAM_FALLBACK_BASE=0x140000000UL -DRAM_FALLBACK_SIZE=0xC0000000UL"
 		# The bootloader reads a few things from the command line (which
 		# USB controller to set up), so keep the stock one.
 		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"

@@ -17,6 +17,10 @@ MEM_SIZE = 0x4d000000
 # carve-out is in the low bank and the dynamic pools are limited below 4G.
 HIGH_PHYS_BASE = 0x100000000
 HIGH_MEM_SIZE = 0xfcc00000
+# picasso: the bootloader hands the kernel three banks; the largest
+# contiguous one that no carve-out touches is 0x14000000 + 3 GiB.
+PICASSO_PHYS_BASE = 0x140000000
+PICASSO_MEM_SIZE = 0xC0000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
@@ -49,6 +53,8 @@ BOARDS = {
         'ufs': (0x01d84000, 0x3000),
     },
     'picasso': {
+        'phys_base': PICASSO_PHYS_BASE,
+        'mem_size': PICASSO_MEM_SIZE,
         'ecid': 0x5049434153534f01,          # 'PICASSO' + 1
         'manifest': b'picasso boot manifest',
         'compat': 'D22AP|iPhone10,3|xiaomi,picasso|qcom,sm7250|AppleARM',
@@ -95,6 +101,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
     prof = BOARDS.get(board, BOARDS['sweet'])
+    if 'phys_base' in prof:
+        phys_base, mem_size = prof['phys_base'], prof['mem_size']
     fb_base, fb_size = prof['fb']
     ufs_base, ufs_size = prof['ufs']
     manifest = hashlib.sha384(prof['manifest']).digest()
