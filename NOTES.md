@@ -76,8 +76,7 @@ XNU 8796 (their root is macOS/iOS 17 on XNU 10063 with their own
 trustcache/cryptex/VerifiedRoot flow). **Decision: keep the sweet route for
 picasso, harvest the driver code and the architecture ideas.**
 
-**The whole UniXNU organisation (26 repositories), studied 2026-10-20 evening.**
-Layers: `ABL -> BootShim + UEFI volume + DTB -> UniXNU (UEFI boot manager) ->
+**The whole UniXNU organisation (26 repositories), studied 2026-10-20 evening.**Layers: `ABL -> BootShim + UEFI volume + DTB -> UniXNU (UEFI boot manager) ->
 DarwinBoot (XNU loader) -> prelinked XNU -> IPSW userland`. Repositories:
 `UniXNU` (build driver + boot manager + generic drivers + kits + patches + docs,
 214 stars), `UniXNU-sheng` (the only board, Xiaomi Pad 6S Pro / SM8550),
@@ -120,6 +119,56 @@ Honest state of the project: CPU/GIC/timer, UFS, HID, Novatek touch, AES,
 KeyStore, display plus GPU scanout, Metal device, GPU blit and a GPU
 composited desktop all work on sheng. Display vblank, 120 FPS and a
 precompiled shader pack do not. One board, one author group, macOS only build.
+
+**Topaz moved again on 2026-10-20 (six commits).** The important ones:
+`0129` WLAN station (association, WPA2-PSK handshake in the kernel, HTT data
+path) and `0130` join with a PMK, so the topaz port now has working Wi-Fi -
+the biggest step the sweet community has taken. The WLAN code comes from
+their own `topaz-woa` project (`htt.c`, `htc.c`, `wmi.c`, `ce.c`,
+`wlanprobe.c`).
+
+*That Wi-Fi work does not port to picasso.* The two boards use different WLAN
+stacks: topaz (SM6225) hosts the WLAN firmware on the modem and talks to it
+over GLINK and QRTR with HTT messages; picasso (SM7250) has an integrated
+CNSS (the device tree says `qcom,icnss@18800000`) and the host driver is
+`cnss2` with remotedev and DIAG, talking a closed MA/XXI protocol. Only the
+iOS side (a WLAN radio API as an IOKit service, plus the `/arm-io/wlan` node
+in the ADT so that launchd starts `wifid`) can be reused.
+
+*One of their commits is ours already.* `0128` fixes a bug we have too: the
+kernel holds a busy count on the registry root until the IOKit daemon reports
+that it launched, and there is no kextd here, so that report never comes. The
+root stays busy forever, IOKit never quiesces, `configd`'s InterfaceNamer
+never says quiet, and every userland client that lists network interfaces
+waits at boot. Ported as `xnu/patches/0082-picasso-iokit-quiesce.patch`.
+
+**LESSON: the build driver skips a patch it cannot parse and only warns.**
+Our first 0082 had a hunk that claimed sixteen new lines and had eighteen,
+so the kernel was built without the fix and the run still said "success".
+Always grep the run log for "Skipping patch". The patch is now checked against
+the real source (`xnu-8796.101.5`, both hunks apply, offset 15 lines on the
+first) and the run log shows it applied.
+
+**Build times on our own CI are short.** Run 39431814735 took 5.5 minutes
+(13:36 to 13:41), not the forty minutes a cold runner would need. The
+upstream runs that took hours were the ones that had to build the whole
+tree from scratch.
+
+**Where the kernel log lands on picasso.** Kernel patch 0047 keeps a 4 MiB
+ring and copies it to the last 4 MiB of the partition the kernel opened as
+root, so on this port that is the `darwin` partition, not `userdata`
+(`su.first_block + su.nblocks - SWEET_LOG_BLOCKS`). The HFS image is 16 GiB
+inside a 20 GiB partition, so the log area is free space and Droidian's
+`userdata` is never touched. Read it from the recovery with
+`tools/sweet-log-pull.sh -p darwin OUT.txt` - that needs no photo of the
+screen and no USB driver in the kernel.
+
+State after the 0082 build: kernel `xnu/out-0082/kernel.development.sweet`
+(md5 c65c8d07339602a1f66b4227f7a9a6bf), payload
+`shim/out/payload-picasso-0082.bin`, boot image `shim/out/shim-boot-0082.img`
+(md5 5b7cbcdc2396ef6e5da03eb34c591380), same command line as the first
+picasso image (`cpus=8`, `ufsroot=darwin`, `ufsrw=1`, `sweetfb_hz=30`,
+`sweettouch=0`).
 
 ### >>> UPDATE 2026-10-20 (picasso / SM7250 port groundwork; read first) <<<
 
