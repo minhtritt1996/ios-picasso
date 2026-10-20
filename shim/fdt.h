@@ -40,6 +40,9 @@ struct fdt_iter {
 
 int fdt_init(uintptr_t dtb, struct fdt *f);
 
+/* Is there a flattened device tree at this address? */
+int fdt_magic_ok(uintptr_t dtb);
+
 /* Next node in tree order; returns 0 at the end. */
 void fdt_iter_start(const struct fdt *f, struct fdt_iter *it);
 int fdt_iter_next(const struct fdt *f, struct fdt_iter *it, struct fdt_node *out);

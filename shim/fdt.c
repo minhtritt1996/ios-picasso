@@ -43,6 +43,11 @@ static uintptr_t skip_str(uintptr_t p)
 	return p + 1;
 }
 
+int fdt_magic_ok(uintptr_t dtb)
+{
+	return dtb && be32(dtb) == FDT_MAGIC;
+}
+
 int fdt_init(uintptr_t dtb, struct fdt *f)
 {
 	if (!dtb || be32(dtb) != FDT_MAGIC)

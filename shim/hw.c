@@ -12,6 +12,10 @@
 
 struct hw hw;
 
+/* The tree we were given, for the display pipe read later. */
+static struct fdt hw_tree;
+static int hw_tree_ok;
+
 static int streq(const char *a, const char *b)
 {
 	while (*a && *a == *b)
@@ -82,13 +86,21 @@ static void find_panel_name(void)
  * region. Reading the pipe is the only way to be sure about the stride: the
  * panel is 1080 pixels wide, but the pipe may fetch it with a different
  * pitch, and a wrong pitch shows a skewed picture.
+ *
+ * This reads hardware, so it is called only after the console is up: a
+ * register block that is clock-gated aborts the read, and an abort before
+ * the console exists leaves the screen showing the bootloader's logo.
  */
-static void find_fb_format(const struct fdt *f)
+void hw_read_display_pipe(const struct fdt *unused)
 {
+	const struct fdt *f = &hw_tree;
 	struct fdt_node n;
 	uint32_t ac, sc;
 	uint64_t mdss, size;
 
+	(void)unused;
+	if (!hw_tree_ok)
+		return;
 	if (!fdt_find_compatible(f, "qcom,sde-kms", &n))
 		return;
 	fdt_reg_cells_of(f, &n, &ac, &sc);
@@ -383,12 +395,13 @@ const char *hw_discover(uintptr_t dtb)
 	hw.dtb = dtb;
 	if (!fdt_init(dtb, &f))
 		return "no FDT from ABL";
+	hw_tree = f;
+	hw_tree_ok = 1;
 	if (fdt_find_path(&f, "/chosen", &n))
 		hw.bootargs = fdt_prop_str(&f, n.props, "bootargs");
 	find_panel_name();
 	find_memory(&f);
 	find_framebuffer(&f);
-	find_fb_format(&f);
 	find_panel_size(&f);
 	find_gic(&f);
 	find_timer(&f);

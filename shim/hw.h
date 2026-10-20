@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+struct fdt;
+
 /*
  * Board facts, read from the device tree the bootloader handed us.
  *
@@ -56,6 +58,10 @@ extern struct hw hw;
 
 /* Fill hw from the device tree; returns 0 or a short reason for failure. */
 const char *hw_discover(uintptr_t dtb);
+
+/* Read the display pipe registers (hardware!): the real stride of the splash
+ * buffer. Only after the console is up - a clock-gated register aborts. */
+void hw_read_display_pipe(const struct fdt *f);
 
 /*
  * Largest RAM range that is free of every reserved region and of the extra

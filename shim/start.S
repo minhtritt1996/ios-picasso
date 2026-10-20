@@ -32,6 +32,9 @@ _start:
 2:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
+	mov	x20, x1			/* the bootloader may use another register */
+	mov	x21, x2
+	mov	x22, x3
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1
@@ -46,6 +49,11 @@ _start:
 	str	xzr, [x1], #8
 	b	1b
 2:	mov	x0, x19
+	adr	x1, boot_regs
+	str	x19, [x1]
+	str	x20, [x1, #8]
+	str	x21, [x1, #16]
+	str	x22, [x1, #24]
 	bl	shim_main
 3:	wfe
 	b	3b

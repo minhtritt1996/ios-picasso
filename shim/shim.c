@@ -369,11 +369,20 @@ static int bootargs_have(const char *key)
 	return 0;
 }
 
+/* The registers the bootloader entered us with (start.S keeps them). */
+uint64_t boot_regs[4];
+
 /* The board facts, on the screen: this is the only log channel a board
  * without a UART has until the USB gadget works. */
 static void probe_report(void)
 {
 	con_str("BOARD", "discovered from the device tree");
+	con_skip();
+
+	con_hex("REG x0", boot_regs[0]);
+	con_hex("REG x1", boot_regs[1]);
+	con_hex("REG x2", boot_regs[2]);
+	con_hex("REG x3", boot_regs[3]);
 	con_skip();
 
 	con_str("FB", hw.fb_src ? hw.fb_src : "not found");
@@ -414,6 +423,44 @@ static void probe_report(void)
 	}
 }
 
+/*
+ * Find the device tree.
+ *
+ * The bootloader is supposed to pass its address in x0, and on sweet it
+ * does. On picasso it does not: the first probe there printed "no FDT from
+ * ABL" and every board number came out as zero. So look at the other
+ * registers, then at the addresses a boot image usually puts the tree at,
+ * and finally scan the low memory for the magic.
+ */
+static uintptr_t find_dtb(uintptr_t x0)
+{
+	static const uintptr_t known[] = {
+		0x1728000,	/* picasso: the device tree of the phone's own image */
+		0x1f00000,	/* sweet */
+		0x1000000,
+		0x2000000,
+		0x10000000,
+		0x8000000,
+		0x4000000,
+	};
+	int i;
+
+	if (x0 && fdt_magic_ok(x0))
+		return x0;
+	for (i = 0; i < 4; i++)
+		if (boot_regs[i] && fdt_magic_ok((uintptr_t)boot_regs[i]))
+			return (uintptr_t)boot_regs[i];
+	for (i = 0; i < (int)(sizeof(known) / sizeof(known[0])); i++)
+		if (fdt_magic_ok(known[i]))
+			return known[i];
+	/* scan the first 32 MB in 4 KB steps */
+	for (uintptr_t a = 0x1000; a < 0x2000000; a += 0x1000)
+		if (fdt_magic_ok(a))
+			return a;
+	return 0;
+}
+
+/* Does the board facts, and the bootargs, come from the device tree? */
 static uint64_t ticks_fill(uint32_t c)
 {
 	uint64_t t = now();
@@ -447,7 +494,8 @@ void shim_main(uint64_t dtb)
 	 * only way to learn where the RAM is.
 	 */
 	stage = "discover";
-	const char *why = hw_discover(dtb);
+	uintptr_t tree = find_dtb(dtb);
+	const char *why = hw_discover(tree);
 	if (why == 0 && hw.fb_base)
 		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, hw.fb_stride);
 
@@ -464,6 +512,16 @@ void shim_main(uint64_t dtb)
 
 	/* "sweetprobe" in the bootargs: show the board report and stop. */
 	if (bootargs_have("sweetprobe")) {
+		/*
+		 * The display pipe registers are only read now: a register
+		 * block that is clock-gated aborts the read, and an abort
+		 * before the console exists would leave the bootloader's logo
+		 * on the screen with nothing to show.
+		 */
+		hw_read_display_pipe(0);
+		con_clear(RED);
+		probe_report();
+		con_skip();
 		con_str("SHIM", "probe mode: report above, not booting");
 		delay_ms(180000);
 		reset(20);

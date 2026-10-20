@@ -24,6 +24,7 @@ cd "$(dirname "$0")"
 CC=aarch64-linux-gnu-gcc
 OBJCOPY=aarch64-linux-gnu-objcopy
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
+cflags=""
 
 payload=""
 dtb="../dtb/boot_unpacked/dtb"
@@ -36,12 +37,18 @@ osver=(--os_version 17.0.0 --os_patch_level 2035-06)
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--picasso)
-		# The file offset of a part is its RAM address, so with a small
-		# image everything has to sit low: the kernel at 8 KB, the ramdisk
-		# and the device tree right behind it.
-		ramdisk_offset=0x10000
-		dtb_offset=0x20000
+		# The layout the phone's own boot image uses (proven on this
+		# device): the kernel at 8 KB, the ramdisk and the device tree
+		# far out, so the file is as big as the tree's address. The file
+		# offset of a part is its RAM address, so the file has to reach
+		# that far.
+		ramdisk_offset=0x1200000
+		dtb_offset=0x1728000
 		osver=()
+		# The splash framebuffer of this board, in case the device tree
+		# cannot be read: without it the console would draw into the
+		# wrong memory and the screen would keep the bootloader's logo.
+		cflags="$cflags -DFB_BASE=0xa0000000UL"
 		# The bootloader reads a few things from the command line (which
 		# USB controller to set up), so keep the stock one.
 		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"
@@ -81,7 +88,7 @@ done
 
 mkdir -p out
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
-	$CC $CFLAGS -c $f -o out/${f%.*}.o
+	$CC $CFLAGS $cflags -c $f -o out/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
@@ -92,7 +99,7 @@ LDFLAGS="-static -T shim.ld -Wl,--build-id=none -Wl,-N"
 if $CC $LDFLAGS -Wl,--no-warn-rwx-segments -o /dev/null start.o 2>/dev/null; then
 	LDFLAGS="$LDFLAGS -Wl,--no-warn-rwx-segments"
 fi
-$CC $CFLAGS $LDFLAGS \
+$CC $CFLAGS $cflags $LDFLAGS \
 	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o \
 	out/hw.o out/adt.o out/board.o -o out/shim.elf
 $OBJCOPY -O binary out/shim.elf out/Image
@@ -119,13 +126,10 @@ mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
 	--tags_offset 0x100 --dtb_offset $dtb_offset --pagesize 4096 \
 	"${osver[@]}" \
 	--cmdline "$cmdline" -o out/shim-boot.img
-# The bootloader refuses to boot an image larger than 256 KB.
+# A temporary boot (fastboot boot) of an image larger than 256 KB hangs on
+# this bootloader; flashing has no such limit.
 img=$(stat -c %s out/shim-boot.img)
-if [ "$img" -gt 262144 ]; then
-	echo "error: the boot image is $img bytes; this bootloader only takes < 256 KB" >&2
-	echo "       slim the device tree (tools/picasso-slim-dtb.py)" >&2
-	exit 1
-fi
+[ "$img" -le 262144 ] || echo "note: the boot image is $img bytes; it has to be flashed, not booted" >&2
 # Host render of the console layout.
 gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img
