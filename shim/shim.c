@@ -457,18 +457,40 @@ static void probe_report(void)
  */
 static uintptr_t find_dtb(uintptr_t x0)
 {
+	/*
+	 * Only the memory above 0x10000000 can be read safely: the low
+	 * memory holds the protected parts of the boot chain (XBL, AOP, RPM
+	 * and the trust zone up to 0x0FFFFFFF), and a read there is answered
+	 * with a secure fault that kills the core.
+	 */
 	static const uintptr_t known[] = {
-		0x1728000,	/* picasso: the device tree of the phone's own image */
-		0x1f00000,	/* sweet */
-		0x1000000,
-		0x2000000,
 		0x10000000,
-		0x8000000,
-		0x4000000,
+		0x11000000,
+		0x12000000,
+		0x14000000,
+		0x18000000,
+		0x1c000000,
+		0x20000000,
+		0x40000000,
 	};
 	int i;
 
-	(void)x0;	/* not probed: it may hold anything at all */
+	/*
+	 * The bootloader gave us 0xA7EB0000 in x0 and x1. It is plain memory
+	 * (reading it does not fault) but it does not start with the device
+	 * tree magic, so it is not the tree: it is probably the structure the
+	 * bootloader keeps about the image, with the tree's address inside.
+	 */
+	if (x0 >= 0x10000000 && x0 < 0x80000000 && (x0 & 7) == 0) {
+		con_str("DUMP", "at x0");
+		con_skip();
+		for (i = 0; i < 24; i++) {
+			uint32_t w = *(volatile uint32_t *)(x0 + i * 8);
+			con_hex("  w", ((uint64_t)w << 32) | (uint64_t)i);
+		}
+		con_skip();
+	}
+
 	for (i = 0; i < (int)(sizeof(known) / sizeof(known[0])); i++) {
 		/* say where we are before every read: a read that faults kills
 		 * the core and the screen keeps only what was drawn last */
@@ -533,6 +555,8 @@ void shim_main(uint64_t dtb)
 	uintptr_t tree = find_dtb(dtb);
 	con_str("STEP", "tree found");
 	con_skip();
+	con_hex("DTB", tree);
+	con_skip();
 
 	const char *why = hw_discover(tree);
 	con_str("STEP", "discovered");
@@ -558,7 +582,7 @@ void shim_main(uint64_t dtb)
 		probe_report();
 		con_skip();
 		con_str("SHIM", "probe mode: report above, not booting");
-		delay_ms(180000);
+		delay_ms(600000);
 		reset(20);
 	}
 
@@ -572,7 +596,7 @@ void shim_main(uint64_t dtb)
 	con_skip();
 	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
 	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
+	delay_ms(600000);
 	reset(20);
 
 	stage = "fill off";
