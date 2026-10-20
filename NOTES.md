@@ -750,3 +750,27 @@ committed.
 
 Kernel 0083 has both fixes: the IOKit quiesce one and the IORTC one.
 Image `shim/out/shim-boot-0083.img` (md5 d1dffb81c22e7d29c84f6cb6dfcefcab).
+**USB gadget on picasso (2026-10-20 evening).** The sweet tree already has the
+whole USB stack: `sweetusb=2` puts the DWC3 into device mode with a CDC-ECM
+function and a kernel interface `ue0` at 192.168.7.2/24 (patches 0072-0076),
+and `sweetusblog=1` streams the console ring as UDP to 192.168.7.1:5140
+(patch 0077), which the host reads with `tools/sweet-usbnet.sh`. Our images
+had none of it: the command line never said `sweetusb=2`, so the phone showed
+no USB device at all.
+
+The hardware addresses are the same on both boards, which is the good news:
+
+| Part | sweet (SM7150) | picasso (SM7250) |
+| --- | --- | --- |
+| DWC3 core | 0xa600000 | 0xa600000 (device tree: `/soc/ssusb@a600000/dwc3@a600000`) |
+| QSCRATCH | 0xa6f8800 | 0xa6f8800 (the kernel's own device tree: `lito-rumi.dtsi`, `<0x0a6f8800 0x100>`) |
+| GCC | 0x088e2000 | 0x088e2000 (device tree: `/soc/qcom,msm-eud@88e0000`) |
+
+So the sweet USB driver should work on picasso without a change. One risk to
+watch: the DWC3 node has an `iommus` property on this SoC, so the transfers
+may need an SMMU context the driver does not create. The console will say
+("SWEET USB: ..."), which is exactly why turning it on now is worth it.
+
+Image with it enabled: `shim/out/shim-boot-0083u.img` (md5
+914d469a4d63184556a1a0183868706c) - kernel 0083 plus `sweetusb=2` on the
+command line.
