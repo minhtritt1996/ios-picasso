@@ -1,0 +1,39 @@
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -18,6 +18,7 @@
+ 	void processTopLevel(IORegistryEntry *root) APPLE_KEXT_OVERRIDE;
+ 	const char *deleteList(void) APPLE_KEXT_OVERRIDE;
+ 	const char *excludeList(void) APPLE_KEXT_OVERRIDE;
++	long getGMTTimeOfDay(void) APPLE_KEXT_OVERRIDE;
+ };
+ 
+ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+@@ -30,10 +31,28 @@
+ 		return false;
+ 	}
+ 	registerService();
++	/*
++	 * IOKitInitializeTime waits up to 30 s for an "IORTC" resource before it
++	 * reads the calendar, and nothing here publishes one: every boot paid
++	 * that wait. The phone's clock is in the PMIC (the device tree has
++	 * rtc@6100), which has no driver yet, so the time itself is still wrong -
++	 * but the wait is over.
++	 */
++	publishResource("IORTC", this);
+ 	IOLog("SWEET: platform expert registered\n");
+ 	return true;
+ }
+ 
++/*
++ * No clock yet: the epoch is what the wait used to leave behind anyway.
++ * Reading the PMIC RTC over SPMI is the next step.
++ */
++long
++SweetPlatformExpert::getGMTTimeOfDay(void)
++{
++	return 0;
++}
++
+ const char *
+ SweetPlatformExpert::deleteList(void)
+ {
