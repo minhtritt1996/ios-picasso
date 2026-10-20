@@ -2,6 +2,85 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-20 (picasso / SM7250 port groundwork; read first) <<<
+
+**NEW DEVICE: the user's Redmi K30 5G (`picasso`, SM7250 / Snapdragon 765G), currently
+running Droidian (Halium 11) in `/home/tritm/droidian` (46 GB tree, its own Linux
+4.19.113-lineage kernel, working Phosh/Adreno 620/Wi-Fi/camera).** The phone is the
+user's daily driver: **the iOS root must go into its own partition, never into
+`userdata`** (that is `/data` and holds Droidian).
+
+**What was done today (all on the PC, nothing was written to the phone):**
+
+- `tools/picasso-fdt.py` (new): a dependency-free flattened-device-tree reader that
+  prints the board facts (RAM banks, carve-outs, splash region, GIC, timer PPIs, UFS,
+  USB, UART console, CPU MPIDRs). Run on the phone's own DTB
+  (`/home/tritm/droidian/output/rec-picasso.dtb`, extracted from `boot.img` with
+  `tools/unpack_bootv2.py`).
+- `shim/hw.c` + `shim/hw.h` (new): the same discovery in C, for the shim.
+  `shim/fdt.c` grew from a 40-line /chosen reader into a real FDT reader
+  (iterator, path/compatible lookup, reg decoding with the parent's cell counts).
+- `shim/adt.c` + `shim/adt.h` (new): read/write for Apple's ADT (which is **not** an
+  FDT: counts, then property records, then children; little endian).
+- `shim/board.c` + `shim/board.h` (new): writes the discovered values into the ADT
+  the shim hands to xnu (`chosen/dram-base|dram-size`, `arm-io/gic/reg`,
+  `virtual-timer-intid`, `sweet-fbcon/reg|width|height|stride`, `sweet-ufs/reg`,
+  `cpus/cpuN/reg`).
+- `shim/loader.c`: picks the kernel's RAM from the memory layout the bootloader
+  described and **patches the payload header** (it lives in the bootloader's
+  ramdisk, i.e. in RAM) before placing the segments, then patches the ADT.
+  So one boot image works whatever the device's memory layout is.
+- `shim/console.c`: the framebuffer geometry is now a runtime value
+  (`con_setup()`), with the compiled-in values as defaults.
+- `shim/shim.c`: `hw_discover()` runs first; `sweetprobe` in `/chosen/bootargs`
+  prints the board report on the panel and stops.
+- `shim/build.sh`: `--picasso` (ramdisk @ 0x1200000, DTB @ 0x1728000 - the layout
+  proven in the Droidian docs) and `--dtb PATH`.
+- `tools/mkadt.py`: `--picasso` board profile (FB 0xa0000000/0x2300000, ECID
+  'PICASSO'+1, root compatible `xiaomi,picasso|qcom,sm7250`).
+- `shim/host_probe.c` (new): runs the discovery on the host against a DTB file, so
+  the numbers can be checked without a phone.
+
+**MEASURED on picasso (from its own DTB, not from any other board):**
+
+| Thing | picasso | sweet | note |
+| --- | --- | --- | --- |
+| GICD / GICR | 0x17a00000/0x10000, 0x17a60000/0x100000, stride 0x20000 | same | GICv3, no VLPI |
+| timer | PPI phys 2 / virt 3 -> vtimer INTID 19, 19.2 MHz | same | |
+| CPU | 8 nodes, `reg` = Aff1<<8 (0x0,0x100..0x700) | same | 4x A765 + 4x A555 |
+| UFS | 0x1d84000/0x3000 (+ ice 0x1d90000) | 0x1d84000 | same |
+| DWC3 | 0xa600000/0xcd00, max-speed super-speed | 0xa600000 | |
+| **splash fb** | **cont_splash_region 0xa0000000 + 0x2300000 (35 MiB)** | 0x9c000000 | panel 1080x2400 |
+| **UART console** | **qcom,qup_uart@888000 ("qcom,msm-geni-console")** | none | **picasso HAS a debug UART** |
+| SPMI | 0xc440000, PM8150@0, power-on@800 | 0xc440000, PM6150L | PMIC differs |
+| IMEM | **0x146ab000** (restart_reason +0x65c) | 0x146aa000 | **0x1000 apart, do not copy sweet's** |
+| PSHOLD | 0xc264000 | 0xc264000 | same |
+| touch | Novatek NT36672C over **SPI**, fw `novatek_nt36672c_g7a_fw01.bin` + `mp01.bin` | Goodix GT9896 over I2C | same IC as the surya port |
+| GPU | Adreno 620 (kgsl-smmu 0x3da0000) | Adreno 618 | |
+| /memory | `reg = <0 0 0 0>` in the static tree | filled by ABL | **must be read from the live tree** |
+
+Host test result: `host_probe rec-picasso.dtb` finds the splash region, the GIC, the
+timer, UFS, DWC3, the UART, 8 MPIDRs and 21 carve-outs, and patches the picasso ADT
+with **0 failed edits**.
+
+**NOT DONE / next:**
+1. **The phone has not been booted with the new shim yet.** No `fastboot boot`, no
+   flash, nothing written to the device.
+2. The RAM banks are still unknown (the static DTB has none). Next: read the live
+   tree from the running Droidian (`tools/picasso-live-fdt.sh`, needs adb) and check
+   what `hw_pick_ram()` would choose.
+3. The stride/bpp of the splash buffer are still the compiled-in 4320/4: the
+   display-pipe registers (SSPP SRC0_ADDR/SRC_YSTRIDE/SRC_FORMAT) have not been read
+   yet, so the stride is a guess.
+4. The `sweetprobe` report and the automatic RAM pick have to be verified on the
+   device before any xnu boot is attempted.
+5. The ADT for picasso still needs the D22AP `/product` node (the real iPhone X
+   device tree) - `research/ipsw-x/d22ap.adt` is missing in this checkout, so
+   `mkadt.py` warned "no /product node" and MobileGestalt will not know the device.
+6. The iOS root must go into its own partition (`ufsroot=` boot-arg already exists
+   in `bsd/dev/sweet_ufs.c`); the GPT change and the GPT fence/watchdog from the
+   topaz fork (0088) are still to do.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**

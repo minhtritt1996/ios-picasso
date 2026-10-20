@@ -153,6 +153,8 @@ The log contains crash reports with backtraces (`CRASH name ...`), IOKit traces 
 | `tools/mkpayload.py` | Packs kernel + ADT + boot-args into the shim payload |
 | `tools/mkiosroot.sh` | Builds the HFS+ iOS root from the IPSW images |
 | `tools/sweet-root-tweaks.py` | Bring-up changes to the root (Setup skip, activation, daemons) |
+| `tools/picasso-fdt.py` | Reads a device tree file and prints the board facts (RAM, carve-outs, GIC, timer, UFS, USB, UART) |
+| `tools/picasso-live-fdt.sh` | Pulls the live device tree from a running picasso (the bootloader fills /memory in at boot) |
 | `tools/sweet-log-pull.sh`, `sweet-log.py` | Read the persistent kernel log from recovery |
 | `tools/sweet-crash.py` | Symbolicate console crash reports |
 | `tools/xnu-cc.py` | Local single-file compile check from a CI log |
@@ -161,6 +163,41 @@ The log contains crash reports with backtraces (`CRASH name ...`), IOKit traces 
 | `NOTES.md` | Detailed engineering log: every boot, crash and decision, plus hardware facts |
 
 Not in git: partition backups, live device trees, recovery images, Apple firmware and root images, and downloaded or generated build trees. They contain device serials and calibration data, or Apple's copyrighted files.
+
+## A second board: picasso (Redmi K30 5G, SM7250)
+
+The same kernel series is being brought up on a **Redmi K30 5G** (`picasso`,
+SM7250 / Snapdragon 765G, Adreno 620). It is a different phone, so the board
+values differ, but the *kernel* is the same: the GIC, the UFS host, the SPMI
+bus, the timer PPIs and the CPU numbering are identical to sweet's.
+
+Two things make this board easier than it looks:
+
+- **The board is not compiled in.** The shim reads the device tree the
+  bootloader hands it (`shim/hw.c`), picks the kernel's RAM from the banks
+  the bootloader filled in, and writes the discovered values into the Apple
+  device tree it passes to xnu (`shim/board.c`). One boot image fits the
+  device's memory layout.
+- **picasso has a debug UART** (`qcom,qup_uart@888000`), so a USB-TTL adapter
+  gives a real serial console - sweet has none (its debug UART is wired as
+  SPI).
+
+```sh
+# the board facts, without a phone
+python3 tools/picasso-fdt.py path/to/dtb
+gcc -O1 -o /tmp/host_probe shim/host_probe.c shim/hw.c shim/fdt.c shim/adt.c shim/board.c -Ishim
+/tmp/host_probe path/to/dtb
+
+# the shim for this board (the DTB is required in the boot image)
+python3 tools/mkadt.py shim/out/picasso.adt --picasso --highmem
+shim/build.sh --picasso --dtb dtb/boot_unpacked/dtb
+```
+
+The iOS root for this board must **not** go into `userdata`: that is the
+Android `/data` the phone is running Droidian from. The UFS driver already
+takes the root partition's name from the `ufsroot=` boot-arg, so a separate
+partition works without a kernel change.
+
 
 ## Kernel patches
 

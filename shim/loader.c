@@ -8,6 +8,7 @@
  * and caches off, x0 = boot_args (physical).
  */
 #include <stdint.h>
+#include "board.h"
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
@@ -85,7 +86,7 @@ const char *loader_boot(uintptr_t dtb)
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
-	const struct payload *p = (const struct payload *)rd_start;
+	struct payload *p = (struct payload *)rd_start;
 	if (!magic_ok(p->magic))
 		return "no SWEETXNU payload";
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
@@ -95,6 +96,22 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
+
+	/*
+	 * Choose the kernel's RAM from the memory layout the bootloader
+	 * described in the device tree, and patch the payload header (which
+	 * lives in the bootloader's ramdisk, i.e. in RAM) before the segments
+	 * are placed. Without this the board's RAM layout would have to be
+	 * compiled into every boot image.
+	 */
+	uint64_t pbase = p->phys_base, msize = p->mem_size;
+	if (board_pick_ram(&pbase, &msize, rd_start, rd_end - rd_start)) {
+		p->phys_base = pbase;
+		p->mem_size = msize;
+		pa_of_va_base = p->phys_base - p->virt_base;
+		con_hex("RAM base", pbase);
+		con_hex("RAM size", msize);
+	}
 
 	/* The payload must not overlap where the kernel goes. */
 	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
@@ -112,6 +129,13 @@ const char *loader_boot(uintptr_t dtb)
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
 	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
+
+	/* Fill the board values we discovered into the ADT before xnu reads it. */
+	int bad = board_patch_adt(adt_pa, p->phys_base, p->mem_size);
+	if (bad) {
+		con_str("ADT", "edits did not apply");
+		con_dec("failed", (uint64_t)bad);
+	}
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
 	uintptr_t top = ba_pa + PAGE_16K;
 

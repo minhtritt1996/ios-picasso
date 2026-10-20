@@ -15,11 +15,28 @@ volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
 static uint32_t con_bg;
 static int row;
 
+/* The panel geometry can be discovered at boot; these are the defaults. */
+static uint32_t con_w = FB_W;
+static uint32_t con_h = FB_H;
+static uint32_t con_stride = FB_STRIDE;
+
+void con_setup(uintptr_t base, uint32_t w, uint32_t h, uint32_t stride)
+{
+	if (base)
+		con_fb = (volatile uint32_t *)base;
+	if (w)
+		con_w = w;
+	if (h)
+		con_h = h;
+	if (stride)
+		con_stride = stride;
+}
+
 void con_clear(uint32_t bg)
 {
-	for (int y = 0; y < FB_H; y++) {
-		volatile uint32_t *line = con_fb + y * (FB_STRIDE / 4);
-		for (int x = 0; x < FB_W; x++)
+	for (uint32_t y = 0; y < con_h; y++) {
+		volatile uint32_t *line = con_fb + y * (con_stride / 4);
+		for (uint32_t x = 0; x < con_w; x++)
 			line[x] = bg;
 	}
 	con_bg = bg;
@@ -32,13 +49,13 @@ static void put_char(int col, char ch, uint32_t fg)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];
 	int x0 = MARGIN + col * CH_W, y0 = MARGIN + row * CH_H;
-	if (x0 + CH_W > FB_W || y0 + CH_H > FB_H)
+	if ((uint32_t)(x0 + CH_W) > con_w || (uint32_t)(y0 + CH_H) > con_h)
 		return;
 	for (int gy = 0; gy < 16; gy++)
 		for (int gx = 0; gx < 8; gx++) {
 			uint32_t c = (g[gy] & (0x80 >> gx)) ? fg : con_bg;
 			for (int sy = 0; sy < SCALE; sy++) {
-				volatile uint32_t *p = con_fb + (y0 + gy * SCALE + sy) * (FB_STRIDE / 4)
+				volatile uint32_t *p = con_fb + (y0 + gy * SCALE + sy) * (con_stride / 4)
 						       + x0 + gx * SCALE;
 				for (int sx = 0; sx < SCALE; sx++)
 					p[sx] = c;
@@ -78,6 +95,21 @@ void con_hex(const char *label, uint64_t v)
 	char buf[17];
 	fmt_hex(buf, v, 16);
 	con_str(label, buf);
+}
+
+void con_dec(const char *label, uint64_t v)
+{
+	char buf[24];
+	int i = (int)sizeof(buf) - 1;
+
+	buf[i] = 0;
+	if (v == 0)
+		buf[--i] = '0';
+	while (v) {
+		buf[--i] = (char)('0' + (v % 10));
+		v /= 10;
+	}
+	con_str(label, buf + i);
 }
 
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)

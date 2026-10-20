@@ -7,9 +7,12 @@
  * Any unexpected exception paints a blue panic screen.
  */
 #include <stdint.h>
+#include "board.h"
 #include "console.h"
-#include "mmu.h"
+#include "fdt.h"
+#include "hw.h"
 #include "loader.h"
+#include "mmu.h"
 #include "ufs.h"
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
@@ -349,6 +352,66 @@ static void __attribute__((unused)) psci_line(const char *label, uint64_t fn)
 
 static uint64_t scratch[8192];	/* 64KB, lives in our (later cacheable) image */
 
+/* Does /chosen/bootargs ask for the board report (and nothing else)? */
+static int bootargs_have(const char *key)
+{
+	const char *b = hw.bootargs;
+
+	if (!b)
+		return 0;
+	for (const char *s = b; *s; s++) {
+		const char *k = key;
+		while (*k && *s == *k)
+			s++, k++;
+		if (!*k)
+			return 1;
+	}
+	return 0;
+}
+
+/* The board facts, on the screen: this is the only log channel a board
+ * without a UART has until the USB gadget works. */
+static void probe_report(void)
+{
+	con_str("BOARD", "discovered from the device tree");
+	con_skip();
+
+	con_str("FB", hw.fb_src ? hw.fb_src : "not found");
+	con_hex("  base", hw.fb_base);
+	con_dec("  size", hw.fb_size);
+	con_dec("  width", hw.fb_w);
+	con_dec("  height", hw.fb_h);
+	con_dec("  stride", hw.fb_stride);
+	con_skip();
+
+	con_dec("RAM banks", hw.nmem);
+	for (uint32_t i = 0; i < hw.nmem && i < 8; i++) {
+		con_hex("  bank", hw.mem[i].base);
+		con_dec("  size", hw.mem[i].size);
+	}
+	con_dec("carve-outs", hw.nrsv);
+	con_skip();
+
+	con_hex("GICD", hw.gicd);
+	con_hex("GICR", hw.gicr);
+	con_hex("  stride", hw.gicr_stride);
+	con_dec("vtimer", hw.vtimer_intid);
+	con_dec("ptimer", hw.ptimer_intid);
+	con_skip();
+
+	con_hex("UFS", hw.ufs);
+	con_hex("DWC3", hw.dwc3);
+	con_hex("UART", hw.uart);
+	con_dec("CPUS", hw.ncpus);
+	for (uint32_t i = 0; i < hw.ncpus && i < 8; i++)
+		con_hex("  mpidr", hw.mpidr[i]);
+	if (hw.panel[0]) {
+		con_str("PANEL", hw.panel);
+		con_dec("  w", hw.fb_w);
+		con_dec("  h", hw.fb_h);
+	}
+}
+
 static uint64_t ticks_fill(uint32_t c)
 {
 	uint64_t t = now();
@@ -374,13 +437,38 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
+	/*
+	 * Learn the board from the device tree the bootloader handed us: the
+	 * RAM banks, the carve-outs, the splash framebuffer, the GIC, the
+	 * timer PPIs, the UFS host, USB and the console UART. On picasso the
+	 * static tree still has `reg = <0 0 0 0>` for /memory, so this is the
+	 * only way to learn where the RAM is.
+	 */
+	stage = "discover";
+	const char *why = hw_discover(dtb);
+	if (why == 0 && hw.fb_base)
+		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, 0);
+
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	if (why)
+		con_str("BOARD", why);
+	else
+		con_str("SHIM", "sweet milestone 4: xnu loader");
 	con_skip();
-	const char *why = loader_boot(dtb);
-	con_str("LOADER", why);
+	probe_report();
+	con_skip();
+
+	/* "sweetprobe" in the bootargs: show the board report and stop. */
+	if (bootargs_have("sweetprobe")) {
+		con_str("SHIM", "probe mode: report above, not booting");
+		delay_ms(600000);
+		reset(20);
+	}
+
+	const char *lwhy = loader_boot(dtb);
+	con_str("LOADER", lwhy);
 	con_skip();
 
 	/* No payload: probe the internal UFS while the MMU is still off. */

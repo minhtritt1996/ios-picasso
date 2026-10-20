@@ -35,6 +35,28 @@ QEMU_VTIMER_INTID = 27
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
+# Per-board facts. The shim overwrites the RAM and the GIC/framebuffer values
+# with what the bootloader says in the device tree (tools: shim/hw.c), so the
+# values here are only the placeholders the kernel sees if that failed.
+#   sweet   = Redmi Note 10 Pro, SM7150, cont_splash_region at 0x9c000000
+#   picasso = Redmi K30 5G,    SM7250, cont_splash_region at 0xa0000000 (35 MiB)
+BOARDS = {
+    'sweet': {
+        'ecid': 0x5357454554000001,          # 'SWEET' + 1
+        'manifest': b'sweet boot manifest',
+        'compat': 'D22AP|iPhone10,3|xiaomi,sweet|qcom,sm7150|AppleARM',
+        'fb': (0x9c000000, 0x1700000),
+        'ufs': (0x01d84000, 0x3000),
+    },
+    'picasso': {
+        'ecid': 0x5049434153534f01,          # 'PICASSO' + 1
+        'manifest': b'picasso boot manifest',
+        'compat': 'D22AP|iPhone10,3|xiaomi,picasso|qcom,sm7250|AppleARM',
+        'fb': (0xa0000000, 0x2300000),       # cont_splash_region
+        'ufs': (0x01d84000, 0x3000),
+    },
+}
+
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
 # the root identity and /product of the real D22AP device tree. That tree is
@@ -68,10 +90,14 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
+def build(seed=None, qemu=False, highmem=False, board='sweet'):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
+    prof = BOARDS.get(board, BOARDS['sweet'])
+    fb_base, fb_size = prof['fb']
+    ufs_base, ufs_size = prof['ufs']
+    manifest = hashlib.sha384(prof['manifest']).digest()
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
@@ -87,7 +113,7 @@ def build(seed=None, qemu=False, highmem=False):
         # iBoot's SHA-384 of the boot manifest; /sbin/mount -P 1 exits unless
         # it exists (bind mounts /private/preboot/<hex>/usr/standalone/firmware,
         # tolerating a missing directory). Fixed stand-in value.
-        ('boot-manifest-hash', BOOT_MANIFEST_HASH),
+        ('boot-manifest-hash', manifest),
         # libimg4 (cryptexd) aborts "failed to get crypto algorithm" without
         # it; real A11+ device trees say sha2-384.
         ('crypto-hash-method', cstr('sha2-384')),
@@ -101,7 +127,7 @@ def build(seed=None, qemu=False, highmem=False):
         # files), so e.g. DataMigration never records LastSystemVersion and
         # migrates on every boot. Synthetic ECID (not the phone's); chip-id
         # of the A11 that the iPhone X userland expects.
-        ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
+        ('unique-chip-id', struct.pack('<Q', prof['ecid'])),
         ('chip-id', u32(0x8015)),
         # Security status as on a dev-fused, undemoted board (tuple 0,0,1,1):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
@@ -181,7 +207,7 @@ def build(seed=None, qemu=False, highmem=False):
 
     fbcon = node('sweet-fbcon', [
         ph(),
-        ('reg', u64(FB, FB_SIZE)),
+        ('reg', u64(fb_base, fb_size)),
         ('width', u32(FB_W)),
         ('height', u32(FB_H)),
         ('stride', u32(FB_STRIDE)),
@@ -191,7 +217,7 @@ def build(seed=None, qemu=False, highmem=False):
     ufs = node('sweet-ufs', [
         ph(),
         ('compatible', cstr('qcom,ufshc')),
-        ('reg', u64(UFS, UFS_SIZE)),
+        ('reg', u64(ufs_base, ufs_size)),
     ])
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
@@ -217,7 +243,7 @@ def build(seed=None, qemu=False, highmem=False):
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
+        ('compatible', cstr(prof['compat'])),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
@@ -228,9 +254,10 @@ def build(seed=None, qemu=False, highmem=False):
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    board = 'picasso' if '--picasso' in sys.argv else 'sweet'
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
         adt.dump(adt.parse(blob)[0])
-    print(f'{sys.argv[1]}: {len(blob)} bytes', file=sys.stderr)
+    print(f'{sys.argv[1]}: {len(blob)} bytes, board {board}', file=sys.stderr)
