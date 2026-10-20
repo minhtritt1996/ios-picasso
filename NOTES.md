@@ -2,6 +2,80 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-20 evening (picasso: iOS root on the phone, kernel flashed) <<<
+
+**STATE OF THE PHONE RIGHT NOW:** the `boot` partition holds **our shim + the XNU
+kernel payload** (image `shim/out/shim-boot.img`, 18,071,552 bytes, built
+2026-10-20 16:12, flashed with `fastboot flash boot`). The iOS root
+(`/home/tritm/ios-work/root/ios16-root-picasso.img`, 16 GiB, fsck clean) was
+written into the **new `darwin` partition** (block 25,701,120, 20 GiB) from the
+OrangeFox recovery, 1 GiB at a time, **every chunk verified with md5**
+(`/home/tritm/ios-work/write-root-recovery.sh`, log `/tmp/opencode/write-rec.log`).
+
+- GPT on the phone: `userdata 2883584..25701119` (87.04 GiB), `darwin
+  25701120..30944250` (20 GiB); primary and backup header + entry CRC verified
+  OK; Droidian rebooted normally afterwards (84 GB, 33 GB used, `lxc@android`
+  alive) - **the user's data is intact**.
+- The phone shows **no USB device** any more (`lsusb` sees no 18d1, no fastboot,
+  no adb) - the XNU kernel has no USB driver yet, so this is expected whether it
+  booted or hung. **A photo of the screen is the only way to tell.**
+- The shim prints its board report on the panel before handing over to XNU, so
+  the screen should show the last lines of the shim (or the kernel console).
+
+**TOUCH HARDWARE - read the *picasso* device tree, not the generic bengal one.**
+`kernel/arch/arm64/boot/dts/vendor/qcom/picasso-sm7250.dtsi` (the generic
+`bengal-idp.dtsi` is a different variant and lists Synaptics/FocalTech on I2C):
+
+| Thing | picasso |
+| --- | --- |
+| controller | Novatek **NT36672C**, `compatible = "novatek,NVT-ts-spi"` |
+| bus | **`qupv3_se7_spi`** (QCOM SPI v2, *not* GENI), `touch_spi@0` |
+| pins | CS gpio8, reset gpio4, irq gpio5 (TLMM) |
+| clock | 5 MHz (`spi-max-frequency`) |
+| firmware | `novatek_nt36672c_g7a_fw01.bin` + `mp01.bin` (3 glass variants) |
+| chip regs | `swrst-n8-addr 0x03F0FE`, `spi-rd-fast-addr 0x03F310` |
+| Linux driver | `kernel/drivers/input/touchscreen/nt36672c/nt36xxx*.c` (SPI based) |
+
+**UniXNU research (2026-10-20 evening).** `UniXNU/UniXNU` (213 stars, pushed
+2026-10-20 11:01) is *"an independent project to run iOS and macOS on non-Apple
+ARM64 hardware through UEFI"*. Compared with ios-sweet:
+
+| | ios-sweet | UniXNU |
+| --- | --- | --- |
+| boot chain | ABL -> bare-metal shim -> payload | ABL -> BootShim -> **UEFI (Mu-Silicium)** -> UniXNU menu -> payload -> DarwinBoot -> XNU |
+| XNU | 8796 (iOS 16 userland) | 10063.141.1 (macOS 14 / iOS 17) |
+| build host | Linux (make), CMake port in progress | **macOS + Xcode only** (`xcodebuild`, iphoneos SDK) |
+| boards | dozens, community wide | **one** (sheng = SM8550, work in progress) |
+
+What is worth taking from it for picasso:
+
+1. `UniXNU/NativeNovatekTouch` - the *architecture* of a Novatek driver in XNU:
+   protocol layer (`NvtProtocol.c`, chip table with the register addresses),
+   pure touch core (`NvtTouchCore.c`, matrix -> contacts), HID publishing
+   (`UniXNU/NativeHidInput`), and an abstract `struct nvt_bus` so only the bus
+   glue is board specific. Their chip is NT36532E (sheng, GENI SPI); ours is
+   NT36672C on QUV3 SPI, so the *table* must come from the Linux driver, but
+   the structure is exactly what sweet's `bsd/dev/sweet_touch.c` lacks.
+2. `UniXNU/NativeUfs` - a real UFS driver (host controller + SMMU + queues +
+   root read path) with `uint64_t` LBAs and a 4 KiB window reader, i.e. it can
+   address partitions past 100 GiB (our `darwin` starts at ~105 GiB). Sweet's
+   `sweet_ufs.c` is much thinner (one LUN, polled SCSI, no SMMU).
+3. `UniXNU/AdrenoPM4` + `UniXNU/AirNir` - PM4 packet encoding and an AIR->NIR
+   compiler; our Adreno 620 is the same a6xx family as their Adreno 740.
+4. `DarwinBoot` - validates kernel + ADT + trust cache, exits boot services and
+   hands the device tree over properly (this is the clean version of what our
+   shim does by hand). Needs a UEFI port for SM7250: Mu-Silicium has many
+   Xiaomi/Qualcomm boards but **no SM7250** (there is a SM7150/davinci fork as a
+   precedent).
+5. `docs/xnu/four-k-page-tables.md` - only for 4 KiB granules (BCM2837); picasso
+   stays on 16 KiB like sweet.
+
+What it does **not** give picasso: a Linux build (macOS/Xcode required), a
+picasso board repository, a UEFI port for SM7250, and an iOS 16 userland on
+XNU 8796 (their root is macOS/iOS 17 on XNU 10063 with their own
+trustcache/cryptex/VerifiedRoot flow). **Decision: keep the sweet route for
+picasso, harvest the driver code and the architecture ideas.**
+
 ### >>> UPDATE 2026-10-20 (picasso / SM7250 port groundwork; read first) <<<
 
 **NEW DEVICE: the user's Redmi K30 5G (`picasso`, SM7250 / Snapdragon 765G), currently
