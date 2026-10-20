@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the shim and wrap it in a boot.img v2 that mirrors the stock PixelOS header.
 #
-#   shim/build.sh [PAYLOAD] [--picasso] [--dtb PATH]
+#   shim/build.sh [PAYLOAD] [--picasso] [--dtb PATH] [--extra "args"]
 #
 #   PAYLOAD      xnu payload (tools/mkpayload.py) to put in the ramdisk; without
 #                it the shim runs its own hardware probe.
@@ -10,6 +10,14 @@
 #                decompressed kernel is ~48 MB and would overwrite the ramdisk
 #                at 16 MB). Proven on the device, see docs/02-boot-image-layout.md.
 #   --dtb PATH   device tree to embed (default dtb/boot_unpacked/dtb).
+#   --extra      extra kernel command line arguments (appended).
+#
+# Two things this bootloader insists on, both learned the hard way:
+#   - the whole image must be under 256 KB ("fastboot boot" of anything larger
+#     hangs the transfer), so the device tree has to be slimmed
+#     (tools/picasso-slim-dtb.py);
+#   - the image must not claim an OS version the anti-rollback index does not
+#     allow, so on picasso the version fields are left empty.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -21,17 +29,21 @@ payload=""
 dtb="../dtb/boot_unpacked/dtb"
 ramdisk_offset=0x1000000
 dtb_offset=0x1f00000
-# The bootloader reads a few things from the command line (which USB
-# controller to set up, which DTB overlay to apply), so on picasso we keep
-# the stock one and only append our own flags.
 cmdline="console=null"
 extra=""
+osver=(--os_version 17.0.0 --os_patch_level 2035-06)
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--picasso)
-		ramdisk_offset=0x1200000
-		dtb_offset=0x1728000
+		# The file offset of a part is its RAM address, so with a small
+		# image everything has to sit low: the kernel at 8 KB, the ramdisk
+		# and the device tree right behind it.
+		ramdisk_offset=0x10000
+		dtb_offset=0x20000
+		osver=()
+		# The bootloader reads a few things from the command line (which
+		# USB controller to set up), so keep the stock one.
 		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"
 		;;
 	--dtb)
@@ -54,6 +66,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--extra=*)
 		extra="${1#--extra=}"
+		;;
+	--os-version)
+		osver=(--os_version "$2")
+		shift
 		;;
 	*)
 		payload="$1"
@@ -80,8 +96,9 @@ $CC $CFLAGS $LDFLAGS \
 	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o \
 	out/hw.o out/adt.o out/board.o -o out/shim.elf
 $OBJCOPY -O binary out/shim.elf out/Image
-# ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
+# The file holds only the code and the data; the .bss and the stacks are
+# zeroed by the shim itself (this bootloader only takes a 256 KB image).
+size=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_load_end"{print strtonum("0x"$1)}')
 truncate -s "$size" out/Image
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio (ABL dislikes a zero-size ramdisk on some builds) -> diagnostics.
@@ -100,8 +117,15 @@ fi
 mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
 	"${dtb_arg[@]}" --base 0 --kernel_offset 0x8000 --ramdisk_offset $ramdisk_offset \
 	--tags_offset 0x100 --dtb_offset $dtb_offset --pagesize 4096 \
-	--os_version 17.0.0 --os_patch_level 2035-06 \
+	"${osver[@]}" \
 	--cmdline "$cmdline" -o out/shim-boot.img
+# The bootloader refuses to boot an image larger than 256 KB.
+img=$(stat -c %s out/shim-boot.img)
+if [ "$img" -gt 262144 ]; then
+	echo "error: the boot image is $img bytes; this bootloader only takes < 256 KB" >&2
+	echo "       slim the device tree (tools/picasso-slim-dtb.py)" >&2
+	exit 1
+fi
 # Host render of the console layout.
 gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img

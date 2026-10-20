@@ -5,6 +5,13 @@ SECTIONS
 	.text : { *(.text.head) *(.text*) }
 	.rodata : { *(.rodata*) }
 	.data : { *(.data*) }
+	. = ALIGN(4096);
+	/*
+	 * The end of what the file holds. The .bss and the stacks are not in
+	 * the file: this bootloader only takes a boot image of 256 KB, and the
+	 * shim zeroes that memory itself when it starts.
+	 */
+	_load_end = .;
 	. = ALIGN(16);
 	_bss_start = .;
 	.bss : { *(.bss*) *(COMMON) }

@@ -50,7 +50,7 @@ user's daily driver: **the iOS root must go into its own partition, never into
 | CPU | 8 nodes, `reg` = Aff1<<8 (0x0,0x100..0x700) | same | 4x A765 + 4x A555 |
 | UFS | 0x1d84000/0x3000 (+ ice 0x1d90000) | 0x1d84000 | same |
 | DWC3 | 0xa600000/0xcd00, max-speed super-speed | 0xa600000 | |
-| **splash fb** | **cont_splash_region 0xa0000000 + 0x2300000 (35 MiB)** | 0x9c000000 | panel 1080x2400 |
+| **splash fb** | **cont_splash_region 0xa0000000 + 0x2300000 (35 MiB)** | 0x9c000000 | panel 1080x2400, pipe measured at runtime |
 | **UART console** | **qcom,qup_uart@888000 ("qcom,msm-geni-console")** | none | **picasso HAS a debug UART** |
 | SPMI | 0xc440000, PM8150@0, power-on@800 | 0xc440000, PM6150L | PMIC differs |
 | IMEM | **0x146ab000** (restart_reason +0x65c) | 0x146aa000 | **0x1000 apart, do not copy sweet's** |
@@ -63,23 +63,43 @@ Host test result: `host_probe rec-picasso.dtb` finds the splash region, the GIC,
 timer, UFS, DWC3, the UART, 8 MPIDRs and 21 carve-outs, and patches the picasso ADT
 with **0 failed edits**.
 
+**THREE THINGS THIS BOOTLOADER INSISTS ON (all found by experiment, 2026-10-20):**
+
+1. **The file offset of a part is its RAM address.** The device tree has to sit
+   at a low address (`dtb_offset 0x20000`) and the file has to be at least as
+   large as the highest address in it. An image with `dtb_addr 0x1728000` and a
+   1.5 MB file makes the transfer hang: the bootloader reads past the end.
+   (This is why the Droidian boot image is 23 MB: its device tree is at
+   0x1728000.)
+2. **The .bss must not be in the file.** The shim's own image is now only the
+   code and the data (28 KB); the shim zeroes its .bss and its stacks itself
+   when it starts (`_load_end` in shim.ld, the zero loop in start.S).
+3. **`fastboot boot` verifies AVB; `fastboot flash` does not.** The phone's own
+   Droidian image has no AVB footer, boots from its partition every day, and is
+   still refused by `fastboot boot` with "Failed to load/authenticate boot image:
+   Load Error" - the same error our image gets. So on picasso a *temporary*
+   boot is not possible; the shim has to be **flashed** to `boot`
+   (and the Droidian image flashed back afterwards).
+
 **NOT DONE / next:**
-1. **The phone has not been booted with the new shim yet.** No `fastboot boot`, no
-   flash, nothing written to the device.
-2. The RAM banks are still unknown (the static DTB has none). Next: read the live
-   tree from the running Droidian (`tools/picasso-live-fdt.sh`, needs adb) and check
-   what `hw_pick_ram()` would choose.
-3. The stride/bpp of the splash buffer are still the compiled-in 4320/4: the
-   display-pipe registers (SSPP SRC0_ADDR/SRC_YSTRIDE/SRC_FORMAT) have not been read
-   yet, so the stride is a guess.
-4. The `sweetprobe` report and the automatic RAM pick have to be verified on the
-   device before any xnu boot is attempted.
-5. The ADT for picasso still needs the D22AP `/product` node (the real iPhone X
+1. **The shim has not run on the phone yet.** `fastboot boot` is not an option
+   (see above), so the next step is `fastboot flash boot shim-boot.img` and then
+   `fastboot reboot` - and `fastboot flash boot halium-boot-picasso.img` to put
+   Droidian back. **This needs the user's OK: it writes the boot partition.**
+2. The RAM banks are still unknown (the static DTB has none). The probe will
+   print them: the bootloader fills /memory in the tree it hands the shim.
+3. The stride/bpp of the splash buffer: the probe reads them from the display
+   pipe (SSPP SRC0_ADDR/SRC_YSTRIDE0/SRC_FORMAT), so the answer comes with
+   the probe run.
+4. The ADT for picasso still needs the D22AP `/product` node (the real iPhone X
    device tree) - `research/ipsw-x/d22ap.adt` is missing in this checkout, so
    `mkadt.py` warned "no /product node" and MobileGestalt will not know the device.
-6. The iOS root must go into its own partition (`ufsroot=` boot-arg already exists
-   in `bsd/dev/sweet_ufs.c`); the GPT change and the GPT fence/watchdog from the
-   topaz fork (0088) are still to do.
+5. The iOS root must go into its own partition (`ufsroot=` boot-arg already
+   exists in `bsd/dev/sweet_ufs.c`); the GPT change and the GPT fence/watchdog
+   from the topaz fork (0088) are still to do.
+6. The kernel itself is still the SWEET one: the GIC, UFS and SPMI code is the
+   same, but the display, touch and keys drivers are not written for picasso.
+
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 

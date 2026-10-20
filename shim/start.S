@@ -8,7 +8,7 @@ _head:
 	b	_start			/* code0 */
 	.long	0			/* code1 */
 	.quad	0			/* text_offset */
-	.quad	_end			/* image_size (linked at 0) */
+	.quad	_load_end		/* image_size: what the file holds */
 	.quad	0xa			/* flags: LE, 4K pages, place anywhere */
 	.quad	0			/* res2 */
 	.quad	0			/* res3 */
@@ -19,6 +19,17 @@ _head:
 	.text
 	.globl _start
 _start:
+	/*
+	 * The .bss and the stacks are not in the file (the bootloader only
+	 * takes a small boot image), so zero them here.
+	 */
+	adr	x0, _bss_start
+	adr	x1, _end
+1:	cmp	x0, x1
+	b.hs	2f
+	str	xzr, [x0], #8
+	b	1b
+2:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
 	msr	spsel, #1
