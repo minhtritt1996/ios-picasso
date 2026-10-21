@@ -479,40 +479,12 @@ static uintptr_t find_dtb(uintptr_t x0)
 #ifdef NO_DTB
 	/*
 	 * This board: reading an address the bootloader did not map answers
-	 * with a secure fault that kills the core (the probe of 0x10000000
-	 * froze the phone on the screen). Everything the shim needs is
+	 * with a secure fault that kills the core. Everything the shim needs is
 	 * compiled in instead: the board values come from the build
 	 * (shim/build.sh --picasso) and the payload address comes from the
 	 * boot image header (shim/loader.c).
-	 *
-	 * One exception: what the bootloader passes in x0 is the boot image
-	 * itself, and the device tree is inside it - so the tree can be read
-	 * there, with the board discovery working as it does on sweet.
 	 */
 	(void)x0;
-#ifdef DTB_OFF
-	if (DTB_OFF) {
-		/*
-		 * The device tree rides in the kernel part, behind the payload:
-		 * the bootloader loads that part for sure. If the whole boot
-		 * image was found in memory, the tree is in that copy of it.
-		 */
-		if (hunt_result.image) {
-			uintptr_t t = hunt_result.image + 0x1000 + DTB_OFF;
-			if (fdt_magic_ok(t)) {
-				con_str("TREE", "in the boot image");
-				con_skip();
-				return t;
-			}
-		}
-		uintptr_t t = KERNEL_ADDR + DTB_OFF;
-		if (fdt_magic_ok(t)) {
-			con_str("TREE", "in the kernel part");
-			con_skip();
-			return t;
-		}
-	}
-#endif
 	con_str("DTB", "not read on this board");
 	con_skip();
 	return 0;
