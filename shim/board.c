@@ -74,7 +74,14 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 		uint64_t gic[4] = { hw.gicd, hw.gicd_size, hw.gicr, hw.gicr_size };
 		bad += !adt_set_u64s(adt, "arm-io/gic", "reg", gic, 4);
 	}
-	bad += !adt_set_u32(adt, "arm-io/gic", "virtual-timer-intid", hw.vtimer_intid);
+	/*
+	 * Only when it was found: without a device tree this is zero, and
+	 * writing it would take the interrupt the kernel needs away - the
+	 * platform expert panics on a virtual timer that is not a private
+	 * peripheral interrupt.
+	 */
+	if (hw.vtimer_intid)
+		bad += !adt_set_u32(adt, "arm-io/gic", "virtual-timer-intid", hw.vtimer_intid);
 
 	if (hw.fb_base) {
 		uint64_t fb[2] = { hw.fb_base, hw.fb_size ? hw.fb_size : 0x1700000 };
