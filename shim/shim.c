@@ -50,13 +50,9 @@
 
 #define NR_CPUS			8
 
-/* Where the bootloader puts the kernel part of the boot image, and where the
- * payload and the device tree sit inside it. */
+/* Where the bootloader puts the kernel part of the boot image. */
 #ifndef KERNEL_ADDR
 #define KERNEL_ADDR 0x8000
-#endif
-#ifndef PAYLOAD_OFF
-#define PAYLOAD_OFF 0
 #endif
 
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
@@ -439,10 +435,6 @@ static void probe_report(void)
 		con_dec("  size", hw.mem[i].size);
 	}
 	con_dec("carve-outs", hw.nrsv);
-	for (uint32_t i = 0; i < hw.nrsv && i < 40; i++) {
-		con_hex2("  rsv", "base=", (uint32_t)hw.rsv[i].base, "+MiB",
-		    (uint32_t)(hw.rsv[i].size >> 20));
-	}
 	con_skip();
 
 	con_hex("GICD", hw.gicd);
@@ -498,17 +490,9 @@ static uintptr_t find_dtb(uintptr_t x0)
 	if (DTB_OFF) {
 		/*
 		 * The device tree rides in the kernel part, behind the payload:
-		 * the bootloader loads that part for sure. If the hunt found the
-		 * payload, the tree is at a fixed distance behind it.
+		 * the bootloader loads that part for sure. If the whole boot
+		 * image was found in memory, the tree is in that copy of it.
 		 */
-		if (hunt_result.payload) {
-			uintptr_t t = hunt_result.payload + (DTB_OFF - PAYLOAD_OFF);
-			if (fdt_magic_ok(t)) {
-				con_str("TREE", "behind the payload");
-				con_skip();
-				return t;
-			}
-		}
 		if (hunt_result.image) {
 			uintptr_t t = hunt_result.image + 0x1000 + DTB_OFF;
 			if (fdt_magic_ok(t)) {
@@ -720,19 +704,6 @@ void shim_main(uint64_t dtb)
 		reset(20);
 	}
 
-#ifdef SHIM_HOLD
-	if (SHIM_HOLD) {
-		/*
-		 * Diagnostic build: show the board facts as well, then let the
-		 * loader print its report and hold before the jump. Everything
-		 * stays on the screen, so it can be photographed at leisure.
-		 */
-		hw_read_display_pipe(0);
-		con_clear(RED);
-		probe_report();
-		con_skip();
-	}
-#endif
 	const char *lwhy = loader_boot(dtb, (uintptr_t)boot_regs[0]);
 	con_str("LOADER", lwhy);
 	con_skip();

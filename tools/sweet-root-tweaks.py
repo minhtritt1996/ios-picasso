@@ -133,6 +133,16 @@ def main():
     merge_pref(root, 'com.apple.migration', {
         'LastSystemVersion': BUILD,
         'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})
+    # ByHost variants for picasso (47A4033D-9F31-5A46-90F4-BE29CA615E78)
+    byhost_dir = os.path.join(root, 'private/var/mobile/Library/Preferences/ByHost')
+    os.makedirs(byhost_dir, exist_ok=True)
+    os.chown(byhost_dir, MOBILE, MOBILE)
+    os.chmod(byhost_dir, 0o755)
+    for u in ('47A4033D-9F31-5A46-90F4-BE29CA615E78', '47a4033d-9f31-5a46-90f4-be29ca615e78'):
+        save(os.path.join(byhost_dir, f'com.apple.migration.{u}.plist'), {
+            'LastSystemVersion': BUILD,
+            'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}},
+            MOBILE, MOBILE, 0o600)
     merge_pref(root, 'com.apple.springboard', {
         'BKNoWatchdogs': True,
         'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},

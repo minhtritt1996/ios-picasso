@@ -1224,18 +1224,36 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - At commit `9df2225`, 61 properties were extracted into `/product`, including `graphics-featureset-class = APPLE4` and `oled-display = 1`. This instructs ProgressUI / backboardd to require Apple Metal hardware GPU acceleration, causing an immediate crash/abort on SM7250 (Adreno 620). Furthermore, `SweetPlatformExpert::processTopLevel` did not exclude `product`, creating an invalid nub in the kernel.
    - Consequently, every image built after 09:49 (images 0086 through 0097) went to a black screen after the red shim screen.
 
-**2026-10-21, 18:10 - Restored true working configuration (image 0098-clean).**
+**2026-10-21, 19:45 - Apple logo restored, root cause of hang found, and rootfs patched.**
 
-1. **Built `picasso-clean.adt` (9,920 bytes):**
-   - Clean device tree without `/product` node, matching the exact tree from the successful 07:52 boot.
-2. **Built `payload-picasso-clean.bin` (16,610,848 bytes):**
-   - Kernel 0083 (`xnu/out-0083/kernel.development.sweet`), `picasso-clean.adt`, and the exact verified command line:
-     `debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweettouch=0 sweetusb=2`
-3. **Built and flashed `shim-boot-0098-clean.img` (36,343,808 bytes, md5 `7b099c6c079cc84892efb9d73e503d53`):**
-   - Transferred to `root@100.121.254.115`, pushed via recovery ADB to phone `f9f3d7b0`, written to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`).
-   - Readback MD5 on `/dev/block/sde55` verified 100% match.
-4. **Verified rootfs state:**
-   - Root partition `sda35` is clean (16 MiB MD5 matches local clean root).
-   - The 3 migration preference plists (fixing the data migration loop from commit `53f5287`) are present in `/private/var/mobile/Library/Preferences/`.
+1. **Reverted shim to commit `35ea828`:**
+   - In commit `d965b1a`, a `break` in `hunt_memory` caused `hunt_result.image` to remain 0, breaking real DTB discovery and causing the kernel to fail before mounting UFS.
+   - Reverted `shim/loader.c`, `shim/shim.c`, `shim/board.c`, `shim/build.sh`, `shim/hw.h` back to `35ea828`.
+   - Built payload `payload-picasso-0099.bin` with kernel 0083 and clean ADT (9,920 bytes, no `/product`).
+   - Flashed `shim-boot-0099.img` (md5 `59020eee85ad72b6dbcccd5b4a7cfb05`) to `boot`.
+2. **Boot verification - Apple logo restored:**
+   - Phone successfully booted: **Apple logo appeared on panel**!
+   - SWEETLOG moved to flush #19 (155,940 bytes):
+     - UFS mounted `iOSRoot` read-write.
+     - AppleCLCD initialized 1080x2400 presented as 1125x2436.
+     - `launchd` started, early boot complete.
+     - `backboardd` started and swapped 5 frames (double buffered surfaces 3 & 4).
+     - `SpringBoard` (PID 26) started and ran without crashing.
+3. **Root cause of hang at Apple logo diagnosed:**
+   - In 190s of boot (19 flushes * 10s), `CommCenter` crashed in an infinite loop (>50 times, up to PID 256) because non-Apple hardware lacks Apple baseband PCIe/UART modem.
+   - SpringBoard and Setup.app block synchronously on CoreTelephony XPC waiting for CommCenter.
+   - Furthermore, `com.apple.purplebuddy.plist` was missing (`SetupDone = True` not set).
+4. **Patched iOS root (`ios16-root-picasso.img`):**
+   - Applied `tools/sweet-root-tweaks.py`:
+     - Removed `com.apple.CommCenter` from `launchd.plist`.
+     - Set `com.apple.purplebuddy.plist` with `SetupDone = True`, `SetupFinishedAllSteps = True`, `SetupVersion = 11`.
+     - Set `BKNoWatchdogs = True` for SpringBoard.
+     - Added ByHost UUID `47A4033D-9F31-5A46-90F4-BE29CA615E78` migration plists.
+     - Filesystem verified clean via `fsck.hfsplus`.
+5. **Partial sync to phone `darwin` partition (`sda35`):**
+   - Smart sync script `tools/write-root-smart.py` synced modified chunks (chunks 1, 2, 4, 14, 16 verified written; chunks 3, 5-13, 15, 17-23 matched and skipped).
+   - Paused gracefully at user request to charge worker phone (K60). Phone filesystem flushed with `sync`.
+   - Remaining work: resume `write-root-smart.py` to finish chunks 24-32, then reboot to Home Screen.
+
 
 
