@@ -1014,3 +1014,21 @@ into memory that is not mapped and killed the core), and the device tree is
 taken from behind the payload, so the board discovery works again.
 
 Image: `shim/out/shim-boot-0088.img` (md5 d675c81faae33ca11125e4c31cf503da).
+
+**The journal is the suspect (2026-10-21, later).** The first boot with the
+new root image worked: the log shows the volume had no journal yet, the
+kernel created one (`hfs: Initializing the journal (joffset 0x82000 sz
+0x800000)`), and SpringBoard came up. Every boot after that hangs before the
+mount: no Apple logo, no console output, and the persistent log is not
+written at all - the kernel never gets as far as opening the partition.
+
+Turning the persistent log off (`sweetlog=0`, the switch sweet_ufs documents
+for it) changed nothing, so the log thread is not what blocks the UFS.
+
+What changed between the working boot and the hanging ones is the state of
+the volume: it now carries a journal, and it was pulled out of a running
+iOS, so the journal was never closed. The next mount has to replay it.
+
+The image is written again - a clean volume with no journal - and the
+journal header of the phone's copy is read to see what the kernel would
+replay.
