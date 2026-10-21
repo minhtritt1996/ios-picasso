@@ -1,6 +1,14 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -276,6 +276,102 @@
+@@ -254,6 +254,7 @@
+ 		_cnputc('\r', poll);
+ 	}
+ 
++	sweet_panel_putc(c);
+ 	cons_ops[idx].putc(c, poll);
+ }
+ 
+@@ -276,6 +277,100 @@
  int sweet_console_muted;
  #endif
  
@@ -53,7 +61,7 @@
 +}
 +
 +static void
-+sweet_panel_puts(char *c, int size)
++sweet_panel_putc(char ch)
 +{
 +	if (!sweet_panel_looked) {
 +		char arg[32];
@@ -64,50 +72,40 @@
 +	if (!sweet_panel_base)
 +		return;
 +	if (!sweet_panel_map) {
++		/* The vm is not up for the first messages; try again later. */
 +		sweet_panel_map = ml_io_map((vm_offset_t)sweet_panel_base,
 +		    SWEET_PANEL_WIDTH * SWEET_PANEL_HEIGHT * 4);
 +		if (!sweet_panel_map)
 +			return;
 +	}
 +
-+	for (int i = 0; i < size; i++) {
-+		char ch = c[i];
-+		if (ch == '\r')
-+			continue;
-+		if (ch == '\n') {
-+			sweet_panel_x = 0;
-+			sweet_panel_y += 16;
-+			continue;
-+		}
-+		if (sweet_panel_x + 8 > SWEET_PANEL_WIDTH) {
-+			sweet_panel_x = 0;
-+			sweet_panel_y += 16;
-+		}
-+		if (sweet_panel_y + 16 > SWEET_PANEL_HEIGHT)
-+			return;
-+		uint32_t *row = (uint32_t *)(sweet_panel_map +
-+		    (uint64_t)sweet_panel_y * SWEET_PANEL_WIDTH * 4);
-+		const unsigned char *glyph = iso_font + ((uint8_t)ch) * 16;
-+		for (int gy = 0; gy < 16; gy++) {
-+			uint32_t bits = glyph[gy];
-+			for (int gx = 0; gx < 8; gx++) {
-+				if (bits & (0x80u >> gx))
-+					row[sweet_panel_x + gx] = 0xffffffffu;
-+			}
-+		}
-+		sweet_panel_x += 8;
++	if (ch == '\r')
++		return;
++	if (ch == '\n') {
++		sweet_panel_x = 0;
++		sweet_panel_y += 16;
++		return;
 +	}
++	if (sweet_panel_x + 8 > SWEET_PANEL_WIDTH) {
++		sweet_panel_x = 0;
++		sweet_panel_y += 16;
++	}
++	if (sweet_panel_y + 16 > SWEET_PANEL_HEIGHT)
++		return;
++	uint32_t *row = (uint32_t *)(sweet_panel_map +
++	    (uint64_t)sweet_panel_y * SWEET_PANEL_WIDTH * 4);
++	const unsigned char *glyph = iso_font + ((uint8_t)ch) * 16;
++	for (int gy = 0; gy < 16; gy++) {
++		uint32_t bits = glyph[gy];
++		for (int gx = 0; gx < 8; gx++) {
++			if (bits & (0x80u >> gx))
++				row[sweet_panel_x + gx] = 0xffffffffu;
++		}
++	}
++	sweet_panel_x += 8;
 +}
 +#endif
 +
  static inline void
  _cnputs(char *c, int size, bool poll)
  {
-@@ -283,6 +379,7 @@
- 
- #if defined(ARM64_BOARD_CONFIG_SWEET)
- 	sweet_log_append(c, size);
-+	sweet_panel_puts(c, size);
- 	if (sweet_console_muted && !panic_active()) {
- 		return;
- 	}
