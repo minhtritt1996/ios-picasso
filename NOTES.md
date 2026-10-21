@@ -997,3 +997,20 @@ The platform UUID of this board follows from the same tree: the kernel's
 
 Image with the identity: `shim/out/shim-boot-0086.img`
 (md5 eb23ce6e09cd04733742cd1f5071737e).
+
+**The home screen appears (2026-10-21, later).** With the migration
+preferences in the root image the boot no longer stops at the Apple logo:
+the phone now shows the home screen's background, so SpringBoard is up. What
+is missing is the icons.
+
+The tree of the iPhone X asks for `artwork-display-gamut = P3`, and the
+framebuffer here is eight bits per channel: the interface is drawn into ten
+bit surfaces that cannot be shown, and the icons do not appear. The tree now
+says `sRGB` - the same change the topaz port made for the same reason (their
+note: "P3 made WebKit draw into 10-bit surfaces we lack").
+
+Also in this image: the shim stops its hunt at the payload (the walk went on
+into memory that is not mapped and killed the core), and the device tree is
+taken from behind the payload, so the board discovery works again.
+
+Image: `shim/out/shim-boot-0088.img` (md5 d675c81faae33ca11125e4c31cf503da).

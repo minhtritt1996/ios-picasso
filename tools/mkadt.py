@@ -82,7 +82,13 @@ def d22ap_product(path=D22AP_ADT):
     root, _ = adt.parse(open(path, 'rb').read())
     for c in root.children:
         if dict((k, v) for k, f, v in c.props).get('name') == b'product\0':
-            return [(k, v) for k, f, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
+            props = [(k, v) for k, f, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
+            # The tree asks for P3 artwork, but the framebuffer here is 8
+            # bits per channel: the system would draw the interface into
+            # 10 bit surfaces it cannot show, and the icons would not
+            # appear. sRGB is what the topaz port uses for the same reason.
+            props = [(k, b'sRGB' if k == 'artwork-display-gamut' else v) for k, v in props]
+            return props
     raise SystemExit(f'{path}: no /product node')
 
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
