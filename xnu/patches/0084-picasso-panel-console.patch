@@ -1,8 +1,8 @@
---- a/osfmk/arm/arm_init.c	2026-10-21 16:14:55.554965997 +0700
-+++ b/osfmk/arm/arm_init.c	2026-10-21 16:13:25.666434926 +0700
-@@ -515,6 +515,33 @@
- 
+--- a/osfmk/arm/arm_init.c	2026-10-21 16:29:23.376397401 +0700
++++ b/osfmk/arm/arm_init.c	2026-10-21 16:32:00.979102767 +0700
+@@ -525,6 +525,33 @@
  	arm_vm_init(xmaxmem, args);
+ 	sweet_early_mark(15, "arm_vm_init returned");
  
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	/*
@@ -34,8 +34,8 @@
  	if (debug_boot_arg) {
  		patch_low_glo();
  	}
---- a/osfmk/console/serial_console.c	2026-10-21 13:40:52.452449659 +0700
-+++ b/osfmk/console/serial_console.c	2026-10-21 16:14:55.550966059 +0700
+--- a/osfmk/console/serial_console.c	2026-10-21 16:30:02.569069076 +0700
++++ b/osfmk/console/serial_console.c	2026-10-21 16:32:00.979102767 +0700
 @@ -242,6 +242,81 @@
   * @param poll Whether or not this call should poll instead of going to sleep
   *             waiting for an interrupt when the hardware device isn't ready
