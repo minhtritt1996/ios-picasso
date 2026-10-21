@@ -1165,3 +1165,44 @@ If the kernel panics before the console exists, the panic text is lost
 (it only reaches the console ring in RAM). The next kernel patch then has
 to mirror the console on the panel without mapping memory from the
 console path (patch 0084 calls ml_io_map there, which is not safe).
+
+**2026-10-21, 16:50 - the console, the early markers, and a patch that was skipped.**
+
+Two findings from reading the xnu sources:
+
+1. **The kernel console never reaches the panel.** In osfmk/arm/arm_init.c
+   the boot argument `serial=3` makes the kernel "switch into serial mode
+   from video console", so the messages go to the serial device instead of
+   the panel. Image 0096 is the same kernel without that argument, and the
+   screen is still black - so the console is not the only problem.
+2. **The sweet kernel already has an early boot marker system** -
+   `sweet_early_mark(N, "text")` (patch 0010/0012), which draws into the
+   framebuffer with no allocation and no locks, so it works before there is
+   a thread or a vm. It is perfect for this bug - but it draws at the
+   **sweet** board's splash address 0x9c000000 (osfmk/arm64/sweet_early.c
+   and the bootstrap mapping in osfmk/arm64/start.s), while picasso's
+   panel is at 0xa0000000. That is why the early markers are invisible on
+   this phone.
+
+**Patch 0084 was silently skipped by the first CI run** ("Skipping patch
+... error: patch failed: osfmk/arm/arm_init.c:515") because patches 0010,
+0012, 0047 and 0067 already change the two files it touches. The hunks have
+to match the state those patches leave behind, not the pristine xnu tree.
+The patch was regenerated against that state and verified with `git apply
+--check` on a tree with 0010/0012/0047/0067 applied (CI run 39577849523,
+no "Skipping patch" this time).
+
+The new 0084 maps the panel once, right after arm_vm_init() in arm_init.c,
+and the console path only writes into that mapping - mapping memory from
+the console path can deadlock the kernel (the vm lock is often held there),
+which is the kind of silent hang this patch is meant to diagnose. The
+mirrored text is drawn at the *bottom* of the panel and grows upwards, so
+it does not fight with the video console (which draws at the top).
+
+Kernel: `xnu/out-0086` (md5 2e057af66f1c7521e65c62fb109e462a), image
+`shim/out/shim-boot-0097.img` (md5 e0dcd5f763609acb41ff2be20eea0b25).
+
+If the kernel hangs before arm_vm_init(), the mirror cannot help and the
+next step is to make the early console use the panel address from the boot
+args (start.s already has the boot args in x0 and reads them with the
+BA_* offsets).
