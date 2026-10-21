@@ -157,6 +157,8 @@ const char *loader_boot(uintptr_t dtb)
 	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
 		return "ramdisk overlaps kernel memory";
 
+	con_str("COPY", "segments to the kernel memory");
+	con_skip();
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
@@ -164,6 +166,8 @@ const char *loader_boot(uintptr_t dtb)
 		if (s->vmsize > s->file_size)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
 	}
+	con_str("COPY", "done");
+	con_skip();
 	con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
 
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */

@@ -519,6 +519,29 @@ static uintptr_t find_dtb(uintptr_t x0)
 #endif
 }
 
+/*
+ * The bootloader keeps a structure about the image it booted. It is in
+ * ordinary memory (reading it does not fault) and it holds the addresses the
+ * bootloader used: the image buffer, the ramdisk, the device tree. Print the
+ * words that look like addresses - the loader needs the ramdisk address and
+ * the tree is worth knowing about.
+ */
+static void dump_bootinfo(uintptr_t info)
+{
+	unsigned shown = 0;
+
+	for (int i = 0; i < 64; i++) {
+		uint64_t w = *(volatile uint64_t *)(info + i * 8);
+		int low = w >= 0x1000 && w < 0x4000000;
+		int high = w >= 0x100000000ULL && w < 0x400000000ULL;
+		if (!low && !high)
+			continue;
+		con_hex2("BOOTINFO", "w", i, "=", w);
+		if (++shown >= 12)
+			break;
+	}
+}
+
 /* Does the board facts, and the bootargs, come from the device tree? */
 static uint64_t ticks_fill(uint32_t c)
 {
@@ -583,8 +606,30 @@ void shim_main(uint64_t dtb)
 	g_why = why;
 	if (why == 0 && hw.fb_base)
 		con_setup((uintptr_t)hw.fb_base, hw.fb_w, hw.fb_h, hw.fb_stride);
+#ifdef NO_DTB
+	/*
+	 * Without a tree every number in the board report is zero, and the
+	 * report takes the whole screen - which is where the loader's output
+	 * has to go. So: a short note with the compiled-in values instead, and
+	 * the structure the bootloader keeps about the image, which holds the
+	 * addresses it used. The screen is not cleared, so both stay visible.
+	 */
+	con_str("BOARD", "no tree; the values are compiled in");
+	con_skip();
+	con_str("RAM", "0x140000000 + 0xC0000000");
+	con_skip();
+	con_hex("FB", FB_BASE);
+	con_hex("GICD", 0x17a00000UL);
+	con_hex("GICR", 0x17a60000UL);
+	con_dec("vtimer", 19);
+	con_hex("UFS", 0x01d84000UL);
+	con_skip();
+	dump_bootinfo((uintptr_t)boot_regs[0]);
+	con_skip();
+#else
 	probe_report();
 	con_skip();
+#endif
 
 	/* "sweetprobe" in the bootargs: show the board report and stop. */
 	if (bootargs_have("sweetprobe")) {
