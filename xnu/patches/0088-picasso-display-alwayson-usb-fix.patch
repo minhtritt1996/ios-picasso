@@ -26,7 +26,7 @@
  			if (off != fFB->fPowerOff) {
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 01:40:47.137752414 +0700
-+++ b/bsd/dev/sweet_usb.c	2026-10-22 01:43:10.314171879 +0700
++++ b/bsd/dev/sweet_usb.c	2026-10-22 01:52:00.287526950 +0700
 @@ -151,6 +151,14 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
@@ -120,3 +120,11 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
+@@ -902,7 +949,6 @@
+ 	dwc_wr(DALEPENA, 0x3);
+ 	ud_start_setup();
+ 
+-	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
+ 	if (qs != 0) {
+ 		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+ 		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
