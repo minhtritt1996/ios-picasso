@@ -900,3 +900,38 @@ Image: `shim/out/shim-boot-0084.img` (md5 6cf0f6e49791fac50a849de30a7a4348).
 Still missing: the `/product` node of the real D22AP tree, so MobileGestalt
 does not know the device (`research/ipsw-x/d22ap.adt` is not in this
 checkout; the im4p is in `/home/tritm/ios-work/ipsw/Firmware/all_flash`).
+
+**2026-10-21: iOS LOADS ON PICASSO.** The phone shows the Apple logo and a
+progress bar: the kernel mounted the iOS root and launchd is starting the
+userland. The chain that made it work, in the order it was found:
+
+1. The shim must not read memory the bootloader did not map (a read there is
+   a secure fault that kills the core) - so the board values are compiled in
+   and the payload address comes from the boot image.
+2. The bootloader frees the image it read, so neither the ramdisk address in
+   the header nor the payload inside the kernel part is mapped any more.
+   The shim hunts through the heap the bootloader left behind (the address in
+   x0 points into it) for the payload's magic and for the boot header's.
+3. The shim must not write into the device tree what it did not find: it
+   wrote the virtual timer interrupt to zero and the kernel panicked in
+   `pe_init_fiq` with "virtual timer INTID 0 is not a PPI".
+4. The root `compatible` property is a *list* of separate strings, not one
+   string with separators in it. Built as one string, the platform device's
+   name was the whole thing and the kernel's driver (registered for
+   'xiaomi,sweet') never matched it: "Unable to find driver for this
+   platform".
+
+Five flashes, from a frozen screen with a single `PROBE` line to iOS
+loading. The image that did it: `shim/out/shim-boot-0085.img`
+(md5 3a8248ab7e8295b62ce468d178e83bc2), kernel 0083 (the IOKit quiesce fix
+and the IORTC fix), command line with `sweetusb=2`, `cpus=8`,
+`ufsroot=darwin`, `ufsrw=1`.
+
+What is still missing, in the order it matters:
+
+- the `/product` node of the real D22AP tree, so MobileGestalt knows the
+  device (`research/ipsw-x/d22ap.adt`; the im4p is in
+  `/home/tritm/ios-work/ipsw/Firmware/all_flash`);
+- touch (Novatek NT36672C over the QUPv3 SPI controller) and the keys;
+- the USB gadget must come up so that the kernel log can be read live
+  (`tools/sweet-usbnet.sh`).
