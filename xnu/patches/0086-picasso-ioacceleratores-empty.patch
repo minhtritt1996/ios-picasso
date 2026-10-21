@@ -1,13 +1,3 @@
-From b4d4e4fc62237df911975608566be28979c99e31 Mon Sep 17 00:00:00 2001
-From: test <test@test>
-Date: Wed, 21 Oct 2026 20:54:54 +0700
-Subject: [PATCH 2/3] xnu 0086: empty IOAcceleratorES service (no 30 s wait at
- backboardd start)
-
----
- iokit/Kernel/arm/SweetFramebuffer.cpp | 23 +++++++++++++++++++++++
- 1 file changed, 23 insertions(+)
-
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 index b6ebfec..e773ed8 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
@@ -49,6 +39,3 @@ index b6ebfec..e773ed8 100644
  	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
  	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
  	return true;
--- 
-2.34.1
-
