@@ -1,16 +1,5 @@
-From ecedfd8592f25a14c80b3ae158cdc87c6fef9c06 Mon Sep 17 00:00:00 2001
-From: test <test@test>
-Date: Wed, 21 Oct 2026 20:59:54 +0700
-Subject: [PATCH 3/3] xnu 0087: SweetSurface: wrap client, values, client
- address, trap detach and publish
-
----
- iokit/Kernel/arm/SweetSurface.cpp | 479 +++++++++++++++++++++++++++++-
- iokit/Kernel/arm/SweetSurface.h   |   6 +-
- 2 files changed, 473 insertions(+), 12 deletions(-)
-
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index 7f90c56..cb61063 100644
+index 7f90c56..7befae6 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -40,10 +40,21 @@
@@ -56,7 +45,16 @@ index 7f90c56..cb61063 100644
  	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
  		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
  	}
-@@ -357,8 +375,10 @@ public:
+@@ -263,6 +281,8 @@ sweet_dict_u32(OSDictionary *dict, const char *key, uint32_t def)
+ 	return n != NULL ? n->unsigned32BitValue() : def;
+ }
+ 
++static IOReturn sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, uint64_t size);
++
+ static uint32_t
+ sweet_div_up(uint32_t a, uint32_t b)
+ {
+@@ -357,8 +377,10 @@ public:
  	IOMemoryMap  *data;
  	IOMemoryMap  *state;
  	uint32_t      count;
@@ -68,7 +66,7 @@ index 7f90c56..cb61063 100644
  	void free() APPLE_KEXT_OVERRIDE;
  };
  
-@@ -370,7 +390,9 @@ SweetSurfaceRef::free()
+@@ -370,7 +392,9 @@ SweetSurfaceRef::free()
  	OSSafeReleaseNULL(data);
  	OSSafeReleaseNULL(state);
  	if (surface != NULL) {
@@ -79,7 +77,7 @@ index 7f90c56..cb61063 100644
  		surface->release();
  		surface = NULL;
  	}
-@@ -405,11 +427,15 @@ class IOSurfaceRootUserClient : public IOUserClient {
+@@ -405,11 +429,15 @@ class IOSurfaceRootUserClient : public IOUserClient {
  	task_t   fTask;
  	IOLock  *fLock;
  	OSArray *fRefs;
@@ -96,7 +94,7 @@ index 7f90c56..cb61063 100644
  
  public:
  	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
-@@ -424,6 +450,7 @@ public:
+@@ -424,6 +452,7 @@ public:
  	IOReturn trapLock(void *id, void *options, void *seedOut, void *, void *, void *);
  	IOReturn trapUnlock(void *id, void *options, void *seedOut, void *, void *, void *);
  	IOReturn trapRelease(void *id, void *, void *, void *, void *, void *);
@@ -104,7 +102,7 @@ index 7f90c56..cb61063 100644
  };
  
  OSDefineMetaClassAndStructors(IOSurfaceRootUserClient, IOUserClient);
-@@ -452,13 +479,15 @@ IOSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt3
+@@ -452,13 +481,15 @@ IOSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt3
  	fTask = owningTask;
  	fLock = IOLockAlloc();
  	fRefs = OSArray::withCapacity(16);
@@ -121,7 +119,7 @@ index 7f90c56..cb61063 100644
  	if (fLock != NULL) {
  		IOLockFree(fLock);
  		fLock = NULL;
-@@ -471,6 +500,9 @@ IOSurfaceRootUserClient::clientClose(void)
+@@ -471,6 +502,9 @@ IOSurfaceRootUserClient::clientClose(void)
  {
  	IOLockLock(fLock);
  	fRefs->flushCollection();
@@ -131,7 +129,7 @@ index 7f90c56..cb61063 100644
  	IOLockUnlock(fLock);
  	terminate();
  	return kIOReturnSuccess;
-@@ -478,11 +510,11 @@ IOSurfaceRootUserClient::clientClose(void)
+@@ -478,11 +512,11 @@ IOSurfaceRootUserClient::clientClose(void)
  
  /* Lock held. */
  SweetSurfaceRef *
@@ -145,7 +143,7 @@ index 7f90c56..cb61063 100644
  			if (index != NULL) {
  				*index = i;
  			}
-@@ -567,7 +599,7 @@ static void
+@@ -567,7 +601,7 @@ static void
  sweet_surface_fill_result(SweetSurface *s, SweetSurfaceRef *ref, uint8_t *out)
  {
  	bzero(out, SWEET_SURFACE_RESULT_SIZE);
@@ -154,7 +152,7 @@ index 7f90c56..cb61063 100644
  	put64(out, 0x08, ref->state->getAddress());
  	put64(out, 0x10, ref->state->getAddress() + SWEET_SURFACE_TIMESTAMPS);
  	put32(out, 0x18, s->id);
-@@ -684,7 +716,35 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+@@ -684,7 +718,35 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
  	}
  	s->parentID = args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0;
  	ret = sweet_surface_layout(s, props);
@@ -191,7 +189,7 @@ index 7f90c56..cb61063 100644
  		IOBufferMemoryDescriptor *mem = NULL;
  		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
  		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
-@@ -721,6 +781,326 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+@@ -721,6 +783,326 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
  	return ret;
  }
  
@@ -518,7 +516,7 @@ index 7f90c56..cb61063 100644
  IOReturn
  IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
      __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
-@@ -739,6 +1119,51 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+@@ -739,6 +1121,51 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
  	}
  	case kSweetSurfaceCreate:
  		return create(args);
@@ -570,7 +568,7 @@ index 7f90c56..cb61063 100644
  	case kSweetSurfaceLookup: {
  		SweetSurface *s = sweet_surface_copy((uint32_t)arg0);
  		IOReturn ret = kIOReturnNotFound;
-@@ -848,14 +1273,46 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+@@ -848,14 +1275,46 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
  	return ret;
  }
  
@@ -619,7 +617,7 @@ index 7f90c56..cb61063 100644
  	}
  	IOLockUnlock(fLock);
  	return ref != NULL ? kIOReturnSuccess : kIOReturnNotFound;
-@@ -866,7 +1323,7 @@ static IOExternalTrap sweet_surface_traps[] = {
+@@ -866,7 +1325,7 @@ static IOExternalTrap sweet_surface_traps[] = {
  	[kSweetSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
  	[kSweetSurfaceTrapLock]          = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapLock },
  	[kSweetSurfaceTrapUnlock]        = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUnlock },
@@ -646,6 +644,3 @@ index fbcdfac..e5d2df5 100644
  	void free() APPLE_KEXT_OVERRIDE;
  
  	/* Kernel address of the pixels (mapped on first use), or 0. */
--- 
-2.34.1
-
