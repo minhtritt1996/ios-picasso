@@ -62,7 +62,18 @@ while [ $# -gt 0 ]; do
 		# Wait before the jump: the kernel's console clears the panel, so
 		# the shim's report has to be photographed before the kernel takes
 		# the screen.
-		cflags="$cflags -DSHIM_PAUSE_MS=15000"
+		#
+		# It must stay at zero: every boot with the fifteen second pause
+		# (images 0089 to 0092) hung before the kernel opened the disk,
+		# and every boot without it (0086 to 0088) reached iOS. The kernel
+		# console is mirrored on the panel now (patch 0084), so the report
+		# is not worth a broken boot.
+		pause=${SHIM_PAUSE_MS:-0}
+		cflags="$cflags -DSHIM_PAUSE_MS=${pause}"
+		# Diagnostic: stop after the report instead of jumping to the kernel,
+		# so the report can be photographed at leisure.
+		hold=${SHIM_HOLD:-0}
+		cflags="$cflags -DSHIM_HOLD=${hold}"
 		# The payload and the device tree go into the *kernel* part of the
 		# boot image: the bootloader loads that part for sure (the shim
 		# itself runs from it), while on this board the ramdisk part is

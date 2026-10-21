@@ -56,6 +56,9 @@ struct hw {
 
 extern struct hw hw;
 
+/* Does the range touch one of the carve-outs the bootloader reserved? */
+int board_range_is_free(uint64_t base, uint64_t size);
+
 /* Fill hw from the device tree; returns 0 or a short reason for failure. */
 const char *hw_discover(uintptr_t dtb);
 

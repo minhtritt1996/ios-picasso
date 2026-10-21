@@ -439,6 +439,10 @@ static void probe_report(void)
 		con_dec("  size", hw.mem[i].size);
 	}
 	con_dec("carve-outs", hw.nrsv);
+	for (uint32_t i = 0; i < hw.nrsv && i < 40; i++) {
+		con_hex2("  rsv", "base=", (uint32_t)hw.rsv[i].base, "+MiB",
+		    (uint32_t)(hw.rsv[i].size >> 20));
+	}
 	con_skip();
 
 	con_hex("GICD", hw.gicd);
@@ -716,6 +720,19 @@ void shim_main(uint64_t dtb)
 		reset(20);
 	}
 
+#ifdef SHIM_HOLD
+	if (SHIM_HOLD) {
+		/*
+		 * Diagnostic build: show the board facts as well, then let the
+		 * loader print its report and hold before the jump. Everything
+		 * stays on the screen, so it can be photographed at leisure.
+		 */
+		hw_read_display_pipe(0);
+		con_clear(RED);
+		probe_report();
+		con_skip();
+	}
+#endif
 	const char *lwhy = loader_boot(dtb, (uintptr_t)boot_regs[0]);
 	con_str("LOADER", lwhy);
 	con_skip();

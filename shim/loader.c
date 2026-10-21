@@ -270,6 +270,17 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 		pa_of_va_base = p->phys_base - p->virt_base;
 		con_hex("RAM base", pbase);
 		con_hex("RAM size", msize);
+		/*
+		 * The kernel maps this RAM as it is: a carve-out inside it
+		 * would be a secure fault, and the core would die before the
+		 * console says anything.
+		 */
+		if (board_range_is_free(pbase, msize)) {
+			con_str("RAM", "no carve-out inside");
+		} else {
+			con_str("RAM", "CARVE-OUT INSIDE!");
+		}
+		con_skip();
 	}
 
 	/* The payload must not overlap where the kernel goes. */
@@ -326,6 +337,23 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
+#ifdef SHIM_HOLD
+	if (SHIM_HOLD) {
+		/*
+		 * Diagnostic: keep the report on the screen instead of handing
+		 * over to the kernel. The kernel's console clears the panel, so
+		 * this is the only way to photograph what the shim found.
+		 */
+		con_str("SHIM", "holding before the jump (diagnostic)");
+		con_skip();
+		/* The UFS too: the kernel never gets that far any more. */
+		extern void test_ufs(void);
+		test_ufs();
+		con_skip();
+		for (;;)
+			__asm__ volatile("wfe");
+	}
+#endif
 #ifdef SHIM_PAUSE_MS
 	if (SHIM_PAUSE_MS) {
 		/*

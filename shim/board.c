@@ -33,6 +33,19 @@
 #define RAM_FALLBACK_SIZE	0
 #endif
 
+int board_range_is_free(uint64_t base, uint64_t size)
+{
+	for (uint32_t i = 0; i < hw.nrsv; i++) {
+		uint64_t b = hw.rsv[i].base, s = hw.rsv[i].size;
+
+		if (!s)
+			continue;
+		if (base < b + s && b < base + size)
+			return 0;
+	}
+	return 1;
+}
+
 int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
     uint64_t excl_base, uint64_t excl_size)
 {
