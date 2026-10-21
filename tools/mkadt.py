@@ -57,7 +57,7 @@ BOARDS = {
         'mem_size': PICASSO_MEM_SIZE,
         'ecid': 0x5049434153534f01,          # 'PICASSO' + 1
         'manifest': b'picasso boot manifest',
-        'compat': 'D22AP|iPhone10,3|xiaomi,picasso|qcom,sm7250|AppleARM',
+        'compat': 'D22AP|iPhone10,3|xiaomi,picasso|xiaomi,sweet|qcom,sm7250|AppleARM',
         'fb': (0xa0000000, 0x2300000),       # cont_splash_region
         'ufs': (0x01d84000, 0x3000),
     },

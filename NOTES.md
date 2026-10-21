@@ -875,3 +875,28 @@ framebuffer 0xa0000000 + 0x2300000 at 1080x2400, UFS 0x1d84000, eight CPU
 nodes). The patch is now made only for the values that were really found.
 
 Image: `shim/out/shim-boot-0083z.img` (md5 52e95f9c0f57bef66f776fb16ed9b679).
+
+**The platform expert panicked (2026-10-21).** The next screen showed the
+kernel much further along - the AMFI policy loaded, the zones and the VM
+bootstrap done - and then:
+
+```
+panic(cpu 0 caller 0xffffffe00079fdd9c): Unable to find driver for this
+platform: "D22AP|iPhone10,3|xiaomi,picasso|qcom,sm7250|AppleARM"
+ . @IOPlatformExpert.cpp:2319
+```
+
+That is the fallback personality (`IOPanicPlatform`) matching because the
+real one did not: sweet's platform driver is registered with
+`IONameMatch = 'xiaomi,sweet'` (patch 0016) and the root compatible string of
+the picasso tree does not contain that. So the compatible string now carries
+`xiaomi,sweet` as well - the same trick sweet uses, and the one the notes
+already described. A proper board layer in the kernel (the one the
+ry-diffusion port wrote, `bsd/dev/sweet_board.h`) is the better answer and
+comes later.
+
+Image: `shim/out/shim-boot-0084.img` (md5 6cf0f6e49791fac50a849de30a7a4348).
+
+Still missing: the `/product` node of the real D22AP tree, so MobileGestalt
+does not know the device (`research/ipsw-x/d22ap.adt` is not in this
+checkout; the im4p is in `/home/tritm/ios-work/ipsw/Firmware/all_flash`).
