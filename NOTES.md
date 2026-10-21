@@ -1218,7 +1218,24 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - In patch 0084 (`xnu/out-0086`), `sweet_panel_map_console` called `ml_io_map` for `1080 * 2400 * 4 = 10,368,000 bytes` (~9.88 MiB) right after `arm_vm_init()`.
    - In XNU, `io_submap` has a total size of only **8 MiB** (`0xfffffe8fff5fc000 - 0xfffffe8fffdfc000`), so `ml_io_map` immediately panicked or failed.
    - Combined with `disableConsoleOutput = TRUE` suppressing early output, the panel remained black.
-3. **Flashed proven golden image 0088:**
-   - Pushed `shim/out/shim-boot-0088.img` (kernel 0083, iPhone X D22AP identity with sRGB gamut fix from commit `e89bb0c`, no pause, no hold) to the phone via OrangeFox recovery ADB.
-   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) and verified readback md5 (`d675c81faae33ca11125e4c31cf503da`, 36,352,000 bytes).
+3. **Image 0088 was not the golden working image:**
+   - The user clarified that the boot that showed the Apple logo and progress bar occurred earlier today around commit `61a7802` / `53f5287` (log `log-darwin.clean.txt`, kernel 0083).
+   - In that working boot, `research/ipsw-x/d22ap.adt` did not exist yet, so the ADT was 9,920 bytes and had **no `/product` node** (`IOK backboardd: path IODeviceTree:/product -> none`). Backboardd and ProgressUI cleanly fell back to software rendering into IOSurface / AppleCLCD.
+   - At commit `9df2225`, 61 properties were extracted into `/product`, including `graphics-featureset-class = APPLE4` and `oled-display = 1`. This instructs ProgressUI / backboardd to require Apple Metal hardware GPU acceleration, causing an immediate crash/abort on SM7250 (Adreno 620). Furthermore, `SweetPlatformExpert::processTopLevel` did not exclude `product`, creating an invalid nub in the kernel.
+   - Consequently, every image built after 09:49 (images 0086 through 0097) went to a black screen after the red shim screen.
+
+**2026-10-21, 18:10 - Restored true working configuration (image 0098-clean).**
+
+1. **Built `picasso-clean.adt` (9,920 bytes):**
+   - Clean device tree without `/product` node, matching the exact tree from the successful 07:52 boot.
+2. **Built `payload-picasso-clean.bin` (16,610,848 bytes):**
+   - Kernel 0083 (`xnu/out-0083/kernel.development.sweet`), `picasso-clean.adt`, and the exact verified command line:
+     `debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweettouch=0 sweetusb=2`
+3. **Built and flashed `shim-boot-0098-clean.img` (36,343,808 bytes, md5 `7b099c6c079cc84892efb9d73e503d53`):**
+   - Transferred to `root@100.121.254.115`, pushed via recovery ADB to phone `f9f3d7b0`, written to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`).
+   - Readback MD5 on `/dev/block/sde55` verified 100% match.
+4. **Verified rootfs state:**
+   - Root partition `sda35` is clean (16 MiB MD5 matches local clean root).
+   - The 3 migration preference plists (fixing the data migration loop from commit `53f5287`) are present in `/private/var/mobile/Library/Preferences/`.
+
 
