@@ -59,6 +59,31 @@ static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 		d[i] = s[i];
 }
 
+/*
+ * Where the bootloader put the ramdisk, when the device tree does not say.
+ * The phone's own image carries a static tree (its /memory is still
+ * `reg = <0 0 0 0>`) and it has no initrd properties, and the bootloader
+ * does not pass one either - so the address from the boot image header is
+ * the only place the payload can be. Both values are compiled in from the
+ * image that was built (shim/build.sh).
+ */
+#ifndef RAMDISK_ADDR
+#define RAMDISK_ADDR 0
+#endif
+#ifndef RAMDISK_SIZE
+#define RAMDISK_SIZE 0
+#endif
+
+#define MAX_SEGS	32
+
+/*
+ * The payload header is copied out before it is changed: the bootloader may
+ * map its ramdisk read-only, and the shim only ever needs to write two
+ * fields in it (the RAM the kernel gets).
+ */
+static struct payload local_hdr;
+static struct payload_seg local_segs[MAX_SEGS];
+
 static void zero64(uintptr_t dst, uint64_t n)
 {
 	volatile uint64_t *d = (volatile uint64_t *)dst;
@@ -82,8 +107,14 @@ const char *loader_boot(uintptr_t dtb)
 	uint64_t rd_start, rd_end;
 
 	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
-	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
-		return "no initrd in /chosen";
+	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end)) {
+		if (!RAMDISK_ADDR || !RAMDISK_SIZE)
+			return "no initrd in /chosen";
+		rd_start = RAMDISK_ADDR;
+		rd_end = rd_start + RAMDISK_SIZE;
+		con_str("INITRD", "from the boot image header");
+		con_skip();
+	}
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
 	struct payload *p = (struct payload *)rd_start;
@@ -91,6 +122,16 @@ const char *loader_boot(uintptr_t dtb)
 		return "no SWEETXNU payload";
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
+	if (p->nsegs > MAX_SEGS)
+		return "too many segments in the payload";
+
+	/* Copy the header and the segment table out before anything is changed. */
+	uint64_t hsz = sizeof(struct payload) + p->nsegs * sizeof(struct payload_seg);
+	copy64((uintptr_t)&local_hdr, rd_start, hsz);
+	copy64((uintptr_t)local_segs, rd_start + sizeof(struct payload),
+	    p->nsegs * sizeof(struct payload_seg));
+	const struct payload_seg *segs = local_segs;
+	p = &local_hdr;
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
 	con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
@@ -99,10 +140,9 @@ const char *loader_boot(uintptr_t dtb)
 
 	/*
 	 * Choose the kernel's RAM from the memory layout the bootloader
-	 * described in the device tree, and patch the payload header (which
-	 * lives in the bootloader's ramdisk, i.e. in RAM) before the segments
-	 * are placed. Without this the board's RAM layout would have to be
-	 * compiled into every boot image.
+	 * described in the device tree, and patch the copy of the payload
+	 * header before the segments are placed. Without this the board's RAM
+	 * layout would have to be compiled into every boot image.
 	 */
 	uint64_t pbase = p->phys_base, msize = p->mem_size;
 	if (board_pick_ram(&pbase, &msize, rd_start, rd_end - rd_start)) {
@@ -118,7 +158,7 @@ const char *loader_boot(uintptr_t dtb)
 		return "ramdisk overlaps kernel memory";
 
 	for (uint32_t i = 0; i < p->nsegs; i++) {
-		const struct payload_seg *s = &p->segs[i];
+		const struct payload_seg *s = &segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
 		copy64(dst, rd_start + s->file_off, s->file_size);
 		if (s->vmsize > s->file_size)

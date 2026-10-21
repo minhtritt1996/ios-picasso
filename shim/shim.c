@@ -397,12 +397,14 @@ static void probe_report(void)
 	con_skip();
 
 	/* What is at the addresses a boot image puts the tree at? */
+#ifndef NO_DTB
 	for (unsigned a = 0; a < 4; a++) {
 		static const uintptr_t known[] = { 0x1728000, 0x1f00000, 0x1000000, 0x2000000 };
 		con_hex("AT", known[a]);
 		con_hex("  word", *(volatile uint32_t *)known[a]);
 	}
 	con_skip();
+#endif
 
 	con_str("FB", hw.fb_src ? hw.fb_src : "not found");
 	con_hex("  base", hw.fb_base);
@@ -457,6 +459,20 @@ static void probe_report(void)
  */
 static uintptr_t find_dtb(uintptr_t x0)
 {
+#ifdef NO_DTB
+	/*
+	 * This board: reading an address the bootloader did not map answers
+	 * with a secure fault that kills the core (the probe of 0x10000000
+	 * froze the phone on the screen). Everything the shim needs is
+	 * compiled in instead: the board values come from the build
+	 * (shim/build.sh --picasso) and the payload address comes from the
+	 * boot image header (shim/loader.c).
+	 */
+	(void)x0;
+	con_str("DTB", "not read on this board");
+	con_skip();
+	return 0;
+#else
 	/*
 	 * Only the memory above 0x10000000 can be read safely: the low
 	 * memory holds the protected parts of the boot chain (XBL, AOP, RPM
@@ -500,6 +516,7 @@ static uintptr_t find_dtb(uintptr_t x0)
 			return known[i];
 	}
 	return 0;
+#endif
 }
 
 /* Does the board facts, and the bootargs, come from the device tree? */

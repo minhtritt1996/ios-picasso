@@ -53,6 +53,10 @@ while [ $# -gt 0 ]; do
 		# pass the tree in x0 here, and everything below 0x10000000 is
 		# protected. These are the banks it hands the kernel.
 		cflags="$cflags -DRAM_FALLBACK_BASE=0x140000000UL -DRAM_FALLBACK_SIZE=0xC0000000UL"
+		# Reading an address the bootloader did not map kills the core on
+		# this board, so the shim must not go looking for the device tree:
+		# every board value is compiled in instead.
+		cflags="$cflags -DNO_DTB=1"
 		# The bootloader reads a few things from the command line (which
 		# USB controller to set up), so keep the stock one.
 		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"
@@ -89,6 +93,14 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -n "$extra" ] && cmdline="$cmdline $extra"
+
+# Where the bootloader will put the ramdisk, and how big it is. The loader
+# needs it: the tree this phone carries has no initrd properties, and the
+# bootloader does not pass one either (shim/loader.c).
+if [ -n "$payload" ] && [ -f "$payload" ]; then
+	psize=$(stat -c %s "$payload")
+	cflags="$cflags -DRAMDISK_ADDR=${ramdisk_offset}UL -DRAMDISK_SIZE=${psize}UL"
+fi
 
 mkdir -p out
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
