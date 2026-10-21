@@ -165,6 +165,10 @@ struct hunt hunt_memory(uintptr_t x0)
 			h.payload = a;
 			con_hex("HUNT", a);
 			con_skip();
+			/* The payload is what we came for: stop here, the rest of
+			 * the heap may not be mapped and a read there kills the
+			 * core. */
+			break;
 		} else if (w0 == ANDROID_MAGIC0 && w1 == ANDROID_MAGIC1) {
 			h.image = a;
 			con_hex("IMAGE", a);
