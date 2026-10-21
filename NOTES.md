@@ -935,3 +935,45 @@ What is still missing, in the order it matters:
 - touch (Novatek NT36672C over the QUPv3 SPI controller) and the keys;
 - the USB gadget must come up so that the kernel log can be read live
   (`tools/sweet-usbnet.sh`).
+
+**Why the home screen never came (2026-10-21, from the kernel log).** The log
+of the boot (pulled with `tools/sweet-log-pull.sh -p darwin`) is good news
+almost all the way:
+
+```
+SWEET UFS: "darwin" on LUN 0: first block 0x1882b00, 20480 MiB, read-write
+hfs: mounted iOSRoot on device b(1, 0)
+SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0xa0000000, default surface 1,
+           presented as 1125x2436
+SWEET FB: display on
+SWEET FB: swap 1 layer 0 surface 2 1125x2436 fmt 0x42475241 ...
+SWEET KEYS: key=0 down=1 pon=0x5 ; SWEET HID: key 0x30 down (1 clients)
+```
+
+The UFS driver finds the partition and mounts the iOS root, the display comes
+up, backboardd renders and swaps frames, and the keys reach a client. The
+boot stops at the Apple logo because the **data migration** runs on every
+boot: `com.apple.datamigrator` and `com.apple.migrationpluginwrapper` appear
+three times, and the migration never finishes, so the Setup app is never
+launched.
+
+The fix is the one the topaz port found: tell the system that the migration
+is already done, with the preferences the migrator reads - and it reads the
+*host* variant, so the file name carries the platform UUID:
+
+- `/private/var/mobile/Library/Preferences/com.apple.migration.plist` with
+  `LastSystemVersion = 20H392`
+- `/private/var/mobile/Library/Preferences/ByHost/com.apple.migration.<UUID>.plist`
+  (and the lower case spelling) with the same key.
+
+The UUID is computed the way the kernel computes it (IOPlatformExpert's
+`generatePlatformUUID`: SHA1 over the namespace
+`A6DD4CCB-B5E8-4AF5-ACDD-B6DC6A0542B8`, then the `unique-chip-id` and the
+`chip-id` from the tree). For our tree that is
+**47A4033D-9F31-5A46-90F4-BE29CA615E78**. The same code reproduces the
+sweet UUID that the topaz port published
+(A9683613-3704-53F2-95D0-98A8FB574E78), which is how the arithmetic was
+checked.
+
+The three files were added to the root image and the image was written back
+to the `darwin` partition.
