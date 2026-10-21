@@ -837,3 +837,20 @@ from `KERNEL_ADDR + DTB_OFF`. The kernel part ends at 0x117B000, below the
 0x1200000 the ramdisk part uses, so the two do not overlap.
 
 Image: `shim/out/shim-boot-0083x.img`.
+
+**The bootloader frees what it used (2026-10-21, later).** The picture
+after the payload moved into the kernel part showed the loader naming
+`lo= 000480000` - the payload's address inside the kernel part - and then
+nothing: that address is not mapped either. So the bootloader keeps only
+the beginning of the image (the shim's own code) and frees the rest; the
+addresses the boot header names (the ramdisk at 0x1200000, the device tree
+at 0x1728000) are gone as well.
+
+What the bootloader does keep is its heap, and the address it passes in x0
+points into it. The shim now hunts through that heap, a page at a time and
+in both directions, for the payload's magic and the boot header's, printing
+every hit as it goes: a page that is not mapped ends the walk, but the hits
+stay on the screen. The device tree is then taken from the image the hunt
+found.
+
+Image: `shim/out/shim-boot-0083y.img` (md5 3013032b04a62f90754fb00525b4dd7d).
