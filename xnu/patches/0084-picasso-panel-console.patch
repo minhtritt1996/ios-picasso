@@ -1,6 +1,42 @@
---- a/osfmk/console/serial_console.c
-+++ b/osfmk/console/serial_console.c
-@@ -242,6 +242,100 @@
+--- a/osfmk/arm/arm_init.c	2026-10-21 16:14:55.554965997 +0700
++++ b/osfmk/arm/arm_init.c	2026-10-21 16:13:25.666434926 +0700
+@@ -515,6 +515,33 @@
+ 
+ 	arm_vm_init(xmaxmem, args);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * Map the panel for the console mirror (osfmk/console/serial_console.c).
++	 *
++	 * The kernel console goes out of the UART, which nothing can read on
++	 * this board, so the early boot is invisible: the screen stays black
++	 * and the only sign of life is that the persistent log never starts.
++	 *
++	 * The mapping is made here, right after the vm is up, and not in the
++	 * console path: the console runs with the vm lock held often enough
++	 * that mapping memory there deadlocks the kernel before it prints
++	 * anything.
++	 */
++	{
++		extern void sweet_panel_map_console(vm_offset_t phys, vm_size_t size,
++		    uint32_t width, uint32_t height, uint32_t stride);
++		uint32_t w = args->Video.v_width;
++		uint32_t h = args->Video.v_height;
++		uint32_t stride = args->Video.v_rowBytes;
++
++		if (w && h && stride >= w * 4) {
++			sweet_panel_map_console((vm_offset_t)args->Video.v_baseAddr,
++			    (vm_size_t)w * h * 4, w, h, stride);
++		}
++	}
++#endif
++
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+ 	}
+--- a/osfmk/console/serial_console.c	2026-10-21 13:40:52.452449659 +0700
++++ b/osfmk/console/serial_console.c	2026-10-21 16:14:55.550966059 +0700
+@@ -242,6 +242,81 @@
   * @param poll Whether or not this call should poll instead of going to sleep
   *             waiting for an interrupt when the hardware device isn't ready
   */
@@ -8,89 +44,70 @@
 +/*
 + * Mirror the console on the panel.
 + *
-+ * The kernel console goes out of the UART, which nothing can read on this
-+ * board, so the early boot is invisible: the screen stays black and the
-+ * only sign of life is that the persistent log never starts. With
-+ * boot-arg sweetpanel=<address> the same characters are drawn into the
-+ * panel memory - the memory the framebuffer driver later publishes as its
-+ * surface - so a photograph of the screen shows what the kernel says.
++ * The same characters the console writes are drawn into the panel memory -
++ * the memory the framebuffer driver later publishes as its surface - so a
++ * photograph of the screen shows what the kernel says. The text is drawn at
++ * the bottom of the panel and grows upwards, so it does not fight with the
++ * video console (which draws at the top).
 + *
-+ * The font is the one the video console uses (osfmk/console/iso_font.c);
-+ * the panel is 1080x2400 with four bytes per pixel.
++ * The panel is mapped by arm_init() once the vm is up; see the comment
++ * there. Nothing here allocates or maps anything.
 + */
 +extern unsigned char iso_font[256 * 16];
-+/* The panel is not inside the kernel's own window, so it has to be mapped
-+ * before it can be written to; ml_io_map is what the storage driver uses
-+ * for the same reason. */
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +
-+#define SWEET_PANEL_WIDTH   1080
-+#define SWEET_PANEL_HEIGHT  2400
-+
-+static uintptr_t sweet_panel_base;
-+static vm_offset_t sweet_panel_map;
++static uintptr_t sweet_panel_va;
++static uint32_t sweet_panel_w, sweet_panel_h, sweet_panel_stride;
 +static uint32_t sweet_panel_x, sweet_panel_y;
-+static bool sweet_panel_looked;
++static bool sweet_panel_on;
 +
-+static uint64_t
-+sweet_panel_address(const char *s)
++void
++sweet_panel_map_console(vm_offset_t phys, vm_size_t size,
++    uint32_t width, uint32_t height, uint32_t stride)
 +{
-+	uint64_t v = 0;
-+	for (int i = 0; s[i]; i++) {
-+		char c = s[i];
-+		uint64_t d;
-+		if (c >= '0' && c <= '9')
-+			d = (uint64_t)(c - '0');
-+		else if (c >= 'a' && c <= 'f')
-+			d = (uint64_t)(c - 'a' + 10);
-+		else if (c >= 'A' && c <= 'F')
-+			d = (uint64_t)(c - 'A' + 10);
-+		else
-+			return 0;
-+		v = (v << 4) | d;
-+	}
-+	return v;
++	uintptr_t va = (uintptr_t)ml_io_map(phys, size);
++
++	if (!va)
++		return;
++	sweet_panel_va = va;
++	sweet_panel_w = width;
++	sweet_panel_h = height;
++	sweet_panel_stride = stride;
++	sweet_panel_x = 0;
++	sweet_panel_y = height > 16 ? height - 16 : 0;
++	sweet_panel_on = true;
++}
++
++static void
++sweet_panel_newline(void)
++{
++	sweet_panel_x = 0;
++	if (sweet_panel_y < 16)
++		sweet_panel_y = sweet_panel_h - 16;
++	else
++		sweet_panel_y -= 16;
 +}
 +
 +static void
 +sweet_panel_putc(char ch)
 +{
-+	if (!sweet_panel_looked) {
-+		char arg[32];
-+		sweet_panel_looked = true;
-+		if (PE_parse_boot_argn("sweetpanel", arg, sizeof(arg)))
-+			sweet_panel_base = (uintptr_t)sweet_panel_address(arg);
-+	}
-+	if (!sweet_panel_base)
++	if (!sweet_panel_on)
 +		return;
-+	if (!sweet_panel_map) {
-+		/* The vm is not up for the first messages; try again later. */
-+		sweet_panel_map = ml_io_map((vm_offset_t)sweet_panel_base,
-+		    SWEET_PANEL_WIDTH * SWEET_PANEL_HEIGHT * 4);
-+		if (!sweet_panel_map)
-+			return;
-+	}
-+
 +	if (ch == '\r')
 +		return;
 +	if (ch == '\n') {
-+		sweet_panel_x = 0;
-+		sweet_panel_y += 16;
++		sweet_panel_newline();
 +		return;
 +	}
-+	if (sweet_panel_x + 8 > SWEET_PANEL_WIDTH) {
-+		sweet_panel_x = 0;
-+		sweet_panel_y += 16;
-+	}
-+	if (sweet_panel_y + 16 > SWEET_PANEL_HEIGHT)
-+		return;
-+	uint32_t *row = (uint32_t *)(sweet_panel_map +
-+	    (uint64_t)sweet_panel_y * SWEET_PANEL_WIDTH * 4);
++	if (sweet_panel_x + 8 > sweet_panel_w)
++		sweet_panel_newline();
++	uint32_t *row = (uint32_t *)(sweet_panel_va +
++	    (uint64_t)sweet_panel_y * sweet_panel_stride);
 +	const unsigned char *glyph = iso_font + ((uint8_t)ch) * 16;
 +	for (int gy = 0; gy < 16; gy++) {
 +		uint32_t bits = glyph[gy];
 +		for (int gx = 0; gx < 8; gx++) {
-+			if (bits & (0x80u >> gx))
++			if (bits & (1u << gx))
 +				row[sweet_panel_x + gx] = 0xffffffffu;
 +		}
 +	}
@@ -101,19 +118,14 @@
  static inline void
  _cnputc(char c, bool poll)
  {
-@@ -254,6 +348,7 @@
+@@ -254,6 +329,10 @@
  		_cnputc('\r', poll);
  	}
  
++#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	sweet_panel_putc(c);
++#endif
++
  	cons_ops[idx].putc(c, poll);
  }
  
-@@ -276,6 +371,7 @@
- int sweet_console_muted;
- #endif
- 
-+
- static inline void
- _cnputs(char *c, int size, bool poll)
- {
