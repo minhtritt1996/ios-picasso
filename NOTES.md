@@ -854,3 +854,24 @@ stay on the screen. The device tree is then taken from the image the hunt
 found.
 
 Image: `shim/out/shim-boot-0083y.img` (md5 3013032b04a62f90754fb00525b4dd7d).
+
+**THE KERNEL BOOTS (2026-10-21).** The screen after the hunt showed an
+Apple panic screen:
+
+```
+panic(cpu 0 caller 0xffffffe0007a79068): pe_init_fiq: virtual timer INTID 0
+is not a PPI @pe_fiq.c:115
+```
+
+So the shim found the payload, the kernel was loaded and started, and it
+died in the platform expert - before anything else, on the first thing it
+does with the timer. The reason: `shim/board.c` patched the device tree
+with what the discovery had found, and the virtual timer interrupt was
+written unconditionally - with no tree there is nothing to discover, so the
+kernel was handed interrupt 0 instead of 19 and refused it. The tree that
+`tools/mkadt.py --picasso` builds was right all along (dram 0x140000000 +
+0xC0000000, GICD 0x17a00000, GICR 0x17a60000, virtual-timer-intid 19,
+framebuffer 0xa0000000 + 0x2300000 at 1080x2400, UFS 0x1d84000, eight CPU
+nodes). The patch is now made only for the values that were really found.
+
+Image: `shim/out/shim-boot-0083z.img` (md5 52e95f9c0f57bef66f776fb16ed9b679).
