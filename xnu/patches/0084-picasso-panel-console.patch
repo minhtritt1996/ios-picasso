@@ -1,6 +1,6 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -276,6 +276,91 @@
+@@ -276,6 +276,102 @@
  int sweet_console_muted;
  #endif
  
@@ -19,11 +19,16 @@
 + * the panel is 1080x2400 with four bytes per pixel.
 + */
 +extern unsigned char iso_font[256 * 16];
++/* The panel is not inside the kernel's own window, so it has to be mapped
++ * before it can be written to; ml_io_map is what the storage driver uses
++ * for the same reason. */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +
 +#define SWEET_PANEL_WIDTH   1080
 +#define SWEET_PANEL_HEIGHT  2400
 +
 +static uintptr_t sweet_panel_base;
++static vm_offset_t sweet_panel_map;
 +static uint32_t sweet_panel_x, sweet_panel_y;
 +static bool sweet_panel_looked;
 +
@@ -58,6 +63,12 @@
 +	}
 +	if (!sweet_panel_base)
 +		return;
++	if (!sweet_panel_map) {
++		sweet_panel_map = ml_io_map((vm_offset_t)sweet_panel_base,
++		    SWEET_PANEL_WIDTH * SWEET_PANEL_HEIGHT * 4);
++		if (!sweet_panel_map)
++			return;
++	}
 +
 +	for (int i = 0; i < size; i++) {
 +		char ch = c[i];
@@ -74,7 +85,7 @@
 +		}
 +		if (sweet_panel_y + 16 > SWEET_PANEL_HEIGHT)
 +			return;
-+		uint32_t *row = (uint32_t *)(sweet_panel_base +
++		uint32_t *row = (uint32_t *)(sweet_panel_map +
 +		    (uint64_t)sweet_panel_y * SWEET_PANEL_WIDTH * 4);
 +		const unsigned char *glyph = iso_font + ((uint8_t)ch) * 16;
 +		for (int gy = 0; gy < 16; gy++) {
@@ -92,7 +103,7 @@
  static inline void
  _cnputs(char *c, int size, bool poll)
  {
-@@ -283,6 +368,7 @@
+@@ -283,6 +379,7 @@
  
  #if defined(ARM64_BOARD_CONFIG_SWEET)
  	sweet_log_append(c, size);
