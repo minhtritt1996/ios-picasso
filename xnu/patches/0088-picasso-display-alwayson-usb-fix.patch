@@ -1,6 +1,18 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -535,6 +535,12 @@ IOMobileFramebufferUserClient::externalMethod(
+@@ -256,6 +256,11 @@
+ 		    (IOMobileFramebufferUserClient *)fb->fClients->getObject(i);
+ 		client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
+ 	}
++	int keepon = 1;
++	PE_parse_boot_argn("sweetfb_keepon", &keepon, sizeof(keepon));
++	if (keepon) {
++		fb->fPowerOff = false;
++	}
+ 	if (fb->fPowerOff) {
+ 		/* Fade out: halve every channel each vsync, then black, then idle. */
+ 		uint32_t step = fb->fFadeStep;
+@@ -569,6 +574,12 @@
  	case kSweetFBRequestPowerChange:
  		if (args->scalarInputCount >= 1) {
  			bool off = args->scalarInput[0] == 0;
@@ -15,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -75,6 +75,8 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+@@ -151,6 +151,8 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -24,7 +36,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -772,6 +774,27 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+@@ -866,6 +868,26 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -51,7 +63,7 @@
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
-@@ -783,6 +806,9 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+@@ -878,6 +900,9 @@
  		return;
  	}
  
