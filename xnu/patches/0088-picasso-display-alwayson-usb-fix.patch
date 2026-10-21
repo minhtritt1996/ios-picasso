@@ -1,5 +1,5 @@
---- a/iokit/Kernel/arm/SweetFramebuffer.cpp
-+++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-10-22 01:40:47.137752414 +0700
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-10-22 01:43:10.313171883 +0700
 @@ -256,6 +256,11 @@
  		    (IOMobileFramebufferUserClient *)fb->fClients->getObject(i);
  		client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
@@ -16,59 +16,106 @@
  	case kSweetFBRequestPowerChange:
  		if (args->scalarInputCount >= 1) {
  			bool off = args->scalarInput[0] == 0;
-+			int keepon = 1;
-+			PE_parse_boot_argn("sweetfb_keepon", &keepon, sizeof(keepon));
-+			if (keepon && off) {
-+				IOLog("SWEET FB: display off request ignored (sweetfb_keepon=1)\n");
-+				break;
-+			}
++		int keepon = 1;
++		PE_parse_boot_argn("sweetfb_keepon", &keepon, sizeof(keepon));
++		if (keepon && off) {
++			IOLog("SWEET FB: display off request ignored (sweetfb_keepon=1)\n");
++			break;
++		}
  			IOLockLock(fFB->fLock);
  			if (off != fFB->fPowerOff) {
  				fFB->fPowerOff = off;
---- a/bsd/dev/sweet_usb.c
-+++ b/bsd/dev/sweet_usb.c
-@@ -151,6 +151,8 @@
+--- a/bsd/dev/sweet_usb.c	2026-10-22 01:40:47.137752414 +0700
++++ b/bsd/dev/sweet_usb.c	2026-10-22 01:43:10.314171879 +0700
+@@ -151,6 +151,14 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
++#define GCTL_DSBLCLKGTNG (1u << 0)
 +#define GUSB2PHYCFG     0xc200
-+#define GUSB2PHYCFG_SUSPHY (1u << 6)
++#define GUSB2PHYCFG_SUSPHY   (1u << 6)
++#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
++#define QSCRATCH_GENERAL_CFG 0x08
++#define PIPE_UTMI_CLK_SEL    (1u << 0)
++#define PIPE3_PHYSTATUS_SW   (1u << 3)
++#define PIPE_UTMI_CLK_DIS    (1u << 8)
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -866,6 +868,26 @@
- 	ud.dma_pa = ptoa_64(pn);
+@@ -269,11 +277,15 @@
+ static int
+ ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
+ {
++	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
++	if (phycfg & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM)) {
++		dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	}
+ 	dwc_wr(DEPCMDPAR0(ep), p0);
+ 	dwc_wr(DEPCMDPAR1(ep), p1);
+ 	dwc_wr(DEPCMDPAR2(ep), p2);
+ 	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
+-	for (int i = 0; i < 1000; i++) {
++	for (int i = 0; i < 10000; i++) {
+ 		uint32_t v = dwc_rd(DEPCMD(ep));
+ 		if (!(v & DEPCMD_CMDACT)) {
+ 			uint32_t status = (v >> 12) & 0xf;
+@@ -283,9 +295,10 @@
+ 			}
+ 			return 0;
+ 		}
+-		delay(1);
++	delay(10);
+ 	}
+-	printf("SWEET USB: ep%u cmd 0x%x timeout\n", ep, cmd & 0xf);
++	printf("SWEET USB: ep%u cmd 0x%x timeout (DEPCMD 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x)\n",
++	    ep, cmd & 0xf, dwc_rd(DEPCMD(ep)), dwc_rd(GCTL), dwc_rd(GUSB2PHYCFG));
+ 	return -1;
+ }
+ 
+@@ -867,6 +880,33 @@
  	ud_if_create();
  
-+	/* Clear GUSB2PHYCFG.SUSPHY prior to reset so DWC3 register block is not clock-gated */
-+	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
-+	if (phycfg & GUSB2PHYCFG_SUSPHY) {
-+		dwc_wr(GUSB2PHYCFG, phycfg & ~GUSB2PHYCFG_SUSPHY);
-+		delay(10000);	/* 10 ms: PHY resumes from suspend */
-+	}
-+	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x (SUSPHY cleared)\n",
-+	    phycfg, dwc_rd(GUSB2PHYCFG));
-+
-+	/* Force Qualcomm VBUS session before soft reset */
-+	vm_offset_t qs_early = ml_io_map(QSCRATCH_PA, 0x100);
-+	if (qs_early != 0) {
-+		uint32_t hs = usb_rd(qs_early, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs_early, QSCRATCH_SS_PHY_CTRL);
-+		*(volatile uint32_t *)(qs_early + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
-+		*(volatile uint32_t *)(qs_early + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
-+		__asm__ volatile ("dsb sy" ::: "memory");
-+		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
-+		    usb_rd(qs_early, QSCRATCH_HS_PHY_CTRL), usb_rd(qs_early, QSCRATCH_SS_PHY_CTRL));
-+	}
-+
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/* Configure Qualcomm wrapper: select UTMI clock and enable VBUS session early */
++	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
++	if (qs != 0) {
++		uint32_t gcfg = usb_rd(qs, QSCRATCH_GENERAL_CFG);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = gcfg | PIPE_UTMI_CLK_DIS;
++		delay(1000);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = gcfg | PIPE_UTMI_CLK_DIS | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW;
++		delay(1000);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = (gcfg | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW) & ~PIPE_UTMI_CLK_DIS;
++		delay(1000);
++
++		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
++		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
++		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		printf("SWEET USB: QSCRATCH GENERAL_CFG 0x%08x HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		    usb_rd(qs, QSCRATCH_GENERAL_CFG), usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
++	}
++
++	/* Clear SUSPHY and ENBLSLPM, disable clock gating before soft reset */
++	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
++	dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
++	delay(10000);	/* 10 ms */
++	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x GCTL 0x%08x\n",
++	    phycfg, dwc_rd(GUSB2PHYCFG), dwc_rd(GCTL));
++
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
-@@ -878,6 +900,9 @@
+ 	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
+@@ -878,6 +918,13 @@
  		return;
  	}
  
-+	/* Post-reset settle delay for DWC31 / DWC3 3.30a clock domain re-sync */
++	/* Post-reset settle delay for DWC3 3.30a clock domain re-sync */
 +	delay(100000);	/* 100 ms */
++
++	/* Re-apply GUSB2PHYCFG and GCTL after soft reset */
++	dwc_wr(GUSB2PHYCFG, dwc_rd(GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
 +
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
