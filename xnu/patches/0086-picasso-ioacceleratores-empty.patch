@@ -1,0 +1,54 @@
+From b4d4e4fc62237df911975608566be28979c99e31 Mon Sep 17 00:00:00 2001
+From: test <test@test>
+Date: Wed, 21 Oct 2026 20:54:54 +0700
+Subject: [PATCH 2/3] xnu 0086: empty IOAcceleratorES service (no 30 s wait at
+ backboardd start)
+
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index b6ebfec..e773ed8 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -125,6 +125,18 @@ public:
+ 	void present(const uint8_t *rec);
+ };
+ 
++/*
++ * The graphics accelerator's service class. QuartzCore (CAMetalContextCreate,
++ * once per process) polls IOServiceMatching("IOAcceleratorES") 300 times,
++ * 100 ms apart, before it goes on: thirty seconds at every backboardd start.
++ * One without MetalPluginName/MetalPluginClassName is found and then passed
++ * over by Metal (MTLRegisterDevices), which leaves the renderers as they were.
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+ 
+ class IOMobileFramebufferUserClient : public IOUserClient {
+@@ -202,6 +214,17 @@ AppleCLCD::start(IOService *provider)
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+ 	registerService();
++	uint32_t accelOn = 1;
++	(void)PE_parse_boot_argn("sweetaccel", &accelOn, sizeof(accelOn));
++	IOAcceleratorES *accel = accelOn ? OSTypeAlloc(IOAcceleratorES) : NULL;
++	if (accel != NULL && accel->init()) {
++		accel->setName("sgx");
++		if (accel->attach(this)) {
++			accel->registerService();
++			IOLog("SWEET FB: empty IOAcceleratorES published (no 30 s wait in CAMetalContextCreate)\n");
++		}
++	}
++	OSSafeReleaseNULL(accel);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	return true;
+-- 
+2.34.1
+

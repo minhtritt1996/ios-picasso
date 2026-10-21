@@ -1255,5 +1255,23 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - Paused gracefully at user request to charge worker phone (K60). Phone filesystem flushed with `sync`.
    - Remaining work: resume `write-root-smart.py` to finish chunks 24-32, then reboot to Home Screen.
 
+**2026-10-21, 21:00 - Rootfs 100% synced, SWEETLOG flush #71 analyzed, and patches 0085-0087 added.**
 
-
+1. **Rootfs sync completed & verified:**
+   - All 32 chunks (16 GiB) of `ios16-root-picasso.img` synced and MD5 verified on `/dev/block/sda35` (`darwin`).
+   - Rebooted phone via `adb reboot` into iOS 16.
+2. **SWEETLOG flush #71 pulled and analyzed (`/tmp/sweet-boot-latest.txt`):**
+   - `CommCenter` is completely gone (0 crashes).
+   - `launchd` launched over 100 system daemons cleanly (`securityd`, `powerd`, `runningboardd`, `containermanagerd`...).
+   - `SpringBoard` (PID 26) and `backboardd` (PID 56) are alive and active. SpringBoard thread 0 entered `CFRunLoopRunSpecific`.
+   - `backboardd` swapped 5 frames (surfaces 2 & 3) and then stalled at Apple logo.
+   - Keys work (`SWEET KEYS: key=0 down=1 pon=0x5` -> `SWEET HID: key 0x30 down`).
+3. **Diagnosed why screen stayed on Apple logo:**
+   - Qualcomm DPU reads physical DRAM directly; XNU's `clean_dcache` / `flush_dcache` were no-ops on `__ARM_COHERENT_IO__`. CPU was writing rendered frames to cache, but dirty cache lines were never flushed to DRAM.
+   - QuartzCore (`CAMetalContextCreate`) stalled for 30s per process waiting for `IOAcceleratorES`.
+   - `SweetSurface` did not handle `IOSurfaceAddress`, leaving SpringBoard UI surfaces unpublished (id = 0), and trap 4/5 released surfaces in use.
+4. **Added Patches 0085 - 0087 (adapted from MakrSas/ios-topaz):**
+   - `0085-picasso-dcache-flush.patch`: Real cache maintenance (`dc civac` / `dc cvac` loops in `osfmk/arm/caches.c`) and `sweet_dcache_clean` on `fPixels` in `AppleCLCD::present`.
+   - `0086-picasso-ioacceleratores-empty.patch`: Dummy `IOAcceleratorES` service published at `AppleCLCD::start`, cutting 30s QuartzCore startup delay.
+   - `0087-picasso-sweetsurface-wrap-publish.patch`: `SweetSurface` client wrapping (`IOSurfaceWrapClientImage/Memory`), values, `IOSurfaceAddress` task memory with publishing, trap 4 detach, and zombie state page retention.
+   - Validated contiguous patch sequence (0001-0087) via `tools/validate-repo.py`.
