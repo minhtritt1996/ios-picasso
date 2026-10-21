@@ -1,8 +1,31 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-15, latest)
+## Agent handoff / active work (2026-10-22 01:05, latest)
 
-### >>> UPDATE 2026-10-20 evening (picasso: iOS root on the phone, kernel flashed) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 5 - Always-On Display, USB DWC3 Fix, OpenSSH Injected & Flashed) <<<
+
+**STATE OF THE PHONE RIGHT NOW:**
+- **Boot image:** `shim-boot-0101.img` (36,352,000 bytes, MD5 `35662900dc59a72ba4c150b0d1152a46`) flashed to `/dev/block/bootdevice/by-name/boot` and verified 100%.
+  - Kernel: `0088` (built via GitHub Actions run `39647815759`, commit `710542d`).
+  - Patches included: `0088-picasso-display-alwayson-usb-fix.patch`:
+    - `SweetFramebuffer`: ignores `kSweetFBRequestPowerChange(0)` when `sweetfb_keepon=1` (prevents screen blackout, keeping Apple logo lit continuously until SpringBoard swaps in the Lock Screen).
+    - `sweet_usb`: clears `GUSB2PHYCFG.SUSPHY` before soft reset (prevents DWC3 endpoint clock gating), enables Qualcomm QSCRATCH VBUS session early, and adds 100ms settle delay after reset.
+  - ADT: `shim/out/picasso-clean.adt` (9,920 bytes, no `/product` nub).
+  - Boot-args: `debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_keepon=1 sweettouch=0 sweetusb=2`
+- **Root filesystem (`darwin`, `/dev/block/sda35`):**
+  - 100% verified and synchronized (all 32 chunks / 16 GiB matched bit-for-bit via `tools/write-root-smart.py`).
+  - OpenSSH server + dependencies injected into `/var/jb` and `/Library/LaunchDaemons/com.openssh.sshd.plist`.
+  - Shells: `/var/jb/bin/sh` (`dash`), `/var/jb/bin/bash` (`bash`), symlinked to `/bin/sh` and `/bin/bash`.
+  - Host keys: pre-generated in `/var/jb/etc/ssh/`.
+  - Authorized keys: user's SSH keys (`id_ed25519.pub`, `id_rsa.pub`) installed to `/var/root/.ssh/authorized_keys` (0600) and `/var/mobile/.ssh/authorized_keys` (0600).
+  - Passwords: `root:alpine`, `mobile:alpine`.
+- **Expected Boot Behavior:**
+  1. Panel turns red with shim report -> switches to Apple logo with progress bar.
+  2. Screen **does NOT black out**; Apple logo stays visible while `lsd` indexes applications.
+  3. SpringBoard transitions to **CoverSheet (Lock Screen)**.
+  4. USB Ethernet (`ue0`) enumerates on host as `1209:0001` (CDC-ECM), IP `192.168.7.2`.
+  5. SSH accessible directly via `ssh root@192.168.7.2` (password `alpine` or key).
+
 
 **STATE OF THE PHONE RIGHT NOW:** the `boot` partition holds **our shim + the XNU
 kernel payload** (image `shim/out/shim-boot.img`, 18,071,552 bytes, built
