@@ -488,8 +488,19 @@ static uintptr_t find_dtb(uintptr_t x0)
 	(void)x0;
 #ifdef DTB_OFF
 	if (DTB_OFF) {
-		/* The device tree rides in the kernel part, behind the payload:
-		 * the bootloader loads that part for sure. */
+		/*
+		 * The device tree rides in the kernel part, behind the payload:
+		 * the bootloader loads that part for sure. If the whole boot
+		 * image was found in memory, the tree is in that copy of it.
+		 */
+		if (hunt_result.image) {
+			uintptr_t t = hunt_result.image + 0x1000 + DTB_OFF;
+			if (fdt_magic_ok(t)) {
+				con_str("TREE", "in the boot image");
+				con_skip();
+				return t;
+			}
+		}
 		uintptr_t t = KERNEL_ADDR + DTB_OFF;
 		if (fdt_magic_ok(t)) {
 			con_str("TREE", "in the kernel part");
@@ -620,6 +631,22 @@ void shim_main(uint64_t dtb)
 	con_hex("REG x2", boot_regs[2]);
 	con_hex("REG x3", boot_regs[3]);
 	con_skip();
+
+#ifdef NO_DTB
+	/*
+	 * The bootloader frees what it used, so the addresses in the boot
+	 * header are not mapped any more. It does keep its heap, and the
+	 * address it passes in x0 points into it: look there for the boot
+	 * image and for the payload.
+	 */
+	for (int i = 0; i < 12; i++) {
+		uint64_t w = *(volatile uint64_t *)(boot_regs[0] + i * 8);
+		con_hex2("X0", "w", i, "=", w);
+	}
+	con_skip();
+	hunt_memory((uintptr_t)boot_regs[0]);
+	con_skip();
+#endif
 
 	uintptr_t tree = find_dtb(dtb);
 	con_str("STEP", "tree found");

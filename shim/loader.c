@@ -129,22 +129,72 @@ static int ascii_ok(const char *m, const char *want)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
+/*
+ * Hunt for the payload in the memory the bootloader left behind.
+ *
+ * The bootloader keeps its heap (and the image it read) in ordinary memory
+ * near the address it passes in x0. It frees most of it afterwards, which is
+ * why the addresses the boot header names are not mapped any more: reading
+ * them is answered with a secure fault that kills the core.
+ *
+ * So: walk the heap in both directions, a page at a time, and look for the
+ * two magics. The scan prints every hit as it goes, so a page that is not
+ * mapped ends the walk but leaves the hits on the screen.
+ */
+/* What the hunt found; the device tree is looked for in the image. */
+struct hunt hunt_result;
+
+#define SWEET_MAGIC0	0x45455753U	/* "SWEE" */
+#define SWEET_MAGIC1	0x554e5854U	/* "TXNU" */
+#define ANDROID_MAGIC0	0x52444e41U	/* "ANDR" */
+#define ANDROID_MAGIC1	0x2144494fU	/* "OID!" */
+
+#define HUNT_WINDOW	0x4000000UL	/* 64 MiB each way */
+
+struct hunt hunt_memory(uintptr_t x0)
+{
+	struct hunt h = { 0, 0 };
+	uintptr_t up = x0, down = x0;
+
+	for (unsigned round = 0; round < 2 * (HUNT_WINDOW / 4096); round++) {
+		uintptr_t a = (round & 1) ? down : up;
+		uint32_t w0 = *(volatile uint32_t *)a;
+		uint32_t w1 = *(volatile uint32_t *)(a + 4);
+
+		if (w0 == SWEET_MAGIC0 && w1 == SWEET_MAGIC1) {
+			h.payload = a;
+			con_hex("HUNT", a);
+			con_skip();
+		} else if (w0 == ANDROID_MAGIC0 && w1 == ANDROID_MAGIC1) {
+			h.image = a;
+			con_hex("IMAGE", a);
+			con_skip();
+		}
+		if (round & 1) {
+			if (down <= x0 - HUNT_WINDOW || down < 0x10000000UL)
+				break;
+			down -= 4096;
+		} else {
+			if (up >= x0 + HUNT_WINDOW)
+				break;
+			up += 4096;
+		}
+	}
+	hunt_result = h;
+	return h;
+}
+
 const char *loader_boot(uintptr_t dtb, uintptr_t info)
 {
 	uint64_t rd_start, rd_end;
+	struct hunt h = hunt_result;
 
-	/*
-	 * Where the payload is.
-	 *
-	 * The bootloader hands over in x0 the address of something it kept
-	 * about the image. On this phone it is the image itself: the boot
-	 * header's magic is there, and the payload sits at the ramdisk's file
-	 * offset inside it. The address in the boot header (0x1200000) is not
-	 * where the payload is - reading there is answered with a secure fault
-	 * that kills the core, so it is only used when nothing better is
-	 * known.
-	 */
-	if (PAYLOAD_OFF) {
+	if (h.payload) {
+		rd_start = h.payload;
+		rd_end = rd_start + RAMDISK_SIZE;
+		con_str("INITRD", "found by the hunt");
+		con_skip();
+	} else if (PAYLOAD_OFF) {
 		/*
 		 * The payload rides in the kernel part of the boot image: the
 		 * bootloader loads that part for sure - the shim itself runs from
