@@ -1032,3 +1032,28 @@ iOS, so the journal was never closed. The next mount has to replay it.
 The image is written again - a clean volume with no journal - and the
 journal header of the phone's copy is read to see what the kernel would
 replay.
+
+**The shim works (2026-10-21, 12:40).** Its report on the phone, in full:
+
+```
+HUNT  00000000A7EC0000      payload, found in the bootloader's heap
+TREE  behind the payload    the device tree, right behind the payload
+DTB   00000000A8BE99000
+INITRD found by the hunt
+INITRD lo=A7EC0000  hi=A8E980A0
+PHYS   base=140000000  size=C0000000
+VIRT   FFFFFFE0006000000
+ENTRY  FFFFFFE000748B488
+RAM base 0000000014000000
+```
+
+So the bootloader does load the whole kernel part into its heap, keeps the
+payload and the device tree next to each other there, and frees the rest:
+the addresses in the boot header are useless, the heap is where the data
+is. The shim hunts for it and hands over to the kernel.
+
+After the handover the screen goes black without a panic: the kernel is
+alive but has not drawn anything yet - before the console comes up, before
+the Apple logo, before the USB gadget. The next question is where it
+stops; the persistent log answers it if the kernel got as far as opening
+the UFS (the flush counter moves), and stays unchanged if it did not.
