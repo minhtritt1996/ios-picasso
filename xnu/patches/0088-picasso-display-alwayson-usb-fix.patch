@@ -1,0 +1,63 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -535,6 +535,12 @@ IOMobileFramebufferUserClient::externalMethod(
+ 	case kSweetFBRequestPowerChange:
+ 		if (args->scalarInputCount >= 1) {
+ 			bool off = args->scalarInput[0] == 0;
++			int keepon = 1;
++			PE_parse_boot_argn("sweetfb_keepon", &keepon, sizeof(keepon));
++			if (keepon && off) {
++				IOLog("SWEET FB: display off request ignored (sweetfb_keepon=1)\n");
++				break;
++			}
+ 			IOLockLock(fFB->fLock);
+ 			if (off != fFB->fPowerOff) {
+ 				fFB->fPowerOff = off;
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -75,6 +75,8 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ #define GEVNTADRHI      0xc404
+ #define GEVNTSIZ        0xc408
+ #define GEVNTCOUNT      0xc40c
++#define GUSB2PHYCFG     0xc200
++#define GUSB2PHYCFG_SUSPHY (1u << 6)
+ #define DCFG            0xc700
+ #define DCTL            0xc704
+ #define DEVTEN          0xc708
+@@ -772,6 +774,27 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	ud.dma_pa = ptoa_64(pn);
+ 	ud_if_create();
+ 
++	/* Clear GUSB2PHYCFG.SUSPHY prior to reset so DWC3 register block is not clock-gated */
++	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
++	if (phycfg & GUSB2PHYCFG_SUSPHY) {
++		dwc_wr(GUSB2PHYCFG, phycfg & ~GUSB2PHYCFG_SUSPHY);
++		delay(10000);	/* 10 ms: PHY resumes from suspend */
++	}
++	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x (SUSPHY cleared)\n",
++	    phycfg, dwc_rd(GUSB2PHYCFG));
++
++	/* Force Qualcomm VBUS session before soft reset */
++	vm_offset_t qs_early = ml_io_map(QSCRATCH_PA, 0x100);
++	if (qs_early != 0) {
++		uint32_t hs = usb_rd(qs_early, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs_early, QSCRATCH_SS_PHY_CTRL);
++		*(volatile uint32_t *)(qs_early + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
++		*(volatile uint32_t *)(qs_early + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		    usb_rd(qs_early, QSCRATCH_HS_PHY_CTRL), usb_rd(qs_early, QSCRATCH_SS_PHY_CTRL));
++	}
++
+ 	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
+ 	dwc_wr(DCTL, DCTL_CSFTRST);
+ 	int i;
+@@ -783,6 +806,9 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		return;
+ 	}
+ 
++	/* Post-reset settle delay for DWC31 / DWC3 3.30a clock domain re-sync */
++	delay(100000);	/* 100 ms */
++
+ 	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
+ 	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
+ 	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
