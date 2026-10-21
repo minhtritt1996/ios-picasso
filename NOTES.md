@@ -1230,7 +1230,8 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - The reboot loop on the red shim screen (`HUNT 0xA7EC0000`) was caused by `hunt_memory` continuing to walk unmapped DRAM past the payload, triggering TrustZone/Data Abort.
    - Added immediate `break` in `hunt_memory` once `h.payload` is found.
    - Fixed `find_dtb` to preserve `picasso-clean.adt` without attempting to parse static Linux FDT, which previously overwrote `arm-io/gic` and caused early kernel death before UFS mount.
-2. **Built and flashed `shim-boot-0100.img` (36,352,000 bytes, MD5 `43516b86d95a04c27c9afc29cb0ed7db`):**
+2. **Built and flashed `shim-boot-0100.img` (36,352,000 bytes, MD5 `43b46155f12316eba783dab9cfcbdb89`):**
+   - Eliminated probe of `KERNEL_ADDR + DTB_OFF` (`0x01021000`) in `find_dtb` which triggered Qualcomm TrustZone secure fault (< 0x10000000).
    - Transferred to remote host, written to `/dev/block/bootdevice/by-name/boot`, readback verified 100%.
    - Sent reboot command to device `f9f3d7b0`.
 
