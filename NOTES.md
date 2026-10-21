@@ -1224,7 +1224,15 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - At commit `9df2225`, 61 properties were extracted into `/product`, including `graphics-featureset-class = APPLE4` and `oled-display = 1`. This instructs ProgressUI / backboardd to require Apple Metal hardware GPU acceleration, causing an immediate crash/abort on SM7250 (Adreno 620). Furthermore, `SweetPlatformExpert::processTopLevel` did not exclude `product`, creating an invalid nub in the kernel.
    - Consequently, every image built after 09:49 (images 0086 through 0097) went to a black screen after the red shim screen.
 
-**2026-10-21, 19:45 - Apple logo restored, root cause of hang found, and rootfs patched.**
+**2026-10-21, 22:07 - Fixed shim hunt bounds and preserved clean ADT on picasso.**
+
+1. **Diagnosed reboot loop and black screen:**
+   - The reboot loop on the red shim screen (`HUNT 0xA7EC0000`) was caused by `hunt_memory` continuing to walk unmapped DRAM past the payload, triggering TrustZone/Data Abort.
+   - Added immediate `break` in `hunt_memory` once `h.payload` is found.
+   - Fixed `find_dtb` to preserve `picasso-clean.adt` without attempting to parse static Linux FDT, which previously overwrote `arm-io/gic` and caused early kernel death before UFS mount.
+2. **Built and flashed `shim-boot-0100.img` (36,352,000 bytes, MD5 `43516b86d95a04c27c9afc29cb0ed7db`):**
+   - Transferred to remote host, written to `/dev/block/bootdevice/by-name/boot`, readback verified 100%.
+   - Sent reboot command to device `f9f3d7b0`.
 
 1. **Reverted shim to commit `35ea828`:**
    - In commit `d965b1a`, a `break` in `hunt_memory` caused `hunt_result.image` to remain 0, breaking real DTB discovery and causing the kernel to fail before mounting UFS.
