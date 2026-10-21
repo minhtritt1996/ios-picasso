@@ -494,17 +494,9 @@ static uintptr_t find_dtb(uintptr_t x0)
 	if (DTB_OFF) {
 		/*
 		 * The device tree rides in the kernel part, behind the payload:
-		 * the bootloader loads that part for sure. If the hunt found the
-		 * payload, the tree is at a fixed distance behind it.
+		 * the bootloader loads that part for sure. If the whole boot
+		 * image was found in memory, the tree is in that copy of it.
 		 */
-		if (hunt_result.payload) {
-			uintptr_t t = hunt_result.payload + (DTB_OFF - PAYLOAD_OFF);
-			if (fdt_magic_ok(t)) {
-				con_str("TREE", "behind the payload");
-				con_skip();
-				return t;
-			}
-		}
 		if (hunt_result.image) {
 			uintptr_t t = hunt_result.image + 0x1000 + DTB_OFF;
 			if (fdt_magic_ok(t)) {
