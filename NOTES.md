@@ -1206,3 +1206,19 @@ If the kernel hangs before arm_vm_init(), the mirror cannot help and the
 next step is to make the early console use the panel address from the boot
 args (start.s already has the boot args in x0 and reads them with the
 BA_* offsets).
+
+**2026-10-21, 17:50 - Root cause of black screen found and golden image 0088 flashed.**
+
+Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
+
+1. **The "dirty journal" suspicion was debunked:**
+   - Checked `/dev/block/sda35` (`darwin`): block 129 has `flags = 5` (`kJIJournalNeedInitMask`), and block 130 is all zeroes. The volume was never mounted after `write-rec2.sh` completed at 10:12.
+   - First 16 MiB md5 matched local clean root `ios16-root-picasso.img` exactly (`249476a1a16d8186b87774ae9ce3b022`). The root filesystem is 100% intact and clean.
+2. **Root cause of the black screen on image 0097:**
+   - In patch 0084 (`xnu/out-0086`), `sweet_panel_map_console` called `ml_io_map` for `1080 * 2400 * 4 = 10,368,000 bytes` (~9.88 MiB) right after `arm_vm_init()`.
+   - In XNU, `io_submap` has a total size of only **8 MiB** (`0xfffffe8fff5fc000 - 0xfffffe8fffdfc000`), so `ml_io_map` immediately panicked or failed.
+   - Combined with `disableConsoleOutput = TRUE` suppressing early output, the panel remained black.
+3. **Flashed proven golden image 0088:**
+   - Pushed `shim/out/shim-boot-0088.img` (kernel 0083, iPhone X D22AP identity with sRGB gamut fix from commit `e89bb0c`, no pause, no hold) to the phone via OrangeFox recovery ADB.
+   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) and verified readback md5 (`d675c81faae33ca11125e4c31cf503da`, 36,352,000 bytes).
+
