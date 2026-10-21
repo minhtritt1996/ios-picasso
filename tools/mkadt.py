@@ -48,7 +48,7 @@ BOARDS = {
     'sweet': {
         'ecid': 0x5357454554000001,          # 'SWEET' + 1
         'manifest': b'sweet boot manifest',
-        'compat': 'D22AP|iPhone10,3|xiaomi,sweet|qcom,sm7150|AppleARM',
+        'compat': ('D22AP', 'iPhone10,3', 'xiaomi,sweet', 'qcom,sm7150', 'AppleARM'),
         'fb': (0x9c000000, 0x1700000),
         'ufs': (0x01d84000, 0x3000),
     },
@@ -57,7 +57,8 @@ BOARDS = {
         'mem_size': PICASSO_MEM_SIZE,
         'ecid': 0x5049434153534f01,          # 'PICASSO' + 1
         'manifest': b'picasso boot manifest',
-        'compat': 'D22AP|iPhone10,3|xiaomi,picasso|xiaomi,sweet|qcom,sm7250|AppleARM',
+        'compat': ('D22AP', 'iPhone10,3', 'xiaomi,picasso', 'xiaomi,sweet',
+                   'qcom,sm7250', 'AppleARM'),
         'fb': (0xa0000000, 0x2300000),       # cont_splash_region
         'ufs': (0x01d84000, 0x3000),
     },
@@ -251,7 +252,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr(prof['compat'])),
+        ('compatible', b''.join(cstr(c) for c in prof['compat'])),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
