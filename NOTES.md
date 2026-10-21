@@ -1126,3 +1126,42 @@ hooked in `_cnputc` (osfmk/console/serial_console.c), which every console
 message goes through, so a photograph of the screen shows exactly where
 the kernel stops. Flash it, boot, and photograph the screen after ~30 s
 and again after ~2 min.
+
+**2026-10-21, 16:00 - what the photos proved, and the next step.**
+
+The 0094 image (the shim prints its report and holds) and the 0095 image
+(the same plus the carve-out list and the UFS probe) were photographed on
+the phone. Both show a healthy board:
+
+```
+DTB at 00000000A8BE99000   state: no /memory banks in the FDT
+REG x0/x1/x2 = 00000000A7EB1000
+FB cont_splash_region base A0000000 size 36700160 stride 4320 (w/h 0)
+RAM banks 0, carve-outs 21
+GICD 17A00000  GICR 17A60000  vtimer 19  ptimer 18
+UFS 1D84000  DWC3 A600000  UART 888000  CPUS 8 (0,100..700)
+INITRD found by the hunt: lo=A7EC0000 hi=A8E980A0
+PHYS base=140000000 size=C0000000   RAM base 140000000  RAM size C0000000
+```
+
+The 21 carve-outs are byte for byte the ones in the static device tree
+(host probe on rec-picasso.dtb): everything is below 0xA2400000, nothing
+touches 0x140000000, so **the kernel's RAM is fine** and the fallback is
+safe. The shim, the payload, the ADT and the board are all good.
+
+**So the kernel stops right after the console comes up.** The panel turns
+black (the console clears it) and not one kernel line is visible, and the
+persistent log never moves: the kernel dies before it opens the UFS.
+
+The reason the console is not visible is the boot argument **serial=3**:
+in osfmk/arm/arm_init.c, `serial=3` makes the kernel "switch into serial
+mode from video console" - the messages go to the serial device (the UART
+at 0x888000) instead of the panel. The next image (0096) is the same
+kernel 0083 and the same ADT with that argument removed, so the video
+console stays on the panel and the kernel's own output can be read from a
+photograph.
+
+If the kernel panics before the console exists, the panic text is lost
+(it only reaches the console ring in RAM). The next kernel patch then has
+to mirror the console on the panel without mapping memory from the
+console path (patch 0084 calls ml_io_map there, which is not safe).
