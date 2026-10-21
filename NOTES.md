@@ -1,27 +1,37 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 01:23, latest)
+## Agent handoff / active work (2026-10-22 01:44, latest)
 
-### >>> UPDATE 2026-10-22 (picasso: Run 6 - Real Kernel 0088 Flashed, Display Always-On + USB Fix) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 6 Analysis & Run 7 Fix - DWC3 UTMI Clock + ENBLSLPM) <<<
 
-**STATE OF THE PHONE RIGHT NOW:**
-- **Boot image:** `shim-boot-0102.img` (36,352,000 bytes, MD5 `c4f8928511915ab25b28ec54a7f648c9`) flashed to `/dev/block/bootdevice/by-name/boot` and verified 100%.
-  - Kernel: `0088` compiled via GitHub Actions run `39650578267` (commit `1a87103`), with patch `0088-picasso-display-alwayson-usb-fix.patch` **fully verified applied**:
-    - Verified strings in binary: `sweetfb_keepon`, `SWEET FB: display off request ignored (sweetfb_keepon=1)`, `SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x (SUSPHY cleared)`.
-    - `SweetFramebuffer`: double-layer display-off prevention (`vsyncFired` resets `fPowerOff = false` when `sweetfb_keepon=1` and `kSweetFBRequestPowerChange` breaks early on display-off requests).
-    - `sweet_usb`: `GUSB2PHYCFG.SUSPHY` cleared prior to reset, Qualcomm QSCRATCH VBUS session enabled early, 100ms post-reset settle delay.
-  - ADT: `shim/out/picasso-clean.adt` (9,920 bytes).
-  - Boot-args: `debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_keepon=1 sweettouch=0 sweetusb=2`
-- **Root filesystem (`darwin`, `/dev/block/sda35`):**
-  - All 32 chunks (16 GiB) matched and verified (bit-for-bit sync completed).
-  - OpenSSH server + shell (`dash`/`bash`) + keys installed in `/var/jb` and `/Library/LaunchDaemons/com.openssh.sshd.plist`.
+**RUN 6 RESULTS (from darwin log `/tmp/log-run6.txt`, 100,116 bytes):**
+1. **Display Always-On (VERIFIED SUCCESS):**
+   - Panel stayed brightly lit with Apple logo continuously; user confirmed panel did not black out.
+   - Log shows: `SWEET FB: display off request ignored (sweetfb_keepon=1)`.
+   - `backboardd` drew the Apple logo into surfaces 2 & 3.
+2. **iOS 16 Userland Execution (FULL SUCCESS):**
+   - 8/8 CPUs active (`SWEET CPU: 8/8 CPUs initialized, SGI1 verified`).
+   - `launchd` spawned full iOS subsystem: `runningboardd`, `containermanagerd`, `backboardd`, `SpringBoard` (PID 26), `powerd`, `cfprefsd`, `MobileGestaltHelper`, `lsd`, `biomed`, `mDNSResponder`, `securityd`, `tccd`, `appstored`, `cloudd`...
+   - SpringBoard active in `CFRunLoopRunSpecific` across threads.
+3. **Hardware Buttons & SSH Status:**
+   - Power & Volume buttons are Qualcomm PMIC GPIOs; not yet mapped to iOS `IOHIDEventDriver`, so quick presses do not trigger events. Hard reboot to recovery/fastboot requires 10-15s hold.
+   - `sshd` is managed by `launchd` via socket activation (`inetdCompatibility` on port 22/2222); it only spawns upon incoming TCP connection.
+4. **USB DWC3 Root Cause Diagnosed:**
+   - Log showed: `SWEET USB: ep0 cmd 0x1 timeout` -> `SWEET USB: endpoint 0 setup failed`.
+   - Root cause on Snapdragon 765G (SM7250 / lito):
+     a) On USB 2.0 High-Speed without SuperSpeed PHY, the Qualcomm DWC3 wrapper defaults to PIPE clock. Without `PIPE_UTMI_CLK_SEL` (bit 0) in `QSCRATCH_GENERAL_CFG` (`0x0a6f8808`), the internal MAC core clock is stopped, causing `DEPCMD_SETEPCONFIG` to hang indefinitely.
+     b) `GUSB2PHYCFG` had `ENBLSLPM` (bit 8) active (`0x2500`), which clock-gates `DEPCMD`.
+     c) `GCTL` had clock gating enabled (`DSBLCLKGTNG` was 0).
+     d) `ud_epcmd` timeout was only 1 ms (1000 * 1 us).
 
-- **Expected Boot Behavior:**
-  1. Panel turns red with shim report -> switches to Apple logo with progress bar.
-  2. Screen **does NOT black out**; Apple logo stays visible while `lsd` indexes applications.
-  3. SpringBoard transitions to **CoverSheet (Lock Screen)**.
-  4. USB Ethernet (`ue0`) enumerates on host as `1209:0001` (CDC-ECM), IP `192.168.7.2`.
-  5. SSH accessible directly via `ssh root@192.168.7.2` (password `alpine` or key).
+**RUN 7 FIX (Commit `2e431e9`, CI Run `39655317770`):**
+- Updated `0088-picasso-display-alwayson-usb-fix.patch`:
+  - Added Qualcomm `dwc3_qcom_select_utmi_clk` sequence in `QSCRATCH_GENERAL_CFG`: `PIPE_UTMI_CLK_DIS` -> `PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW` -> clear `PIPE_UTMI_CLK_DIS`.
+  - Cleared both `GUSB2PHYCFG.SUSPHY` and `GUSB2PHYCFG.ENBLSLPM`.
+  - Set `GCTL_DSBLCLKGTNG` to disable core clock gating.
+  - Increased `ud_epcmd` poll loop to 10,000 iterations @ 10us delay (100 ms max).
+  - Verified `git apply --check` passed cleanly against real buildtree.
+
 
 
 **STATE OF THE PHONE RIGHT NOW:** the `boot` partition holds **our shim + the XNU
