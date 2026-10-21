@@ -774,3 +774,40 @@ may need an SMMU context the driver does not create. The console will say
 Image with it enabled: `shim/out/shim-boot-0083u.img` (md5
 914d469a4d63184556a1a0183868706c) - kernel 0083 plus `sweetusb=2` on the
 command line.
+**What the frozen screen said (2026-10-21, photo of the first boot).** The
+panel showed the shim's header, the four boot registers (x0 = x1 = x2 =
+0xA7EB0000, x3 = 0) and then `PROBE 0000000010000000` - and nothing more.
+That is `find_dtb()` in shim/shim.c: the bootloader passes no tree in x0 on
+picasso, so the shim walked a list of addresses and the first read killed the
+core. A read of an address the bootloader did not map is answered with a
+secure fault here, and the trust zone takes the core with it: no panic
+screen, no message, the screen keeps the last line that was drawn.
+
+So on this board the shim must not read the memory it was not given. What it
+needs is already known:
+
+- the memory banks, the GIC, the timer interrupt, the framebuffer and the
+  UFS address are compiled in (`shim/build.sh --picasso`), and the ADT that
+  the kernel reads carries the same values (`tools/mkadt.py --picasso`:
+  dram 0x140000000 + 0xC0000000, GICD 0x17a00000, GICR 0x17a60000,
+  virtual-timer-intid 19, framebuffer 0xa0000000 + 0x2300000, UFS
+  0x1d84000);
+- the payload sits where the boot image header says the ramdisk is
+  (0x1200000), because the tree on this phone has no initrd properties and
+  the bootloader passes none either.
+
+`shim/build.sh --picasso` now passes `NO_DTB=1`, `RAMDISK_ADDR` and
+`RAMDISK_SIZE`; `shim/loader.c` uses them when the tree says nothing, and
+copies the payload header out before patching it so the loader never writes
+to memory the bootloader may have mapped read-only.
+
+Two things that were wrong in the notes and are now settled by the phone's
+own boot image: the parts of a boot image are read **sequentially** from the
+file (the phone's own image has the kernel at file offset 0x1000 and the
+ramdisk right after it, while the RAM addresses are 0x8000 and 0x1200000),
+and our image has the same header addresses as the working one - so the
+image was never the problem.
+
+Image ready for the next flash: `shim/out/shim-boot-0083u.img` (md5
+9d0ea73cbb4b5d94ec069188aa3552de), kernel 0083 (the IOKit quiesce fix and
+the IORTC fix), `sweetusb=2` on the command line.
