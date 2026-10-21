@@ -50,6 +50,11 @@
 
 #define NR_CPUS			8
 
+/* Where the bootloader puts the kernel part of the boot image. */
+#ifndef KERNEL_ADDR
+#define KERNEL_ADDR 0x8000
+#endif
+
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
 #define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
 #define isb() __asm__ volatile("isb" ::: "memory")
@@ -481,14 +486,18 @@ static uintptr_t find_dtb(uintptr_t x0)
 	 * there, with the board discovery working as it does on sweet.
 	 */
 	(void)x0;
-	if (x0 && ascii_ok((const char *)x0, "ANDROID!") && DTB_FILE_OFFSET) {
-		uintptr_t t = x0 + DTB_FILE_OFFSET;
+#ifdef DTB_OFF
+	if (DTB_OFF) {
+		/* The device tree rides in the kernel part, behind the payload:
+		 * the bootloader loads that part for sure. */
+		uintptr_t t = KERNEL_ADDR + DTB_OFF;
 		if (fdt_magic_ok(t)) {
-			con_str("TREE", "inside the boot image");
+			con_str("TREE", "in the kernel part");
 			con_skip();
 			return t;
 		}
 	}
+#endif
 	con_str("DTB", "not read on this board");
 	con_skip();
 	return 0;

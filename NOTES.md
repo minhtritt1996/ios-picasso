@@ -811,3 +811,29 @@ image was never the problem.
 Image ready for the next flash: `shim/out/shim-boot-0083u.img` (md5
 9d0ea73cbb4b5d94ec069188aa3552de), kernel 0083 (the IOKit quiesce fix and
 the IORTC fix), `sweetusb=2` on the command line.
+
+**The bootloader does not load the ramdisk on this phone (2026-10-21).** The
+third picture of the boot showed the shim getting as far as the loader, with
+`INITRD lo= 0000000012000000` - and then nothing, so reading the ramdisk
+where the boot header says it is kills the core, the same way reading an
+unmapped address does. The address the bootloader passes in x0
+(0xA7EB1000, it moves a little between boots) is neither the boot image nor
+the payload: it holds no address-like word in its first 512 bytes.
+
+What the bootloader certainly does is load the *kernel* part: the shim runs
+from it. So the payload and the device tree now ride in the kernel part,
+behind the shim:
+
+```
+kernel part (loaded at 0x8000):
+  0x00000  the shim (28 KB, its own memory ends at 0x31000)
+  0x40000  the payload (16.6 MB)          -> RAM 0x48000
+  0x1018000 the device tree (1.4 MB)       -> RAM 0x1020000
+```
+
+`shim/build.sh --picasso` assembles that part and passes the offsets to the
+shim, which reads the payload from `KERNEL_ADDR + PAYLOAD_OFF` and the tree
+from `KERNEL_ADDR + DTB_OFF`. The kernel part ends at 0x117B000, below the
+0x1200000 the ramdisk part uses, so the two do not overlap.
+
+Image: `shim/out/shim-boot-0083x.img`.

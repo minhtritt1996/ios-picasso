@@ -81,6 +81,17 @@ static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 #ifndef DTB_FILE_OFFSET
 #define DTB_FILE_OFFSET 0
 #endif
+/* Where the payload and the device tree sit inside the kernel part of the
+ * boot image (shim/build.sh measures it). */
+#ifndef PAYLOAD_OFF
+#define PAYLOAD_OFF 0
+#endif
+#ifndef DTB_OFF
+#define DTB_OFF 0
+#endif
+#ifndef KERNEL_ADDR
+#define KERNEL_ADDR 0x8000
+#endif
 
 #define MAX_SEGS	32
 
@@ -133,7 +144,17 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 	 * that kills the core, so it is only used when nothing better is
 	 * known.
 	 */
-	if (info) {
+	if (PAYLOAD_OFF) {
+		/*
+		 * The payload rides in the kernel part of the boot image: the
+		 * bootloader loads that part for sure - the shim itself runs from
+		 * it - and the payload is at a fixed offset inside it.
+		 */
+		rd_start = KERNEL_ADDR + PAYLOAD_OFF;
+		rd_end = rd_start + RAMDISK_SIZE;
+		con_str("INITRD", "in the kernel part");
+		con_skip();
+	} else if (info) {
 		if (ascii_ok((const char *)info, "ANDROID!")) {
 			rd_start = info + RAMDISK_FILE_OFFSET;
 			rd_end = rd_start + RAMDISK_SIZE;

@@ -30,6 +30,8 @@ payload=""
 dtb="../dtb/boot_unpacked/dtb"
 ramdisk_offset=0x1000000
 dtb_offset=0x1f00000
+kernel_addr=0x8000
+payload_off=0			# 0: the payload stays in the ramdisk part
 cmdline="console=null"
 extra=""
 osver=(--os_version 17.0.0 --os_patch_level 2035-06)
@@ -57,6 +59,14 @@ while [ $# -gt 0 ]; do
 		# this board, so the shim must not go looking for the device tree:
 		# every board value is compiled in instead.
 		cflags="$cflags -DNO_DTB=1"
+		# The payload and the device tree go into the *kernel* part of the
+		# boot image: the bootloader loads that part for sure (the shim
+		# itself runs from it), while on this board the ramdisk part is
+		# not loaded at all - reading where the header says it is kills the
+		# core. The payload starts PAYLOAD_OFF bytes into the part, past
+		# the shim's own .bss.
+		payload_off=0x40000
+		cflags="$cflags -DPAYLOAD_OFF=${payload_off}UL -DKERNEL_ADDR=${kernel_addr}UL"
 		# The bootloader reads a few things from the command line (which
 		# USB controller to set up), so keep the stock one.
 		cmdline="earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 androidboot.usbcontroller=a600000.dwc3 loop.max_part=7 androidboot.usbconfigfs=true androidboot.selinux=permissive console=null"
@@ -100,6 +110,12 @@ done
 if [ -n "$payload" ] && [ -f "$payload" ]; then
 	psize=$(stat -c %s "$payload")
 	cflags="$cflags -DRAMDISK_ADDR=${ramdisk_offset}UL -DRAMDISK_SIZE=${psize}UL"
+	if [ "$payload_off" != "0" ]; then
+		# The device tree rides in the kernel part too, right behind the
+		# payload, so that the shim can read it from a known address.
+		dtb_part_off=$(( payload_off + (psize + 4095) / 4096 * 4096 ))
+		cflags="$cflags -DDTB_OFF=${dtb_part_off}UL"
+	fi
 fi
 
 mkdir -p out
@@ -132,26 +148,35 @@ compile_shim() {
 }
 align4k() { echo $(( ($1 + 4095) / 4096 * 4096 )); }
 
-# The parts of the boot image: the kernel at the page after the header, the
-# payload right after it, the device tree after that. These are the offsets
-# the bootloader sees when it leaves the whole image in memory.
-rd_off=0
-dtb_off=0
-for try in 1 2 3; do
-	compile_shim "-DRAMDISK_FILE_OFFSET=${rd_off}UL -DDTB_FILE_OFFSET=${dtb_off}UL"
-	new_rd=$(align4k $((4096 + img_size)))
-	new_dtb=$(align4k $((new_rd + ${psize:-0})))
-	[ "$new_rd" = "$rd_off" ] && [ "$new_dtb" = "$dtb_off" ] && break
-	rd_off=$new_rd
-	dtb_off=$new_dtb
-done
-printf 'shim: payload at file offset 0x%x, device tree at 0x%x\n' "$rd_off" "$dtb_off"
+# The kernel part holds the shim and (on this board) the payload and the
+# device tree, so their offsets are fixed and the shim is told about them.
+compile_shim ""
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio (ABL dislikes a zero-size ramdisk on some builds) -> diagnostics.
 if [ -n "${payload}" ]; then
 	cp "$payload" out/ramdisk.bin
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
+fi
+# The kernel part: the shim, then (on this board) the payload and the device
+# tree, so that the bootloader - which certainly loads this part - brings
+# them into memory as well.
+kernel_part=out/Image
+if [ "$payload_off" != "0" ] && [ -n "$payload" ]; then
+	{
+		cat out/Image
+		head -c $(( payload_off - $(stat -c %s out/Image) )) /dev/zero
+		cat "$payload"
+		if [ -f "$dtb" ]; then
+			head -c $(( dtb_part_off - payload_off - psize )) /dev/zero
+			cat "$dtb"
+		fi
+	} > out/kernel.bin
+	kernel_part=out/kernel.bin
+	shim_end=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_end"{print $1}')
+	[ $(( 16#$shim_end )) -le $(( payload_off )) ] || echo "warning: the shim's memory ends at 0x$shim_end, the payload starts at 0x$payload_off" >&2
+	printf 'shim: payload at 0x%x, device tree at 0x%x in the kernel part\n' \
+		$(( kernel_addr + payload_off )) $(( kernel_addr + dtb_part_off ))
 fi
 dtb_arg=()
 if [ -f "$dtb" ]; then
@@ -160,8 +185,8 @@ else
 	echo "warning: no device tree at $dtb, building without one" >&2
 	echo "         (the bootloader of these phones needs the DTB in the image)" >&2
 fi
-mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
-	"${dtb_arg[@]}" --base 0 --kernel_offset 0x8000 --ramdisk_offset $ramdisk_offset \
+mkbootimg --header_version 2 --kernel "$kernel_part" --ramdisk out/ramdisk.bin \
+	"${dtb_arg[@]}" --base 0 --kernel_offset $kernel_addr --ramdisk_offset $ramdisk_offset \
 	--tags_offset 0x100 --dtb_offset $dtb_offset --pagesize 4096 \
 	"${osver[@]}" \
 	--cmdline "$cmdline" -o out/shim-boot.img
