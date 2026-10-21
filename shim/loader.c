@@ -326,6 +326,26 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
+#ifdef SHIM_PAUSE_MS
+	if (SHIM_PAUSE_MS) {
+		/*
+		 * The kernel's console clears the panel, so everything the shim
+		 * has to say has to be on the screen before the jump - and the
+		 * screen can only be photographed while the shim is still here.
+		 */
+		con_str("SHIM", "waiting before the jump");
+		con_skip();
+		uint64_t f = 0, t = 0, end = 0;
+		__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+		__asm__ volatile("mrs %0, cntpct_el0" : "=r"(t));
+		end = t + f / 1000 * SHIM_PAUSE_MS;
+		for (;;) {
+			__asm__ volatile("mrs %0, cntpct_el0" : "=r"(t));
+			if (t >= end)
+				break;
+		}
+	}
+#endif
 
 	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");

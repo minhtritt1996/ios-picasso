@@ -59,6 +59,10 @@ while [ $# -gt 0 ]; do
 		# this board, so the shim must not go looking for the device tree:
 		# every board value is compiled in instead.
 		cflags="$cflags -DNO_DTB=1"
+		# Wait before the jump: the kernel's console clears the panel, so
+		# the shim's report has to be photographed before the kernel takes
+		# the screen.
+		cflags="$cflags -DSHIM_PAUSE_MS=15000"
 		# The payload and the device tree go into the *kernel* part of the
 		# boot image: the bootloader loads that part for sure (the shim
 		# itself runs from it), while on this board the ramdisk part is
