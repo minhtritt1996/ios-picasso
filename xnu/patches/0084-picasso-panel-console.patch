@@ -1,17 +1,9 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -254,6 +254,7 @@
- 		_cnputc('\r', poll);
- 	}
- 
-+	sweet_panel_putc(c);
- 	cons_ops[idx].putc(c, poll);
- }
- 
-@@ -276,6 +277,100 @@
- int sweet_console_muted;
- #endif
- 
+@@ -242,6 +242,100 @@
+  * @param poll Whether or not this call should poll instead of going to sleep
+  *             waiting for an interrupt when the hardware device isn't ready
+  */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +/*
 + * Mirror the console on the panel.
@@ -105,6 +97,22 @@
 +	sweet_panel_x += 8;
 +}
 +#endif
++
+ static inline void
+ _cnputc(char c, bool poll)
+ {
+@@ -254,6 +348,7 @@
+ 		_cnputc('\r', poll);
+ 	}
+ 
++	sweet_panel_putc(c);
+ 	cons_ops[idx].putc(c, poll);
+ }
+ 
+@@ -276,6 +371,7 @@
+ int sweet_console_muted;
+ #endif
+ 
 +
  static inline void
  _cnputs(char *c, int size, bool poll)
