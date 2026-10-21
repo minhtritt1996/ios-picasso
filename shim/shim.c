@@ -372,6 +372,14 @@ static int bootargs_have(const char *key)
 /* The registers the bootloader entered us with (start.S keeps them). */
 uint64_t boot_regs[4];
 
+static int ascii_ok(const char *m, const char *want)
+{
+	for (int i = 0; i < 8; i++)
+		if (m[i] != want[i])
+			return 0;
+	return 1;
+}
+
 /* Where the device tree was found, and what the discovery made of it. */
 static uintptr_t g_tree;
 static const char *g_why;
@@ -467,8 +475,20 @@ static uintptr_t find_dtb(uintptr_t x0)
 	 * compiled in instead: the board values come from the build
 	 * (shim/build.sh --picasso) and the payload address comes from the
 	 * boot image header (shim/loader.c).
+	 *
+	 * One exception: what the bootloader passes in x0 is the boot image
+	 * itself, and the device tree is inside it - so the tree can be read
+	 * there, with the board discovery working as it does on sweet.
 	 */
 	(void)x0;
+	if (x0 && ascii_ok((const char *)x0, "ANDROID!") && DTB_FILE_OFFSET) {
+		uintptr_t t = x0 + DTB_FILE_OFFSET;
+		if (fdt_magic_ok(t)) {
+			con_str("TREE", "inside the boot image");
+			con_skip();
+			return t;
+		}
+	}
 	con_str("DTB", "not read on this board");
 	con_skip();
 	return 0;
@@ -648,7 +668,7 @@ void shim_main(uint64_t dtb)
 		reset(20);
 	}
 
-	const char *lwhy = loader_boot(dtb);
+	const char *lwhy = loader_boot(dtb, (uintptr_t)boot_regs[0]);
 	con_str("LOADER", lwhy);
 	con_skip();
 

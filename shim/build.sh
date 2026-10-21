@@ -103,26 +103,49 @@ if [ -n "$payload" ] && [ -f "$payload" ]; then
 fi
 
 mkdir -p out
-for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
-	$CC $CFLAGS $cflags -c $f -o out/${f%.*}.o
+# The shim is compiled twice: the first time to learn how big it is, because
+# where the payload and the device tree sit in the boot image depends on the
+# size of the kernel part. The second time with the real numbers. If the
+# size moved across a page, it is done again.
+compile_shim() {
+	extra_cflags="$1"
+	for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
+		$CC $CFLAGS $cflags $extra_cflags -c $f -o out/${f%.*}.o
+	done
+	# The image runs wherever ABL puts it with no relocation pass: only the
+	# header's image_size (start.o, linked at 0) may be an absolute address.
+	abs=$(aarch64-linux-gnu-readelf -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/hw.o out/adt.o out/board.o | grep -c ABS64 || true)
+	[ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
+	# Some binutils do not know --no-warn-rwx-segments; drop it when it is refused.
+	LDFLAGS="-static -T shim.ld -Wl,--build-id=none -Wl,-N"
+	if $CC $LDFLAGS -Wl,--no-warn-rwx-segments -o /dev/null start.o 2>/dev/null; then
+		LDFLAGS="$LDFLAGS -Wl,--no-warn-rwx-segments"
+	fi
+	$CC $CFLAGS $cflags $extra_cflags $LDFLAGS \
+		out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o \
+		out/hw.o out/adt.o out/board.o -o out/shim.elf
+	$OBJCOPY -O binary out/shim.elf out/Image
+	# The file holds only the code and the data; the .bss and the stacks are
+	# zeroed by the shim itself (this bootloader only takes a 256 KB image).
+	img_size=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_load_end"{print strtonum("0x"$1)}')
+	truncate -s "$img_size" out/Image
+}
+align4k() { echo $(( ($1 + 4095) / 4096 * 4096 )); }
+
+# The parts of the boot image: the kernel at the page after the header, the
+# payload right after it, the device tree after that. These are the offsets
+# the bootloader sees when it leaves the whole image in memory.
+rd_off=0
+dtb_off=0
+for try in 1 2 3; do
+	compile_shim "-DRAMDISK_FILE_OFFSET=${rd_off}UL -DDTB_FILE_OFFSET=${dtb_off}UL"
+	new_rd=$(align4k $((4096 + img_size)))
+	new_dtb=$(align4k $((new_rd + ${psize:-0})))
+	[ "$new_rd" = "$rd_off" ] && [ "$new_dtb" = "$dtb_off" ] && break
+	rd_off=$new_rd
+	dtb_off=$new_dtb
 done
-# The image runs wherever ABL puts it with no relocation pass: only the
-# header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$(aarch64-linux-gnu-readelf -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/hw.o out/adt.o out/board.o | grep -c ABS64 || true)
-[ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
-# Some binutils do not know --no-warn-rwx-segments; drop it when it is refused.
-LDFLAGS="-static -T shim.ld -Wl,--build-id=none -Wl,-N"
-if $CC $LDFLAGS -Wl,--no-warn-rwx-segments -o /dev/null start.o 2>/dev/null; then
-	LDFLAGS="$LDFLAGS -Wl,--no-warn-rwx-segments"
-fi
-$CC $CFLAGS $cflags $LDFLAGS \
-	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o \
-	out/hw.o out/adt.o out/board.o -o out/shim.elf
-$OBJCOPY -O binary out/shim.elf out/Image
-# The file holds only the code and the data; the .bss and the stacks are
-# zeroed by the shim itself (this bootloader only takes a 256 KB image).
-size=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_load_end"{print strtonum("0x"$1)}')
-truncate -s "$size" out/Image
+printf 'shim: payload at file offset 0x%x, device tree at 0x%x\n' "$rd_off" "$dtb_off"
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio (ABL dislikes a zero-size ramdisk on some builds) -> diagnostics.
 if [ -n "${payload}" ]; then

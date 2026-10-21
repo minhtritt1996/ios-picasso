@@ -73,6 +73,14 @@ static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 #ifndef RAMDISK_SIZE
 #define RAMDISK_SIZE 0
 #endif
+/* Where the payload and the device tree sit in the boot image, when the
+ * bootloader leaves the whole image in memory (shim/build.sh measures it). */
+#ifndef RAMDISK_FILE_OFFSET
+#define RAMDISK_FILE_OFFSET 0
+#endif
+#ifndef DTB_FILE_OFFSET
+#define DTB_FILE_OFFSET 0
+#endif
 
 #define MAX_SEGS	32
 
@@ -100,13 +108,49 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+static int ascii_ok(const char *m, const char *want)
+{
+	for (int i = 0; i < 8; i++)
+		if (m[i] != want[i])
+			return 0;
+	return 1;
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
-const char *loader_boot(uintptr_t dtb)
+const char *loader_boot(uintptr_t dtb, uintptr_t info)
 {
 	uint64_t rd_start, rd_end;
 
-	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
+	/*
+	 * Where the payload is.
+	 *
+	 * The bootloader hands over in x0 the address of something it kept
+	 * about the image. On this phone it is the image itself: the boot
+	 * header's magic is there, and the payload sits at the ramdisk's file
+	 * offset inside it. The address in the boot header (0x1200000) is not
+	 * where the payload is - reading there is answered with a secure fault
+	 * that kills the core, so it is only used when nothing better is
+	 * known.
+	 */
+	if (info) {
+		if (ascii_ok((const char *)info, "ANDROID!")) {
+			rd_start = info + RAMDISK_FILE_OFFSET;
+			rd_end = rd_start + RAMDISK_SIZE;
+			con_str("INITRD", "inside the boot image");
+			con_skip();
+		} else if (magic_ok((const char *)info)) {
+			rd_start = info;
+			rd_end = info + RAMDISK_SIZE;
+			con_str("INITRD", "at x0");
+			con_skip();
+		} else {
+			rd_start = RAMDISK_ADDR;
+			rd_end = rd_start + RAMDISK_SIZE;
+			con_str("INITRD", "from the boot image header");
+			con_skip();
+		}
+	} else if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end)) {
 		if (!RAMDISK_ADDR || !RAMDISK_SIZE)
 			return "no initrd in /chosen";
