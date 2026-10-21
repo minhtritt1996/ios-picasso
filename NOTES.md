@@ -1057,3 +1057,72 @@ alive but has not drawn anything yet - before the console comes up, before
 the Apple logo, before the USB gadget. The next question is where it
 stops; the persistent log answers it if the kernel got as far as opening
 the UFS (the flush counter moves), and stays unchanged if it did not.
+
+**2026-10-21, 13:40 - where the work stands, and what the journal really is.**
+
+The phone is *not* connected to the PC at the moment (no adb, no fastboot,
+no USB device), so nothing can be flashed or pulled until the user plugs
+it in again.
+
+Two facts that were not written down before and that decide the next step:
+
+1. **The clean root image was never written to the phone.** `/tmp/opencode/
+   write-rec3.log` (11:59) says `lot 0 thu 1 loi ... DUNG tai lot 0`: the
+   run failed on the very first chunk, three times. The `darwin` partition
+   therefore still holds the copy that the kernel has already journalled
+   (write-rec2, 10:12, wrote the same file), i.e. the volume is in the
+   "dirty journal" state that makes the next boot stop early. The file on
+   the PC is still clean: block 129 (the journal info block) has flags = 5
+   = `kJIJournalInFSMask | kJIJournalNeedInitMask`, offset 0x82000, size
+   0x800000. Writing it again puts the volume back into the state where
+   the kernel creates a fresh journal and iOS boots.
+2. **The local image has the plain migration plist but not the ByHost
+   ones.** `/private/var/mobile/Library/Preferences/com.apple.migration.plist`
+   with `LastSystemVersion = 20H392` is in the image (catalog name found
+   in UTF-16), but there is no `ByHost` directory and no file whose name
+   carries the platform UUID 47A4033D-9F31-5A46-90F4-BE29CA615E78
+   anywhere in the 16 GiB. The working boot got the home screen anyway,
+   so the plain file is enough for now.
+
+**The journal is the prime suspect for the hang after the first boot.**
+The chain in the log of the boot that worked (`/tmp/opencode/log-darwin4.txt`):
+
+```
+SWEET UFS: "darwin" on LUN 0: first block 0x1882b00, 20480 MiB, read-write
+SWEET LOG: console log to the last 4100 KiB of the partition (block 0x1d827fa)
+hfs: Initializing the journal (joffset 0x82000 sz 0x800000)...
+hfs: mounted iOSRoot on device b(1, 0)
+SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0xa0000000 ... presented as 1125x2436
+exec SpringBoard
+```
+
+The persistent log thread starts *before* the mount (it is started by
+`sweet_log_start()` right after the partition is found, patch 0047), so a
+mount that hangs would still move the log counter - unless the hang is
+before the UFS open at all. That is what the log says: it never moved.
+So the kernel stops somewhere between the platform expert and the UFS
+partition open, or inside the journal replay while the UFS lock is held.
+
+Apple's HFS sources (hfs-627.100.6, the same commit the CI stages into
+`bsd/sweet_hfs`) were fetched to `/tmp/opencode/hfs-31d5ec23...` to read
+the journal code: `hfs_early_journal_init` (core/hfs_vfsutils.c:2460),
+`journal_open` (core/hfs_journal.c:1865), `replay_journal`
+(core/hfs_journal.c:1162), `update_fs_block` (core/hfs_journal.c:818).
+Note the block size mismatch: the BSD layer sees the device with
+`su.secsize = DEV_BSIZE = 512` (patch 0028/0030) while the volume's block
+size is 4096, so the journal is written and replayed in 512-byte pieces.
+`journal_open` already has a "throw the journal away" path
+(`flags & JOURNAL_RESET` -> `jhdr->start = jhdr->end`), and
+`hfs_mount_args.journal_disable` disables the journal completely - that
+is the fallback fix if the replay itself is what hangs: reset the journal
+for the root mount and clear `kHFSVolumeJournaledMask` in the volume
+header so the next boot does not try to replay it again.
+
+**The diagnostic that is ready: kernel 0084 mirrors the console on the
+panel.** CI kernel `xnu/out-0085`, image `shim/out/shim-boot-0085.img`
+(md5 0ac9a1309042c3387cdbf8925fb164ba), command line
+`... sweetusb=2 ufslogsecs=60 sweetpanel=0xA0000000`. The mirror is
+hooked in `_cnputc` (osfmk/console/serial_console.c), which every console
+message goes through, so a photograph of the screen shows exactly where
+the kernel stops. Flash it, boot, and photograph the screen after ~30 s
+and again after ~2 min.
