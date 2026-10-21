@@ -977,3 +977,23 @@ checked.
 
 The three files were added to the root image and the image was written back
 to the `darwin` partition.
+
+**The real D22AP device tree (2026-10-21).** The `/product` node of the iPhone
+X is what MobileGestalt reads to know the device, and without it the system
+calls itself an iPod. The tree is in the IPSW as
+`Firmware/all_flash/DeviceTree.d22ap.im4p`: an IMG4 file whose payload is an
+LZFSE stream (`bvx2`), and the result is Apple's device tree format -
+186084 bytes with 61 properties under `/product`.
+
+`tools/extract-dt.py` does that (it needs `pyliblzfse`, and the module is
+called `liblzfse`). The tree goes to `research/ipsw-x/d22ap.adt`, which is
+where `tools/mkadt.py` looks for it, so the picasso tree now carries the real
+identity: `tools/mkadt.py --picasso` writes 12604 bytes instead of 9920.
+
+The platform UUID of this board follows from the same tree: the kernel's
+`generatePlatformUUID` hashes a namespace, the `unique-chip-id`
+(0x5049434153534f01 for picasso) and the `chip-id` (0x8015), giving
+**47A4033D-9F31-5A46-90F4-BE29CA615E78**.
+
+Image with the identity: `shim/out/shim-boot-0086.img`
+(md5 eb23ce6e09cd04733742cd1f5071737e).
