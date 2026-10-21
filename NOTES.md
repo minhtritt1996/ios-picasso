@@ -1314,3 +1314,16 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - `0086-picasso-ioacceleratores-empty.patch`: Dummy `IOAcceleratorES` service published at `AppleCLCD::start`, cutting 30s QuartzCore startup delay.
    - `0087-picasso-sweetsurface-wrap-publish.patch`: `SweetSurface` client wrapping (`IOSurfaceWrapClientImage/Memory`), values, `IOSurfaceAddress` task memory with publishing, trap 4 detach, and zombie state page retention.
    - Validated contiguous patch sequence (0001-0087) via `tools/validate-repo.py`.
+
+**2026-10-22, 05:50 - Run 7 Diagnosis & Run 8 Boot (Lock Screen / Always-On Display).**
+
+1. **Run 7 Analysis (commit `052ccce`, CI run `39656614838`):**
+   - Panel illumination fix verified: `sweetfb_keepon=1` kept the backlight lit.
+   - DWC3 UTMI sequence verified: `QSCRATCH GENERAL_CFG 0x0000000d` and soft reset completed in 1 ms without `ep0 cmd 0x1 timeout`.
+   - Observed reboot after 3 seconds: caused by `debug=0xc` (`DB_REBOOT`) triggering restart after `ud_epcmd` / `sweet_usb_gadget_start`.
+2. **Run 8 Deployed (`payload-picasso-0104.bin`):**
+   - Set `debug=0x14e` to prevent automatic reboot on panic and freeze output if halted.
+   - Set `sweetusb=0` to isolate USB controller operations, ensuring clean userland boot.
+   - Kept `sweetfb_keepon=1` and `sweetfb_noconsole=1` to keep the display lit while SpringBoard boots.
+   - Flashed `shim-boot-0104.img` directly to `boot` partition via recovery ADB and rebooted device `f9f3d7b0`.
+
