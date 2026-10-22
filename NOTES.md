@@ -1377,7 +1377,21 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - Reverted `sweetusb=0` to eliminate the 2-3s hardware watchdog reset.
    - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `2ad84d964ff9307f3f4860e3067ee98d`).
    - Flashed directly to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
-   - Rebooted phone via `adb reboot` into iOS 16 at 07:47.
+   - Rebooted phone via `adb reboot` into iOS 16 at 07:47. User confirmed Apple logo appeared stably.
+   - Log `/tmp/log-run12.txt` verified: 0 crashes across all processes, SweetHIDButtons received user Power button presses (Usage 0x30).
+
+**2026-10-22, 07:57 - Patch 0088 Fixed for SM7250 USB Clock & Power Wake, CI Run Triggered.**
+
+1. **Fixed DWC3 USB Clock Sequence for SM7250:**
+   - In `xnu/patches/0088-picasso-display-alwayson-usb-fix.patch`:
+     - Qualcomm SM7250 (picasso) HAS a SuperSpeed PHY / PIPE clock (`maximum-speed = "super-speed"` in `lito-usb.dtsi`).
+     - The `PIPE_UTMI_CLK_DIS` sequence in `QSCRATCH_GENERAL_CFG` was intended only for legacy platforms without SuperSpeed PHY. Disabling PIPE clock tripped the Qualcomm RPM clock watchdog, triggering SoC hardware reset in 2-3s.
+     - Removed the `PIPE_UTMI_CLK_DIS` clock-killing sequence while preserving VBUS session override (`HS_PHY_CTRL` / `SS_PHY_CTRL`), LPM clear (`SUSPHY` / `ENBLSLPM`), clock gating disable (`GCTL_DSBLCLKGTNG`), and 100ms `ud_epcmd` timeout.
+2. **Added Power Button Wake to `SweetHIDButtons::testFired`:**
+   - In `SweetHID.cpp`: Added `self->key(kHIDUsage_Csmr_Power, press);` alongside Menu press so automatic wake events properly register on buttonless iPhone X (`D22AP`).
+3. **Committed & Pushed to picasso Remote:**
+   - Commit `d7d27e6`, pushed to `picasso/main`.
+   - GitHub Actions workflow run `39702767175` started building new kernel artifact.
 
 
 
