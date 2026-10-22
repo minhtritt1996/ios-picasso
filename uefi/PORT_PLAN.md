@@ -37,6 +37,24 @@ fastboot while XNU runs. Motivation and the measurements behind it are in
 5. **Gate**: if the first DMA in UEFI also hangs, the SMMU is locked before any
    code of ours runs and this route dies with it - report instead of pushing on.
 
+## Concrete structures found (so the skeleton can be written)
+
+- A device is three things: `Platforms/<Vendor>/<codename>Pkg` (`<codename>.dsc`,
+  `<codename>.fdf`, `DeviceBuild.py`, `Library/MemoryMapLib`,
+  `Library/ConfigurationMapLib`), `Resources/Configs/<codename>.toml`
+  (`[uefi_fd] base/size`, boot-image header version) and
+  `Binaries/<codename>/` with the vendor DXE.
+- lisa (SM7325, same family): FD `0x9FD00000` + `0x200000`, stacks at
+  `0x9FF90000`, `PcdSystemMemoryBase 0x80000000`, framebuffer 1080x2400x32.
+- picasso's reserved-memory has the same window lisa uses:
+  `0x9F400000` + `0xC00000`, so FD base `0x9FD00000`, size `0x200000` is free by
+  construction. RAM starts at `0x80000000` (two banks, second at `0x1_00000000`).
+- BootShim is built per device with `FD_BASE`/`FD_SIZE` and copies the payload
+  after the FD; `build_uefi.py` takes those numbers from the TOML.
+- `Binaries/<codename>` is the only non-source input. For picasso it will hold
+  **our own** drivers (GOP, `UsbfnDwc3Dxe` + picasso `PlatformUsbfnLib`), not
+  vendor blobs.
+
 ## Open questions
 
 - Does ABL hand off with the SMMU still usable for the USB stream? The shim,
