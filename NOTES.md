@@ -37,6 +37,25 @@ Flashing and logs work through recovery/fastboot with
 The shim keeps the compile-gated probes (`SWEET_SMMU*`, `SWEET_USB*`,
 `SWEET_USBBOOT`) for whoever picks this up.
 
+
+### Vendor firmware survey for a possible UEFI port (same day)
+
+`tools/xbl-dxe-list.py` parses Qualcomm firmware volumes (ELF image, FV header at
+`_FVH-0x28`, FFS files, section streams). Results on this phone (dumps in
+`/home/tritm/picasso-fw/`, not in git):
+
+| Partition | Contents |
+| --- | --- |
+| `xbl` (7,327,744 B) | XBL loader: AArch64 code, `Loading DxeCore at ...`, `PrePiLib.c`, `FwVolume.c`/`Decompress`, `UEFI Ver`, `Boot Device : UFS`, and `DisplayDxe` strings. Its one firmware volume (`vaddr 0x9fc00000`, 0x240000) is **empty (0xFF)** |
+| `xbl_config` (524,288 B) | another ELF, no firmware volume |
+| `abl` (2,097,160 B) | one FV (0x30000) with one FIRMWARE_VOLUME_IMAGE file, LZMA (GUID `ee4e5898-3914-4259-9d6e-dc7bd79403cf`); decompresses to 921,800 B containing a single PE32 named **LinuxLoader** |
+
+So this device does **not** ship the vendor DXE set (UsbDeviceDxe, UfsDxe, GOP)
+that HackiOS extracts for redwood (Kodiak). A Mu-Silicium port for picasso would
+have to build those DXE drivers from EDK2 sources instead of dropping in vendor
+binaries - significantly more than a "copy the blobs" port. Combined with the
+SMMU wall, the UEFI/USB route is a real project, not a quick experiment.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
