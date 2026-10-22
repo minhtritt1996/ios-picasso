@@ -1398,9 +1398,19 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
      - `SWEET HID: key 0x30 down/up` fired every 5s continuously to `backboardd`.
      - `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401 GCTL 0x00102001 GUSB2PHYCFG 0x00002400)`.
      - Diagnosed: On SuperSpeed controller SM7250, clearing `SUSPHY` only on `GUSB2PHYCFG` (0xc200) was insufficient because `GUSB3PIPECTL` (0xc2c0) had bit 17 (`SUSPHY`) set, clock-gating the DWC3 core during endpoint setup.
-4. **Patch 0088 Fixed for GUSB3PIPECTL SUSPHY & CI Run Started:**
+4. **Patch 0088 Fixed for GUSB3PIPECTL SUSPHY & CI Run Completed:**
    - Cleared `GUSB3PIPECTL` bit 17 (`SUSPHY`) around soft reset and in `ud_epcmd`.
-   - Committed `5b894ab`, pushed to `picasso/main`. CI workflow run `3970507...` started.
+   - Committed `5b894ab`, pushed to `picasso/main`. CI workflow run `39705075878` succeeded in 5m30s.
+
+**2026-10-22, 08:30 - Run 14 Built & Deployed (`payload-picasso-0109.bin`).**
+
+1. **Packaged Kernel & Deployed to Device:**
+   - Kernel artifact `12394681709` from CI run `39705075878` extracted to `/tmp/run14_kernel`.
+   - Built payload `payload-picasso-0109.bin` with `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `c1a72f8f36787ca687e2477bdd259792`).
+   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
+   - Ready for reboot to test USB CDC-ECM gadget and network enumeration.
+
 
 
 
