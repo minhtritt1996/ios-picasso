@@ -1392,9 +1392,16 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
 3. **Run 13 Built & Deployed (`payload-picasso-0108.bin`):**
    - Packaged new kernel from CI run `39702769666` (commit `d7d27e6` with SM7250 DWC3 clock watchdog fix and Power button wake).
    - Set `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
-   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `fadf98898c198c6846f10216c369d0f8`).
    - Flashed directly to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
-   - Ready to reboot and monitor USB gadget CDC-ECM network interface (`ue0` @ `192.168.7.2`).
+   - Booted into iOS 16: Apple logo appeared, zero reboot/watchdog reset.
+   - Pulled log `/tmp/log-run13.txt` (99,312 bytes):
+     - `SWEET HID: key 0x30 down/up` fired every 5s continuously to `backboardd`.
+     - `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401 GCTL 0x00102001 GUSB2PHYCFG 0x00002400)`.
+     - Diagnosed: On SuperSpeed controller SM7250, clearing `SUSPHY` only on `GUSB2PHYCFG` (0xc200) was insufficient because `GUSB3PIPECTL` (0xc2c0) had bit 17 (`SUSPHY`) set, clock-gating the DWC3 core during endpoint setup.
+4. **Patch 0088 Fixed for GUSB3PIPECTL SUSPHY & CI Run Started:**
+   - Cleared `GUSB3PIPECTL` bit 17 (`SUSPHY`) around soft reset and in `ud_epcmd`.
+   - Committed `5b894ab`, pushed to `picasso/main`. CI workflow run `3970507...` started.
+
 
 
 
