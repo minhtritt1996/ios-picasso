@@ -1,6 +1,32 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 17:05, latest)
+## Agent handoff / active work (2026-10-22 17:45, latest)
+
+### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
+
+1. **The SMMU probe hangs the bus.** With the mapping fixed to 64 KiB, the ring
+   still stops right after `QUSB2PHY PRIM_BCR post`, with no panic line: reading
+   `apps-smmu@15000000` from XNU hangs (the SMMU sits behind a NoC path that
+   needs a bus vote). Do not touch the SMMU from the kernel without those votes.
+2. **Stronger hypothesis for the STARTTRANSFER reset:** sweet's kernel RAM is at
+   `0xb0000000` (< 4 GiB) and USB DMA works there; picasso's kernel RAM is at
+   `0x140000000` (> 4 GiB). If the USB master's XPU/SMMU window covers only low
+   memory, the controller's first fetch is an XPU violation, which on Qualcomm
+   resets through the PMIC — i.e. exactly the observed "power off, no panic".
+   Note `qcom,iommu-dma-addr-pool = <0x90000000 0x60000000>` on the USB node:
+   Android hands the controller IOVAs below 4 GiB.
+3. **Run 37 (commit `17a560d`, CI `39759534123`)** adds `sweetusbdma=0x...`: the
+   transfer area comes from a given physical page mapped uncached instead of
+   `kmem_alloc_contig`, and cache maintenance is skipped for it. Test page:
+   `0xA22F0000` (inside the 35 MiB splash framebuffer, unused tail).
+   If `sweetusbstep=4 sweetusbdma=0xA22F0000` survives, the window theory is
+   confirmed and the fix is to keep the USB DMA area below 4 GiB (shim hands a
+   free low page through the ADT).
+4. **Remote workflow is in place** (phone now on `root@100.121.254.115`, pass
+   `k60`): `tools/picasso-boot-remote.sh`, `tools/picasso-fastboot-remote.sh`,
+   `tools/sweet-log-pull-remote.sh`.
+
+## Agent handoff (2026-10-22 17:05)
 
 ### >>> UPDATE 2026-10-22 (steps 2 and 3 boot; STARTTRANSFER powers off; SMMU suspect — Run 34) <<<
 
