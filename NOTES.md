@@ -1327,3 +1327,15 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - Kept `sweetfb_keepon=1` and `sweetfb_noconsole=1` to keep the display lit while SpringBoard boots.
    - Flashed `shim-boot-0104.img` directly to `boot` partition via recovery ADB and rebooted device `f9f3d7b0`.
 
+**2026-10-22, 07:12 - Run 8 Diagnosis: SpringBoard BoundingPath Crash Found & Rootfs Synced.**
+
+1. **Extracted 904 KiB log from Run 8 (`/tmp/log-run8.txt`):**
+   - Device ran 10+ minutes stably with display continuously illuminated (confirming `sweetfb_keepon=1`).
+   - Pinpointed root cause of Apple logo hang: `SpringBoard` was crashing repeatedly in `-[_UIScreenComplexBoundingPathUtilities _loadBitmapForScreen:type:]`:
+     `*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', reason: 'Failed to load bounding path bitmap data from the asset manager for asset name: BoundingPathBitmap-1125x2436-375x812-3.00x'`
+   - Each crash spawned `ReportCrash` and `launchd` restarted `SpringBoard`, causing `backboardd` to retain the boot splash logo.
+2. **Synced 15 modified chunks to phone `darwin` partition (`/dev/block/sda35`):**
+   - Used direct local USB via `tools/write-direct-smart.py` (chunks 0, 1, 8, 13, 15, 17, 23, 24-30, 31).
+   - All 15 chunks verified with MD5 on `/dev/block/sda35`. `BoundingPathData.bundle` is now present in the on-device rootfs.
+
+
