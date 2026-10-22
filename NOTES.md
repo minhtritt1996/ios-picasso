@@ -122,8 +122,10 @@ Overlay and build instructions: `uefi/overlay/README.md` (commit `bf158a2`).
 Follow-up (same evening): DxeCore stage bands all pass (rows 500-660), GOP
 initialises (SimpleFbDxe bands 700/740/780), and BDS reaches `BdsEntry` (row
 820) but hangs before `PlatformBootManagerBeforeConsole` (row 860) even with
-`PcdEmuVariableNvModeEnable` and VariableRuntimeDxe. Next: markers inside
-BdsEntry between those points. Note the phone now **hangs**
+`PcdEmuVariableNvModeEnable` and VariableRuntimeDxe. Then the no-op `PlatformBootManagerLib` (Mu's version runs secure-boot/ACPI
+setup that needs missing drivers) let BDS finish: consoles connect and
+`AfterConsole` returns (large digit 7, drawn with a 3x5 font on the
+framebuffer). UEFI core, GOP and BDS all run on picasso. Note the phone now **hangs**
 instead of resetting, and the operator holds Volume Down, so every reset lands
 in fastboot.
 

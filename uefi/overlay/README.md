@@ -41,14 +41,19 @@ dependency is only needed for x86 images):
 - Emulated variable store: `PcdEmuVariableNvModeEnable = TRUE` in the DSC and
   `VariableRuntimeDxe` in DXE.inc/APRIORI.inc (BDS needs variables early).
 
+- `Platforms/Xiaomi/picassoPkg/Library/PlatformBootManagerLibNull`: no-op
+  platform hooks (the Mu implementation runs secure-boot/ACPI setup that needs
+  drivers this port does not ship and hangs before the console).
+- `BdsEntry.c` also draws large hex digits: stage 1 -> A -> B -> 2 -> 3 -> 4 ->
+  5 -> 6 (consoles connected) -> 7 (AfterConsole), using a 3x5 font scaled 12x.
+
 ## State reached (2026-10-22)
 
 BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV
 decompression all succeed (yellow band). DxeCore then runs to completion: the white band at
 row 660 (just before `gBds->Entry`) is the last thing on screen, so the
-firmware core, dispatcher and BDS entry all execute. GOP initialises too (bands at 700/740/780). BDS reaches `BdsEntry`
-(orange, row 820) but not `PlatformBootManagerBeforeConsole` (purple, 860),
-even with emulated variables. Next: markers between those points inside
-BdsEntry (BdsInitialize, EfiBootManager init, console connect) to find the
-first call that never returns; the platform's PlatformBootManagerLib may also
-be a Null implementation now that the vendor Binaries are gone.
+firmware core, dispatcher and BDS entry all execute. GOP initialises too (bands at 700/740/780). BDS now completes its
+initialisation: consoles are connected and `PlatformBootManagerAfterConsole`
+returns (digit 7 on screen). The firmware core, GOP and BDS all run on lito.
+Next: the USB device DXE (UsbfnDwc3Dxe + a picasso PlatformUsbfnLib) and a
+loader, or a visible boot menu (BootManagerMenuApp) if wanted first.

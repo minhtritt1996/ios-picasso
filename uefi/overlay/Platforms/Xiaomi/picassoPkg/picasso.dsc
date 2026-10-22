@@ -75,6 +75,9 @@
   gQcomPkgTokenSpaceGuid.PcdStorageIsUfs3|FALSE
 
 [LibraryClasses]
+  # Bring-up: skip the secure-boot/ACPI setup in BootManagerLib (those need
+  # drivers we do not ship yet and hang before the console is up).
+  PlatformBootManagerLib|picassoPkg/Library/PlatformBootManagerLibNull/PlatformBootManagerLibNull.inf
   #
   # Memory Libraries
   #

@@ -670,6 +670,46 @@ BdsFormalizeEfiGlobalVariable (
   BdsFormalizeOSIndicationVariable ();
 }
 
+/*
+ * picasso bring-up: draw a value in large hex digits straight into the
+ * framebuffer. The board has no UART, so this is the only readable output
+ * before the GOP console exists.
+ */
+STATIC CONST UINT8 mPicassoFont[16][5] = {
+  {0x7,0x5,0x5,0x5,0x7}, {0x2,0x6,0x2,0x2,0x7}, {0x7,0x1,0x7,0x4,0x7}, {0x7,0x1,0x7,0x1,0x7},
+  {0x5,0x5,0x7,0x1,0x1}, {0x7,0x4,0x7,0x1,0x7}, {0x7,0x4,0x7,0x5,0x7}, {0x7,0x1,0x1,0x2,0x2},
+  {0x7,0x5,0x7,0x5,0x7}, {0x7,0x5,0x7,0x1,0x7}, {0x7,0x5,0x7,0x5,0x5}, {0x6,0x5,0x6,0x5,0x6},
+  {0x7,0x4,0x4,0x4,0x7}, {0x6,0x5,0x5,0x5,0x6}, {0x7,0x4,0x7,0x4,0x7}, {0x7,0x4,0x7,0x4,0x4},
+};
+
+STATIC
+VOID
+PicassoHex (UINTN Row, UINT64 Value, UINTN Digits)
+{
+  volatile UINT32 *Fb = (volatile UINT32 *)0xA0000000UL;
+  CONST UINTN Scale = 12;
+  UINTN       D, R, C, X0;
+
+  for (D = 0; D < Digits; D++) {
+    UINTN Shift = (Digits - 1 - D) * 4;
+    UINT8 Nib   = (UINT8)((Value >> Shift) & 0xf);
+
+    X0 = (1080 - Digits * 4 * Scale) / 2 + D * 4 * Scale;
+    for (R = 0; R < 5; R++) {
+      for (C = 0; C < 3; C++) {
+        UINT32 Colour = (mPicassoFont[Nib][R] & (4 >> C)) ? 0x00FFFFFF : 0x00000000;
+        UINTN  Px, Py;
+
+        for (Py = 0; Py < Scale; Py++) {
+          for (Px = 0; Px < Scale; Px++) {
+            Fb[((Row + R * Scale + Py) * 1080) + X0 + C * Scale + Px] = Colour;
+          }
+        }
+      }
+    }
+  }
+}
+
 /* picasso bring-up markers (row, colour) for the BDS stages. */
 STATIC
 VOID
@@ -730,27 +770,34 @@ BdsEntry (
   PERF_CROSSMODULE_END ("DXE");
   PERF_CROSSMODULE_BEGIN ("BDS");
   DEBUG ((DEBUG_INFO, "[Bds] Entry...\n"));
-  PicassoBdsBand (820, 0x00FF8000);   /* BdsEntry started */
+  PicassoBdsBand (800, 0x00FF8000);   /* BdsEntry started */
+  PicassoHex (810, 0x1, 1);
   PlatformBootManagerBdsEntry ();             // MU_CHANGE 00076 - Signal start of BDS
 
   //
   // Fill in FirmwareVendor and FirmwareRevision from PCDs
   //
   FirmwareVendor      = (CHAR16 *)PcdGetPtr (PcdFirmwareVendor);
+  PicassoHex (700, (UINT64)(UINTN)FirmwareVendor, 8);   /* pointer value */
   gST->FirmwareVendor = AllocateRuntimeCopyPool (StrSize (FirmwareVendor), FirmwareVendor);
   ASSERT (gST->FirmwareVendor != NULL);
   gST->FirmwareRevision = PcdGet32 (PcdFirmwareRevision);
+  PicassoHex (810, 0xA, 1);                            /* vendor string copied */
 
   //
   // Fixup Tasble CRC after we updated Firmware Vendor and Revision
   //
   gST->Hdr.CRC32 = 0;
   gBS->CalculateCrc32 ((VOID *)gST, sizeof (EFI_SYSTEM_TABLE), &gST->Hdr.CRC32);
+  PicassoHex (810, 0xB, 1);                            /* CRC32 done */
 
+  PicassoBdsBand (800, 0x00FF8000);
+  PicassoHex (810, 0x2, 1);
   //
   // Validate Variable.
   //
   BdsFormalizeEfiGlobalVariable ();
+  PicassoHex (810, 0x3, 1);
 
   // MU_CHANGE
   //
@@ -776,6 +823,7 @@ BdsEntry (
       );
   }
 
+  PicassoHex (810, 0x4, 1);
   //
   // Initialize L"BootOptionSupport" EFI global variable.
   // Lazy-ConIn implictly disables BDS hotkey.
@@ -939,7 +987,7 @@ BdsEntry (
   //
   PERF_INMODULE_BEGIN ("PlatformBootManagerBeforeConsole");
   PlatformBootManagerBeforeConsole ();
-  PicassoBdsBand (860, 0x008000FF);   /* BeforeConsole done */
+  PicassoHex (810, 0x5, 1);
   PERF_INMODULE_END ("PlatformBootManagerBeforeConsole");
 
   //
@@ -968,6 +1016,7 @@ BdsEntry (
     //
   } else {
     EfiBootManagerConnectAllDefaultConsoles ();
+    PicassoHex (810, 0x6, 1);                          /* default consoles connected */
   }
 
   PERF_INMODULE_END ("EfiBootManagerConnectAllDefaultConsoles");
@@ -985,6 +1034,7 @@ BdsEntry (
   //
   PERF_INMODULE_BEGIN ("PlatformBootManagerAfterConsole");
   PlatformBootManagerAfterConsole ();
+  PicassoHex (810, 0x7, 1);                            /* AfterConsole done */
   PERF_INMODULE_END ("PlatformBootManagerAfterConsole");
 
   //
