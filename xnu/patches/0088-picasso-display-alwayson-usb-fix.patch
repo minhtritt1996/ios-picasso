@@ -38,7 +38,7 @@
 +#define GUSB3PIPECTL         0xc2c0
 +#define GUSB3PIPECTL_SUSPHY  (1u << 17)
 +#define GCC_USB_PHY_CFG_AHB2PHY_BCR 0x6a000
-+#define GCC_USB30_PRIM_GDSC  0x10f004
++#define GCC_USB30_PRIM_GDSCR 0x0f004 /* PA 0x10f004, offset from GCC base */
 +#define GCC_QUSB2PHY_PRIM_BCR 0x12000
 +#define HSPHY_PA             0x088e3000
 +#define HSPHY_SIZE           0x1000
@@ -109,7 +109,7 @@
 +	 *    BCR, otherwise every later PHY read returns repeating bus-error fill
 +	 *    (0x11111111 / 0x88888888 / 0x06060606).
 +	 */
-+	vm_offset_t gcc = ml_io_map(GCC_PA, 0x80000);
++	vm_offset_t gcc = ml_io_map(GCC_PA, 0x90000);
 +	if (gcc != 0) {
 +		/*
 +		 * usb30_prim GDSC: bit 0 is SW_COLLAPSE (1 = power down, 0 = on),
@@ -117,16 +117,16 @@
 +		 * clearing bit 0 when it is already 0 is a no-op, and writing the
 +		 * status bits back would be harmful, so do a masked update only.
 +		 */
-+		uint32_t gdsc = usb_rd(gcc, GCC_USB30_PRIM_GDSC);
++		uint32_t gdsc = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
 +		if (gdsc & 1u) {
-+			*(volatile uint32_t *)(gcc + GCC_USB30_PRIM_GDSC) = gdsc & ~1u;
++			*(volatile uint32_t *)(gcc + GCC_USB30_PRIM_GDSCR) = gdsc & ~1u;
 +			__asm__ volatile ("dsb sy" ::: "memory");
 +		}
-+		for (int c = 0; c < 1000 && !(usb_rd(gcc, GCC_USB30_PRIM_GDSC) & (1u << 31)); c++) {
++		for (int c = 0; c < 1000 && !(usb_rd(gcc, GCC_USB30_PRIM_GDSCR) & (1u << 31)); c++) {
 +			delay(10);
 +		}
 +		printf("SWEET USB: GDSC usb30_prim 0x%08x -> 0x%08x\n",
-+		    gdsc, usb_rd(gcc, GCC_USB30_PRIM_GDSC));
++		    gdsc, usb_rd(gcc, GCC_USB30_PRIM_GDSCR));
 +
 +		/* AHB2PHY block reset: bit 0 (and its SW mirror, bit 1) deassert low. */
 +		uint32_t ahbbcr = usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR);
