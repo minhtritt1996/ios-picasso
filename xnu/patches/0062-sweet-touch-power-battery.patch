@@ -109,7 +109,7 @@
      "     'IOClass'         = IOPanicPlatform;"
 --- /dev/null
 +++ b/bsd/dev/sweet_rpmh.c
-@@ -0,0 +0,364 @@
+@@ -0,0 +0,383 @@
 +/*
 + * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
 + * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
@@ -438,16 +438,35 @@
 +		return EIO;
 +	}
 +	rh_poisoned = false;
-+	printf("SWEET RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("SWEET RPMH: ACTIVE vote complete at %u mV (rail voltage requires hardware verification)\n", mv);
 +	return 0;
 +}
++
++/* Allowed PMIC5 LDO resources and the voltage window each one supports
++ * (lito-regulators.dtsi): touch on sweet, the USB PHY rails on picasso. */
++static const struct {
++	const char *name;
++	unsigned min_mv, max_mv;
++} rh_rails[] = {
++	{ "ldoc11", 2950, 3400 },
++	{ "ldoa2", 2700, 3300 },	/* hsphy vdda33 */
++	{ "ldoa5", 720, 1056 },		/* hsphy vdd */
++	{ "ldoa12", 1710, 1890 },	/* hsphy vdda18 */
++};
 +
 +int
 +sweet_rpmh_vreg_enable(const char *res, unsigned mv)
 +{
-+	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
-+	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
-+		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/* Never apply PMIC5-LDO policy to resources outside this table. */
++	bool known = false;
++	for (unsigned i = 0; i < sizeof(rh_rails) / sizeof(rh_rails[0]); ++i) {
++		if (res && !strcmp(res, rh_rails[i].name) &&
++		    mv >= rh_rails[i].min_mv && mv <= rh_rails[i].max_mv) {
++			known = true;
++		}
++	}
++	if (!known) {
++		printf("SWEET RPMH: refusing %s at %u mV\n", res ? res : "(null)", mv);
 +		return EINVAL;
 +	}
 +	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
