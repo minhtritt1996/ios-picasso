@@ -23,7 +23,6 @@ trap 'rm -rf "$tmp"' EXIT
 # The files this patch set touches; --strip-components drops the top dir.
 tar xzf "$tgz" -C "$tmp" --strip-components=1 \
 	xnu/bsd/dev/sweet_usb.c \
-	xnu/bsd/dev/sweet_ufs.c \
 	xnu/iokit/Kernel/arm/SweetFramebuffer.cpp \
 	xnu/iokit/Kernel/arm/hid/SweetHID.cpp
 
