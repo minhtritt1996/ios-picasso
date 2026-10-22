@@ -94,7 +94,7 @@
  	return -1;
  }
  
-@@ -300,7 +332,15 @@
+@@ -300,12 +332,24 @@
  	t[1] = (uint32_t)(bpa >> 32);
  	t[2] = len;
  	t[3] = ctl | TRB_HWO | TRB_LST | TRB_ISP_IMI | TRB_IOC;
@@ -110,7 +110,16 @@
  	if (len) {
  		ud_sync(buf, len);
  	}
-@@ -715,10 +755,12 @@
+ 	uint64_t tpa = ud.dma_pa + trb;
++	printf("SWEET USB: start xfer ep%u trb 0x%llx buf 0x%llx len %u ctl 0x%x\n",
++	    ep, tpa, bpa, len, ctl);
+ 	ud_epcmd(ep, DEPCMD_STARTTRANSFER, (uint32_t)(tpa >> 32), (uint32_t)tpa, 0);
++	printf("SWEET USB: start xfer ep%u returned (DEPCMD 0x%08x DSTS 0x%08x)\n",
++	    ep, dwc_rd(DEPCMD(ep)), dwc_rd(DSTS));
+ }
+ 
+ static void
+@@ -715,10 +759,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -127,7 +136,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -864,9 +906,149 @@
+@@ -864,9 +910,161 @@
  		return;
  	}
  	ud.dma_pa = ptoa_64(pn);
@@ -204,6 +213,18 @@
 +	}
 +
 +	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
++	/* Optional: report the apps SMMU global state (sweetusbsmmu=1). */
++	int smmu_probe = 0;
++	PE_parse_boot_argn("sweetusbsmmu", &smmu_probe, sizeof(smmu_probe));
++	if (smmu_probe) {
++		vm_offset_t smmu = ml_io_map(0x15000000, 0x1000);
++		if (smmu != 0) {
++			printf("SWEET USB: SMMU SID0 0x%08x GBPA 0x%08x S2CR0 0x%08x CBAR 0x%08x\n",
++			    usb_rd(smmu, 0x00), usb_rd(smmu, 0x800), usb_rd(smmu, 0x600),
++			    usb_rd(smmu, 0x408));
++		}
++	}
++
 +	vm_offset_t hsphy = ml_io_map(HSPHY_PA, HSPHY_SIZE);
 +	if (hsphy != 0) {
 +		/*
@@ -278,7 +299,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1060,39 @@
+@@ -878,6 +1076,39 @@
  		return;
  	}
  
@@ -318,7 +339,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1105,46 @@
+@@ -890,28 +1121,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -383,7 +404,7 @@
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1152,10 @@
+@@ -919,6 +1168,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
