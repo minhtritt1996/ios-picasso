@@ -27,10 +27,11 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,29 @@
+@@ -151,6 +151,30 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
++extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
 +#define GCTL_DSBLCLKGTNG     (1u << 0)
 +#define GUSB2PHYCFG          0xc200
 +#define GUSB2PHYCFG_SUSPHY   (1u << 6)
@@ -57,7 +58,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +296,7 @@
+@@ -273,7 +297,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -66,7 +67,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +306,10 @@
+@@ -283,9 +307,10 @@
  			}
  			return 0;
  		}
@@ -79,7 +80,7 @@
  	return -1;
  }
  
-@@ -715,10 +739,12 @@
+@@ -715,10 +740,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -96,11 +97,24 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +892,124 @@
+@@ -866,7 +893,137 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
 -	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/*
++	 * 0. Power the PHY's analog rails. On lito the RPMh sleep set disables
++	 *    pm8150_l5/l12/l2 (qcom,init-enable = <0>), so a warm reboot from
++	 *    Android leaves the Femto PHY unpowered: its registers answer, but
++	 *    the PLL never locks and no UTMI clock reaches DWC3, which is the
++	 *    ep0 SETEPCONFIG timeout. Vote them on through RPMh before init.
++	 *    Values from phy-msm-snps-hs.c: 0.88 V core, 1.8 V, 3.3 V.
++	 */
++	int r5 = sweet_rpmh_vreg_enable("ldoa5", 880);
++	int r12 = sweet_rpmh_vreg_enable("ldoa12", 1800);
++	int r2 = sweet_rpmh_vreg_enable("ldoa2", 3300);
++	printf("SWEET USB: rails ldoa5=%d ldoa12=%d ldoa2=%d\n", r5, r12, r2);
++
 +	/*
 +	 * 1. Bring the USB PHY AHB2PHY bridge out of reset. lito has no AHB2PHY
 +	 *    branch clock: the bridge is gated by the GCC reset
@@ -222,7 +236,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +1021,39 @@
+@@ -878,42 +1035,39 @@
  		return;
  	}
  

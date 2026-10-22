@@ -109,7 +109,7 @@
      "     'IOClass'         = IOPanicPlatform;"
 --- /dev/null
 +++ b/bsd/dev/sweet_rpmh.c
-@@ -0,0 +1,358 @@
+@@ -0,0 +0,364 @@
 +/*
 + * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
 + * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
@@ -130,6 +130,10 @@
 +#define RH_TCS_PA       0x18220d00u
 +#define RH_TCS_SIZE     0x3000u
 +#define RH_DICT_PA      0x0c3f000cu
++/* picasso (SM7250): the locator word is not populated; the DTB reserves the
++ * cmd-db at 0x80860000 (0x20000), so use that region instead. */
++#define RH_PICASSO_DB_PA 0x80860000u
++#define RH_PICASSO_DB_SIZE 0x20000u
 +#define RH_DRV          2u
 +#define RH_ACTIVE_N     2u       /* DT order: ACTIVE 2, SLEEP 3, WAKE 3 */
 +#define RH_NORMAL_N     8u       /* hidden CONTROL TCS is not in this bank */
@@ -244,12 +248,14 @@
 +		uint32_t pa = rh_read(rh_dict, 0);
 +		uint32_t size = rh_read(rh_dict, 4);
 +		printf("SWEET RPMH: cmd-db locator=%#x pa=%#x size=%#x\n", RH_DICT_PA, pa, size);
-+		/* Firmware supplies the reserved RAM address; never scan physical RAM. */
++		/* Firmware supplies the reserved RAM address; never scan physical RAM.
++		 * If the locator is empty (picasso), use the DTB's fixed cmd-db. */
 +		if (pa < 0x80000000u || (pa & 3u) || (size & 3u) ||
 +		    size < RH_DB_HEADER || size > RH_DB_MAX ||
 +		    (uint64_t)pa + size > 0x100000000ULL) {
-+			printf("SWEET RPMH: invalid cmd-db locator\n");
-+			return EINVAL;
++			printf("SWEET RPMH: locator unusable, using picasso cmd-db\n");
++			pa = RH_PICASSO_DB_PA;
++			size = RH_PICASSO_DB_SIZE;
 +		}
 +		rh_db = ml_io_map(pa, size);
 +		if (!rh_db) {
@@ -470,7 +476,7 @@
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- /dev/null
 +++ b/bsd/dev/sweet_spmi.c
-@@ -0,0 +1,126 @@
+@@ -0,0 +0,126 @@
 +/*
 + * Battery-only adaptation of input/sweet_keys.c, observer EXT_READL.
 + * PMIC READ ONLY. The only MMIO store issues a one-byte read command.
@@ -599,7 +605,7 @@
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- /dev/null
 +++ b/bsd/dev/sweet_spmi.h
-@@ -0,0 +1,14 @@
+@@ -0,0 +0,14 @@
 +/* Shared C/C++ interface. Init once, on the SweetBattery start thread. */
 +#ifndef SWEET_BATTERY_SPMI_H
 +#define SWEET_BATTERY_SPMI_H
@@ -616,7 +622,7 @@
 +#endif
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
-@@ -0,0 +1,319 @@
+@@ -0,0 +0,319 @@
 +/*
 + * Built-in iOS battery bring-up service. Default: 100%, AC, not charging.
 + * sweetbattery=1: read-only PM6150 polling every 30 seconds; voltage-derived
