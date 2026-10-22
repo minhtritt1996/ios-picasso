@@ -1,8 +1,55 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 11:08, latest)
+## Agent handoff / active work (2026-10-22 11:32, latest)
 
-### >>> UPDATE 2026-10-22 (picasso: Run 18 Analysis & Run 19 Fix - Wake SNPS Femto High-Speed PHY & Early VBUS Override) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 19 Log Analysis & Run 20 Building - Complete SNPS Femto PHY Powerup & GCC Reset) <<<
+
+1. **Run 19 Log Analysis (`/tmp/log-run19.txt`, 90,926 bytes):**
+   - Pulled directly from `darwin` partition (`/dev/block/sda35`) via `tools/sweet-log-pull.sh`.
+   - Log extracted:
+     * `SWEET USB: ue0 192.168.7.2/24 up (err 0)`
+     * `SWEET USB: HSPHY pre-init 0x50: 0x00000000 0x54: 0x88888888 0x94: 0x00000000`
+     * `SWEET USB: HSPHY post-init 0x50: 0x00000000 0x54: 0xb0b0b0b0 0x94: 0x00000000`
+     * `SWEET USB: VBUS override on: HS_PHY_CTRL 0x10100000 SS_PHY_CTRL 0x01000000`
+     * `SWEET USB: soft reset done after 1 ms, GCTL 0x00102001 DCFG 0x00080804`
+     * `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401 GCTL 0x00102001 GUSB2PHYCFG 0x00002400 GUSB3PIPECTL 0x030c0002 DCFG 0x00080800 DSTS 0x00520000)`
+     * `SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps 64)`
+   - **Root Cause Identified via Downstream Picasso Driver (`drivers/usb/phy/phy-msm-snps-hs.c`):**
+     * In Run 19, the Femto PHY registers (`0x088e3000`) were partially accessed, but critical initialization steps were missing:
+       1) **PHY Reset Missing:** `GCC_QUSB2PHY_PRIM_BCR` (`gcc + 0x12000`) was never asserted/deasserted.
+       2) **PHY Sleep Mode:** `USB2_PHY_USB_PHY_UTMI_CTRL0` (`0x3c`) `SLEEPM` (bit 0) was never set, so the PHY remained in hardware sleep mode!
+       3) **Reference Clock Selection:** `USB2_PHY_USB_PHY_REFCLK_CTRL` (`0xa0`) was not configured for CXO 19.2MHz (`0x2 << 0`), and `FSEL` in `0x54` was not zeroed.
+       4) **Internal LDO Regulator:** `USB2_PHY_USB_PHY_HS_PHY_CTRL_COMMON2` (`0x5c`) `VREGBYPASS` (bit 0) was not set.
+       5) **PHY Suspend:** `USB2_PHY_USB_PHY_HS_PHY_CTRL2` (`0x64`) `USB2_SUSPEND_N` (bit 2) was not asserted to wake PHY from suspend.
+       6) **Tuning Overrides:** Picasso device tree specifically overrides parameter registers with `<0xc8 0x70>, <0x24 0x74>, <0x64 0x6c>`, rather than stock lito values.
+       7) **SuperSpeed Power Present:** `LANE0_PWR_PRESENT` in `SS_PHY_CTRL` was incorrectly asserted on a High-Speed only port (`dwc3-msm.c` asserts this only when `speed >= SUPER`).
+
+2. **Run 20 Implementation (Commit `7fcf36d`, CI Run `39722915002`):**
+   - In `xnu/patches/0088-picasso-display-alwayson-usb-fix.patch`:
+     * Reset PHY hardware block via `GCC_QUSB2PHY_PRIM_BCR` (`*(gcc + 0x12000) |= 1; delay(150); *(gcc + 0x12000) &= ~1; delay(150)`).
+     * Complete 13-step Linux `msm_hsphy_init` sequence:
+       - `CFG0` (`0x94`) override enable
+       - `UTMI_CTRL5` (`0x50`) assert `POR`
+       - `COMMON0` (`0x54`) clear `FSEL` for 19.2MHz ref clock
+       - `COMMON1` (`0x58`) set `PLLBTUNE` (bit 5)
+       - `REFCLK_CTRL` (`0xa0`) set `REFCLK_SEL_DEFAULT` (0x2)
+       - `COMMON1` (`0x58`) set `VBUSVLDEXTSEL0`, `CTRL1` (`0x60`) set `VBUSVLDEXT0`
+       - Picasso tuning overrides: `0xc8` -> `0x70`, `0x24` -> `0x74`, `0x64` -> `0x6c`
+       - `COMMON2` (`0x5c`) set `VREGBYPASS` (bit 0)
+       - `CTRL2` (`0x64`) set `USB2_SUSPEND_N_SEL | USB2_SUSPEND_N`
+       - `UTMI_CTRL0` (`0x3c`) set `SLEEPM` (bit 0) to wake PHY
+       - Deassert `POR` (`0x50` &= ~2)
+       - Release `SUSPEND_N_SEL` (`0x64` &= ~8)
+       - Release override (`0x94` &= ~2)
+     * Configure `QSCRATCH_HS_PHY_CTRL` early with `UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL` without asserting `LANE0_PWR_PRESENT`.
+     * Cleaned and validated patch hunk line counts with Python script (100% clean).
+   - Pushed to `picasso/main`. Waiting for CI build.
+
+3. **Next Concrete Action:**
+   - Wait for CI Run `39722915002` to finish.
+   - Download `kernel.development.sweet`, verify symbol/string contents.
+   - Package `payload-picasso-0115.bin` and build `shim-boot.img`.
+   - Flash to `/dev/block/bootdevice/by-name/boot` via recovery ADB and reboot to test.
 
 1. **Run 18 Execution & Verification (Commit `2743f0c`, CI Run `39716818236`):**
    - User reported: Apple logo displayed continuously without any reset or reboot loop. Removing `QSCRATCH_GENERAL_CFG` write fully fixed the 2-3s RPM watchdog reset.
