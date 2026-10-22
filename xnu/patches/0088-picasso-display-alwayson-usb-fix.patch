@@ -63,7 +63,16 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +302,7 @@
+@@ -218,6 +247,8 @@
+ 
+ #define UD_TXQ          32
+ 
++static int usbstep = 99;	/* bring-up step limit, see sweet_usb_gadget_start */
++
+ static struct {
+ 	vm_offset_t dwc;
+ 	vm_offset_t dma;
+@@ -273,7 +304,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -72,7 +81,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +312,10 @@
+@@ -283,9 +314,10 @@
  			}
  			return 0;
  		}
@@ -85,7 +94,23 @@
  	return -1;
  }
  
-@@ -715,10 +745,12 @@
+@@ -300,7 +332,15 @@
+ 	t[1] = (uint32_t)(bpa >> 32);
+ 	t[2] = len;
+ 	t[3] = ctl | TRB_HWO | TRB_LST | TRB_ISP_IMI | TRB_IOC;
++	if (usbstep < 3) {
++		printf("SWEET USB: stop after TRB write (sweetusbstep=%d)\n", usbstep);
++		return;
++	}
+ 	ud_sync(trb, 16);
++	if (usbstep < 4) {
++		printf("SWEET USB: stop after dcache flush (sweetusbstep=%d)\n", usbstep);
++		return;
++	}
+ 	if (len) {
+ 		ud_sync(buf, len);
+ 	}
+@@ -715,10 +755,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -102,7 +127,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -864,9 +896,149 @@
+@@ -864,9 +906,149 @@
  		return;
  	}
  	ud.dma_pa = ptoa_64(pn);
@@ -112,7 +137,7 @@
 +	 * can be localised without a new kernel build (only the payload cmdline
 +	 * changes). 99 (default) runs the whole path.
 +	 */
-+	int usbstep = 99;
++	usbstep = 99;
 +	PE_parse_boot_argn("sweetusbstep", &usbstep, sizeof(usbstep));
 +	printf("SWEET USB: bring-up step limit %d\n", usbstep);
  	ud_if_create();
@@ -253,7 +278,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1050,39 @@
+@@ -878,6 +1060,39 @@
  		return;
  	}
  
@@ -293,7 +318,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1095,46 @@
+@@ -890,28 +1105,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -352,17 +377,17 @@
 -		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 -		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
 +	printf("SWEET USB: ep0 started, running\n");
-+	if (usbstep < 3) {
++	if (usbstep < 5) {
 +		printf("SWEET USB: stop after ep0 transfer start (sweetusbstep=%d)\n", usbstep);
 +		return;
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1142,10 @@
+@@ -919,6 +1152,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
-+	if (usbstep < 4) {
++	if (usbstep < 6) {
 +		printf("SWEET USB: stop after RUN_STOP (sweetusbstep=%d)\n", usbstep);
 +		return;
 +	}
