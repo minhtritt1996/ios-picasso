@@ -2,6 +2,28 @@
 
 ## Agent handoff / active work (2026-10-22 08:35, latest)
 
+### >>> UPDATE 2026-10-22 (picasso: Run 15 Analysis & Run 16 Fix - DCFG SuperSpeed & AHB2PHY Clock) <<<
+
+**RUN 15 LOG ANALYSIS (`/tmp/log-run15.txt`, 98,753 bytes):**
+1. **Display & Touch/HID Verification (100% SUCCESS):**
+   - Panel stayed lit continuously with Apple logo; no fade-out (user confirmed: "dang treo o logo apple").
+   - `sweetfb_keepon=1` successfully kept AMOLED panel on across `backboardd` sleep calls.
+   - `SweetHID` Power (`0x30`) & Menu (`0x40`) keys fired continuously.
+2. **USB DWC3 Diagnosis:**
+   - Log showed:
+     * `SWEET USB: clk ahb2phy CBCR 0x80000002 (off)` -> `ahb2phy clock off; QUSB2 PHY not read`.
+     * `SWEET USB: DWC3 DCFG 0x00080804` (hardware reset default is SuperSpeed 4).
+     * `SWEET USB: GUSB2PHYCFG 0x00002500 -> 0x00002400 GUSB3PIPECTL 0x030c0002 -> 0x030c0002 GCTL 0x00102001`.
+     * `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401)`.
+   - **Root Causes:**
+     a) `sweet_usb_gadget_start` unconditionally forced `DCFG` speed to 0 (HighSpeed): `dwc_wr(DCFG, dcfg | 0)`. On SM7250, forcing speed 0 while expecting SuperSpeed 512-byte max packets breaks DWC3 core clock domain crossing, causing `DEPCMD_SETEPCONFIG` to hang.
+     b) `ahb2phy` clock (`0x6a004` in GCC) was left disabled (`0x80000002`), blocking access to the USB PHY register interface.
+3. **RUN 16 FIX:**
+   - In `sweet_usb_probe`: Enable `ahb2phy` clock branch (`gcc + 0x6a004`) if disabled.
+   - In `sweet_usb_gadget_start`: Preserve hardware default speed from `DCFG` (`speed = dwc_rd(DCFG) & 7`), keeping SuperSpeed 4 on SM7250.
+   - Set `ep0_mps = (speed == 4 || speed == 5) ? 512 : 64`.
+   - In `ud_event`: On `connect done`, dynamically adapt ep0 MPS to 64 if connected at High/Full speed.
+
 ### >>> UPDATE 2026-10-22 (picasso: Run 15 Built & Deployed - Kernel 0088 with Patch 0088 Applied) <<<
 
 1. **Kernel 0088 Build & Verification:**
