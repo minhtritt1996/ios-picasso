@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,742 @@
+@@ -0,0 +1,866 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -72,6 +72,7 @@
 +#define MODEM_CARVEOUT_SIZE 0x0F800000ull
 +
 +/* qcom,smp2p-mpss: qcom,smem = <0x1b3 0x1ac> -> in 435, out 428 */
++#define ITEM_SMP2P_OUT      428
 +#define ITEM_SMP2P_IN       435
 +#define ITEM_MSS_CRASH      421
 +#define SMP2P_MAGIC         0x504D5324u         /* "$SMP" */
@@ -95,7 +96,13 @@
 +struct smp2p_hdr { uint32_t magic; uint8_t version, features[3]; uint16_t local_pid, remote_pid, total, valid; uint32_t flags; } __attribute__((packed));
 +struct smp2p_entry { char name[16]; uint32_t value; } __attribute__((packed));
 +
++/* qcom,smem hwlocks = <&tcsr_mutex 3>; tcsr-mutex syscon at 0x1F40000 */
++#define TCSR_MUTEX_PA       0x1F40000ull
++#define SMEM_HWLOCK         3
++#define HWLOCK_APPS_ID      1
++
 +static uint8_t *smem;
++static volatile uint8_t *tcsr_mutex;
 +
 +/* ---------------------------------------------------------------- mappings */
 +
@@ -445,6 +452,108 @@
 +	return NULL;
 +}
 +
++static bool
++smem_lock(void)
++{
++	volatile uint32_t *reg = (volatile uint32_t *)(tcsr_mutex + SMEM_HWLOCK * 0x1000);
++
++	if (tcsr_mutex == NULL) {
++		return false;
++	}
++	for (int n = 0; n < 100000; n++) {
++		*reg = HWLOCK_APPS_ID;
++		mb();
++		if (*reg == HWLOCK_APPS_ID) {
++			return true;
++		}
++		IODelay(10);
++	}
++	LOG("SMEM hwlock busy: owner %u", *reg);
++	return false;
++}
++
++static void
++smem_unlock(void)
++{
++	mb();
++	*(volatile uint32_t *)(tcsr_mutex + SMEM_HWLOCK * 0x1000) = 0;
++	mb();
++}
++
++/* Append an uncached SMEM entry under the hwlock (qcom_smem_alloc_private). */
++static void *
++smem_alloc(struct smem_part_hdr *p, uint16_t item, uint32_t size)
++{
++	uint32_t aligned = (size + 7) & ~7u, need = sizeof(struct smem_priv_entry) + aligned;
++	void *v = smem_get(p, item, NULL);
++
++	if (v != NULL || p == NULL || !smem_lock()) {
++		return v;
++	}
++	v = smem_get(p, item, NULL);
++	if (v == NULL && p->free_uncached + need <= p->free_cached) {
++		struct smem_priv_entry *h = (struct smem_priv_entry *)((uint8_t *)p + p->free_uncached);
++		h->canary = 0xA5A5;
++		h->item = item;
++		h->size = aligned;
++		h->pad_data = (uint16_t)(aligned - size);
++		h->pad_hdr = 0;
++		h->rsvd = 0;
++		v = h + 1;
++		bzero(v, aligned);
++		mb();
++		p->free_uncached += need;
++		mb();
++	} else if (v == NULL) {
++		LOG("SMEM partition full: %x..%x need %x", p->free_uncached, p->free_cached, need);
++	}
++	smem_unlock();
++	return v;
++}
++
++/*
++ * Create the apps->modem SMP2P item before the modem boots, as qcom_smp2p
++ * does: its "master-kernel" entry is the state the modem reads back. No
++ * IPCC doorbell yet (the modem polls at boot); changes after that need one.
++ */
++static struct smp2p_hdr *
++smp2p_out(struct smem_part_hdr *p)
++{
++	struct smp2p_hdr *o = (struct smp2p_hdr *)smem_alloc(p, ITEM_SMP2P_OUT,
++	    sizeof(struct smp2p_hdr) + SMP2P_MAX_ENTRY * sizeof(struct smp2p_entry));
++
++	if (o == NULL || o->version != 0) {
++		return o;
++	}
++	o->magic = SMP2P_MAGIC;
++	o->local_pid = 0;
++	o->remote_pid = 1;
++	o->total = SMP2P_MAX_ENTRY;
++	o->valid = 0;
++	o->features[0] = 1;                     /* SSR_ACK */
++	bzero(o + 1, SMP2P_MAX_ENTRY * sizeof(struct smp2p_entry));
++	mb();
++	o->version = 1;                         /* validates the item */
++	mb();
++	return o;
++}
++
++static void
++smp2p_add(struct smp2p_hdr *o, const char *name, uint32_t value)
++{
++	struct smp2p_entry *e;
++
++	if (o == NULL || o->valid >= o->total || o->valid >= SMP2P_MAX_ENTRY) {
++		return;
++	}
++	e = (struct smp2p_entry *)(o + 1);
++	strlcpy(e[o->valid].name, name, sizeof(e[o->valid].name));
++	e[o->valid].value = value;
++	mb();
++	o->valid++;
++	mb();
++}
++
 +/* ---------------------------------------------------------------- PAS boot */
 +
 +static bool
@@ -489,11 +598,25 @@
 +	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
 +	bool relocate = false, ok = false;
 +
++	struct smem_part_hdr *part = smem_partition(0, 1);
++
++	if (part == NULL) {
++		LOG("no apps<->modem SMEM partition");
++		return false;
++	}
++	if (smem_get(part, ITEM_SMP2P_IN, NULL) != NULL) {
++		LOG("modem SMP2P item %u already exists: the modem is not cold, not touching it", ITEM_SMP2P_IN);
++		return false;
++	}
 +	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0) {
 +		LOG("no \"modem\" partition");
 +		return false;
 +	}
 +	LOG("modem partition: block 0x%llx, %llu MiB", part_lba, part_blocks * 4096 >> 20);
++	struct smp2p_hdr *out = smp2p_out(part);
++	smp2p_add(out, "master-kernel", 0);
++	smp2p_add(out, "ipa", 0);
++	LOG("SMP2P out item %u ready (%u entries)", ITEM_SMP2P_OUT, out != NULL ? out->valid : 0);
 +	if (fat_mount(&v, part_lba, part_blocks) != 0) {
 +		return false;
 +	}
@@ -714,6 +837,7 @@
 +	unsigned watch = 60;
 +
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
++	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
 +	smem_map = map_phys(SMEM_PA, SMEM_SIZE, true);
 +	if (smem_map == NULL) {
 +		LOG("cannot map SMEM at 0x%llx", SMEM_PA);
