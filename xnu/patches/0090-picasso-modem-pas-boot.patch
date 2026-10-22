@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,867 @@
+@@ -0,0 +1,877 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -48,6 +48,13 @@
 +extern "C" int sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
++
++#ifndef MIN
++#define MIN(a, b)       ((a) < (b) ? (a) : (b))
++#endif
++#ifndef MAX
++#define MAX(a, b)       ((a) > (b) ? (a) : (b))
++#endif
 +
 +#define PAS_ID_MODEM        4
 +#define SCM_FN(svc, cmd)    (0x42000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
@@ -597,6 +604,9 @@
 +	int64_t mdt_size;
 +	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
 +	bool relocate = false, ok = false;
++	struct smp2p_hdr *out = NULL;
++	struct elf32_ehdr *eh = NULL;
++	struct elf32_phdr *ph = NULL;
 +
 +	struct smem_part_hdr *part = smem_partition(0, 1);
 +
@@ -614,7 +624,7 @@
 +		return false;
 +	}
 +	LOG("modem partition: block 0x%llx, %llu MiB", part_lba, part_blocks * 4096 >> 20);
-+	struct smp2p_hdr *out = smp2p_out(part);
++	out = smp2p_out(part);
 +	smp2p_add(out, "master-kernel", 0);
 +	smp2p_add(out, "ipa", 0);
 +	LOG("SMP2P out item %u ready (%u entries)", ITEM_SMP2P_OUT, out != NULL ? out->valid : 0);
@@ -650,14 +660,14 @@
 +		}
 +	}
 +
-+	struct elf32_ehdr *eh = (struct elf32_ehdr *)mdt;
++	eh = (struct elf32_ehdr *)mdt;
 +	if (memcmp(eh->e_ident, "\x7f" "ELF", 4) != 0 ||
 +	    eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr) > (uint64_t)mdt_size) {
 +		LOG("modem.mdt: bad ELF header");
 +		IOFree(mdt, (vm_size_t)mdt_size);
 +		goto out_fat;
 +	}
-+	struct elf32_phdr *ph = (struct elf32_phdr *)(mdt + eh->e_phoff);
++	ph = (struct elf32_phdr *)(mdt + eh->e_phoff);
 +	for (uint32_t i = 0; i < eh->e_phnum; i++) {
 +		if ((ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH) {
 +			hash = i;
@@ -687,7 +697,7 @@
 +		ppnum_t meta_page;
 +		if (ph[hash].p_offset + ph[hash].p_filesz > (uint64_t)mdt_size ||
 +		    kmem_alloc_contig(kernel_map, &meta_va, (vm_size_t)meta_size, PAGE_MASK, 0, 0,
-+		    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
++		    (kma_flags_t)(KMA_DATA | KMA_ZERO | KMA_PERMANENT), VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
 +		    (meta_page = pmap_find_phys(kernel_pmap, (addr64_t)meta_va)) == 0) {
 +			LOG("metadata: alloc (%llu bytes) failed", meta_size);
 +			IOFree(mdt, (vm_size_t)mdt_size);
