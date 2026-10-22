@@ -90,6 +90,7 @@
   ConfigurationMapLib|picassoPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
 
 [Components]
+  picassoPkg/Applications/UsbEnumerate/UsbEnumerate.inf
   picassoPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
   picassoPkg/Library/PlatformUsbfnLib/PlatformUsbfnLib.inf
   MdeModulePkg/Application/UiApp/UiApp.inf

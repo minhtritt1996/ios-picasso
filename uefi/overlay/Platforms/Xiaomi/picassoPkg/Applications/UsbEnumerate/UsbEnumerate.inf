@@ -1,0 +1,30 @@
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = UsbEnumerate
+  FILE_GUID      = 0E4D6F62-3A87-4B51-9C7E-6A1B2D3C4E5F
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = UsbEnumerateEntry
+
+[Sources]
+  UsbEnumerate.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  picassoPkg/picasso.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+
+[Protocols]
+  gEfiUsbFunctionIoProtocolGuid     ## CONSUMES
+
+[Depex]
+  gEfiUsbFunctionIoProtocolGuid

@@ -121,6 +121,20 @@ Dwc3DetectPort (
   return EFI_SUCCESS;
 }
 
+/* picasso bring-up: mark the endpoint-configuration steps on the panel. */
+STATIC
+VOID
+PicassoStep (UINTN Row, UINT32 Colour)
+{
+  volatile UINT32 *Fb = (volatile UINT32 *)0xA0000000UL;
+  UINTN            I;
+
+  for (I = 0; I < 1080 * 15; I++) {
+    Fb[(Row * 1080) + I] = Colour;
+  }
+}
+
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -166,18 +180,21 @@ Dwc3ConfigureEnableEndpoints (
 
   MaxPacketSize = Dwc3MaxPacketSizeForSpeed (UsbEndpointControl, Dev->Platform.MaximumSpeed);
 
+  PicassoStep (1200, 0x00FFFF00);   /* about to configure EP0 OUT */
   Status = Dwc3EnableEndpoint (Dev, DWC3_EP0_OUT, DWC3_DEPCMD_TYPE_CONTROL, MaxPacketSize, FALSE);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "DWC3: Failed to configure EP0 OUT! Status = %r\n", Status));
     return Status;
   }
 
+  PicassoStep (1220, 0x0000FFFF);   /* EP0 OUT done */
   Status = Dwc3EnableEndpoint (Dev, DWC3_EP0_IN, DWC3_DEPCMD_TYPE_CONTROL, MaxPacketSize, FALSE);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "DWC3: Failed to configure EP0 IN! Status = %r\n", Status));
     return Status;
   }
 
+  PicassoStep (1240, 0x00FF00FF);   /* EP0 IN done */
   for (Index = 0; Index < InterfaceInfo->InterfaceDescriptor->NumEndpoints; Index++) {
     EpDesc = InterfaceInfo->EndpointDescriptorTable[Index];
 
@@ -207,9 +224,12 @@ Dwc3ConfigureEnableEndpoints (
     }
   }
 
+  PicassoStep (1260, 0x00FF8000);   /* bulk endpoints configured */
   Dwc3Ep0OutStart (Dev);
+  PicassoStep (1280, 0x00808080);   /* ep0 OUT transfer armed */
 
   Status = Dwc3RunStop (Dev, TRUE);
+  PicassoStep (1300, 0x00FFFFFF);   /* controller running */
   if (EFI_ERROR (Status)) {
     return Status;
   }
