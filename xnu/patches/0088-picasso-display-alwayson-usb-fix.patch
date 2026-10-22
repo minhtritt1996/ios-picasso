@@ -72,7 +72,25 @@
  static struct {
  	vm_offset_t dwc;
  	vm_offset_t dma;
-@@ -273,7 +304,7 @@
+@@ -226,6 +257,7 @@
+ 	int         sleep_chan;
+ 	enum { EP0_SETUP, EP0_DATA, EP0_WAIT_STATUS2, EP0_WAIT_STATUS3, EP0_STATUS } state;
+ 	bool        data_in;        /* data stage direction */
++	int         dma_uncached;   /* sweetusbdma: mapped uncached, no flush */
+ 	uint32_t    events;
+ 	bool        configured;
+ 	uint8_t     data_alt;       /* data interface alternate setting */
+@@ -254,6 +286,9 @@
+ static void
+ ud_sync(uint32_t off, uint32_t len)
+ {
++	if (ud.dma_uncached) {
++		return;
++	}
+ 	flush_dcache64((addr64_t)(ud.dma_pa + off), len, TRUE);
+ }
+ 
+@@ -273,7 +308,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -81,7 +99,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +314,10 @@
+@@ -283,9 +318,10 @@
  			}
  			return 0;
  		}
@@ -94,7 +112,7 @@
  	return -1;
  }
  
-@@ -300,12 +332,24 @@
+@@ -300,12 +336,24 @@
  	t[1] = (uint32_t)(bpa >> 32);
  	t[2] = len;
  	t[3] = ctl | TRB_HWO | TRB_LST | TRB_ISP_IMI | TRB_IOC;
@@ -119,7 +137,7 @@
  }
  
  static void
-@@ -715,10 +759,12 @@
+@@ -715,10 +763,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -136,10 +154,49 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -864,9 +910,186 @@
- 		return;
+@@ -854,19 +904,216 @@
+ 	thread_t thread;
+ 
+ 	ud.dwc = dwc;
+-	if (kmem_alloc_contig(kernel_map, &ud.dma, UD_SIZE, PAGE_MASK, 0, 0,
+-	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET USB: no DMA memory\n");
+-		return;
+-	}
+-	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)ud.dma);
+-	if (!pn) {
+-		return;
++	/*
++	 * The controller's DMA may only reach low memory on this SoC (the kernel
++	 * lives above 4 GiB). sweetusbdma=0x... points the transfer area at a
++	 * given physical page below 4 GiB, mapped uncached, to test that.
++	 */
++	uint64_t dma_pa_arg = 0;
++	PE_parse_boot_argn("sweetusbdma", &dma_pa_arg, sizeof(dma_pa_arg));
++	if (dma_pa_arg) {
++		ud.dma = ml_io_map(dma_pa_arg, UD_SIZE);
++		if (ud.dma == 0) {
++			printf("SWEET USB: sweetusbdma map failed\n");
++			return;
++		}
++		ud.dma_pa = dma_pa_arg;
++		ud.dma_uncached = 1;
++		memset((void *)ud.dma, 0, UD_SIZE);
++		printf("SWEET USB: DMA area at 0x%llx (uncached, sweetusbdma)\n",
++		    (unsigned long long)ud.dma_pa);
++	} else {
++		if (kmem_alloc_contig(kernel_map, &ud.dma, UD_SIZE, PAGE_MASK, 0, 0,
++		    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			printf("SWEET USB: no DMA memory\n");
++			return;
++		}
++		ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)ud.dma);
++		if (!pn) {
++			return;
++		}
++		ud.dma_pa = ptoa_64(pn);
  	}
- 	ud.dma_pa = ptoa_64(pn);
+-	ud.dma_pa = ptoa_64(pn);
 +
 +	/*
 +	 * Bring-up bisect: sweetusbstep=N stops after milestone N so the crash
@@ -324,7 +381,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1101,39 @@
+@@ -878,6 +1125,39 @@
  		return;
  	}
  
@@ -364,7 +421,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1146,46 @@
+@@ -890,28 +1170,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -429,7 +486,7 @@
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1193,10 @@
+@@ -919,6 +1217,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
