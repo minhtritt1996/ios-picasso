@@ -129,6 +129,32 @@ framebuffer). UEFI core, GOP and BDS all run on picasso. Note the phone now **ha
 instead of resetting, and the operator holds Volume Down, so every reset lands
 in fastboot.
 
+
+### Wi-Fi plan for picasso (modem-hosted WLAN, following ios-topaz)
+
+Measured facts (live DT + firmware partitions read from recovery):
+
+| Item | Value |
+| --- | --- |
+| WLAN transport | modem-hosted: `qcom,mss@4080000` has `memory-region = <modem_wlan_region@8c000000>` (0x8C000000 + 0xF800000 = 248 MiB) |
+| PAS | `qcom,pas-id = 4` (same as topaz), `qcom,smem-id = 0x1A5`, `sysmon-id 0`, `ssctl-instance-id 0x12` |
+| SMEM | `smem_region@80900000` + 0x200000 |
+| SMP2P | entries `slave-kernel` (master), `wlan` (1-in), `modem` |
+| WLAN host | `qcom,icnss@18800000`, MSA in `pil_wlan_fw_region@8ba00000`, IPA SMMU WLAN (unused) |
+| Firmware | `/vendor/firmware_mnt/image/modem.mdt` + `modem.b00..b19` (2021, the phone's own), reachable by mounting the `modem` partition (vfat) in recovery |
+| GPU FW (for later) | `a620_zap.mdt/b00/b01/b02`, `a630_sqe.fw`, `a650_gmu.bin` in `/vendor/firmware` |
+
+Reference stack: `ios-topaz` (`xnu/patches/0113..0130`, 0900; ~9.6k lines). It reuses
+HackiOS's upper half (`redwood_apple80211.c`, `redwood_net.c`, `redwood_sta.c`,
+`RedwoodWLAN.cpp`, `MiniIONetworkStack.cpp`) and adds the modem PAS/GLINK/QRTR/WLFW/WMI
+layers. HackiOS's own Wi-Fi driver (ath11k over PCIe, WCN6750) does not apply to picasso.
+
+First coding step (patch 0089 in this tree):
+1. minimal vfat reader over the `modem` partition (block I/O already exists via sweet_ufs),
+2. MDT + segment loader into 0x8C000000,
+3. SCM PAS: `pas_init_image(4, mdt)`, `pas_mem_setup(4, base, size)`, `pas_auth_and_reset(4)`,
+4. console markers for each step (same style as the USB bring-up).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
