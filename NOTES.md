@@ -1,6 +1,19 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 10:05, latest)
+## Agent handoff / active work (2026-10-22 10:25, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 17 Analysis & Run 18 Fix - Remove QSCRATCH_GENERAL_CFG Write, Keep HighSpeed & ep0_mps 64) <<<
+
+1. **Run 17 Result & Root Cause Diagnosis:**
+   - User reported: "may hien console tam 2-3s la tat" (console showed 2-3s then powered off / rebooted).
+   - This exact 2-3s behavior is the identical Qualcomm RPM watchdog reset observed in Run 11!
+   - Root Cause: Touching `QSCRATCH_GENERAL_CFG` (`0x0a6f8808`) on SM7250 trips Qualcomm's secure RPM clock monitor / XPU violation, causing a hardware reboot after 2-3s.
+   - When `QSCRATCH_GENERAL_CFG` is untouched (Runs 13, 14, 15, 16), userland boots stably with zero reboots and Apple logo stays on continuously.
+2. **Run 18 Fix:**
+   - Completely remove all writes to `QSCRATCH_GENERAL_CFG` (`0x08`).
+   - Retain VBUS session override (`QSCRATCH_HS_PHY_CTRL` only).
+   - Retain PHY suspend clears (`GUSB2PHYCFG` SUSPHY/ENBLSLPM, `GUSB3PIPECTL` SUSPHY) and clock gating disable (`GCTL_DSBLCLKGTNG`).
+   - Retain High-Speed mode (`DCFG.DEVSPD = 0`) and `ep0_mps = 64` bytes.
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 17 Built & Deployed - Patch 0088 Verified, USB 2.0 High-Speed & ep0_mps 64) <<<
 
