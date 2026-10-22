@@ -17,7 +17,7 @@
  {
  	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
  	int error = ufs_read_blocks(1, 1);
-@@ -345,15 +346,86 @@
+@@ -345,15 +346,89 @@
  		if (last < first) {
  			return ENXIO;
  		}
@@ -53,7 +53,7 @@
 + * disturb su.first_block; reads share the bounce buffer and the lock.
 + */
 +int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
-+int sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len);
++int sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +
 +int
 +sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks)
@@ -76,13 +76,16 @@
 +}
 +
 +int
-+sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len)
++sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len)
 +{
 +	const char *b = (const char *)(su.dma + DMA_BOUNCE);
 +	int error = 0;
 +
 +	if (!su.ready) {
 +		return ENXIO;
++	}
++	if (nblocks == 0 || off / UFS_BLOCK >= nblocks || len > nblocks * UFS_BLOCK - off) {
++		return EINVAL;
 +	}
 +	lck_mtx_lock(&sweet_ufs_lock);
 +	while (len && !error) {
@@ -107,7 +110,7 @@
  ufs_take_over_host(void)
  {
  	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
-@@ -660,6 +732,8 @@
+@@ -660,6 +735,8 @@
  	sweet_keys_init();
  	sweet_touch_init();
  	sweet_usb_probe();

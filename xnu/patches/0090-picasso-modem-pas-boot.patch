@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,734 @@
+@@ -0,0 +1,742 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -36,13 +36,16 @@
 +#include <kern/thread.h>
 +#include <pexpert/pexpert.h>
 +#include <libkern/libkern.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
 +#include <sys/errno.h>
 +#include <machine/atomic.h>
 +
 +extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +extern "C" void flush_dcache64(addr64_t pa, unsigned int len, boolean_t phys);
++extern "C" ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 +extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
-+extern "C" int sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len);
++extern "C" int sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
 +
@@ -158,7 +161,7 @@
 +/* ---------------------------------------------------------------- vfat (read only) */
 +
 +struct fat_vol {
-+	uint64_t first;                 /* absolute device LBA of the partition */
++	uint64_t first, blocks;         /* absolute device LBA and length of the partition */
 +	uint32_t bps, spc, rsvd, nfats, root_ents, fatsz, root_clus;
 +	uint32_t root_sec, root_secs, data_sec, fat_ents;
 +	uint8_t *fat;                   /* raw FAT; 4-byte entries if FAT32, else 2-byte */
@@ -188,7 +191,7 @@
 +	int err;
 +
 +	bzero(v, sizeof(*v));
-+	err = sweet_ufs_pread(first, 0, bs, sizeof(bs));
++	err = sweet_ufs_pread(first, nblocks, 0, bs, sizeof(bs));
 +	if (err) {
 +		LOG("vfat: cannot read boot sector: %d", err);
 +		return err;
@@ -198,6 +201,7 @@
 +		return EINVAL;
 +	}
 +	v->first = first;
++	v->blocks = nblocks;
 +	v->bps = (uint32_t)fat_read16(bs, 11);
 +	v->spc = bs[13];
 +	v->rsvd = (uint32_t)fat_read16(bs, 14);
@@ -231,7 +235,7 @@
 +	if (v->fat == NULL) {
 +		return ENOMEM;
 +	}
-+	err = sweet_ufs_pread(first, (uint64_t)v->rsvd * v->bps, v->fat, v->fatsz * v->bps);
++	err = sweet_ufs_pread(first, nblocks, (uint64_t)v->rsvd * v->bps, v->fat, v->fatsz * v->bps);
 +	if (err) {
 +		LOG("vfat: cannot read the FAT: %d", err);
 +		return err;
@@ -275,7 +279,7 @@
 +		}
 +		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
 +		n = MIN(len, per);
-+		err = sweet_ufs_pread(v->first, off, out, n);
++		err = sweet_ufs_pread(v->first, v->blocks, off, out, n);
 +		out += n;
 +		len -= n;
 +		clus = fat_next(v, clus);
@@ -292,7 +296,7 @@
 +	*used = 0;
 +	if (v->root_clus == 0) {
 +		uint32_t n = MIN(cap, v->root_secs * v->bps);
-+		err = sweet_ufs_pread(v->first, (uint64_t)v->root_sec * v->bps, buf, n);
++		err = sweet_ufs_pread(v->first, v->blocks, (uint64_t)v->root_sec * v->bps, buf, n);
 +		if (!err) {
 +			*used = n;
 +		}
@@ -308,7 +312,7 @@
 +		}
 +		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
 +		n = MIN(cap - *used, per);
-+		err = sweet_ufs_pread(v->first, off, (uint8_t *)buf + *used, n);
++		err = sweet_ufs_pread(v->first, v->blocks, off, (uint8_t *)buf + *used, n);
 +		if (err) {
 +			return err;
 +		}
@@ -335,7 +339,7 @@
 +		if (e[0] == 0) {
 +			break;
 +		}
-+		if (e[0] == 0xe5 || (e[11] & 0x18) == 0x08) {    /* deleted, volume label */
++		if (e[0] == 0xe5 || (e[11] & 0x18) == 0x08 || (e[11] & 0x10)) {  /* deleted, volume label, directory */
 +			continue;
 +		}
 +		if (memcmp(e, name83, 11) != 0) {
@@ -484,7 +488,6 @@
 +	int64_t mdt_size;
 +	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
 +	bool relocate = false, ok = false;
-+	IOPhysicalAddress meta_phys = 0;
 +
 +	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0) {
 +		LOG("no \"modem\" partition");
@@ -556,13 +559,18 @@
 +		uint64_t hdr = eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr);
 +		uint64_t meta_size = hdr + ph[hash].p_filesz;
 +
-+		meta = (uint8_t *)IOMallocContiguous((vm_size_t)meta_size, 0x1000, &meta_phys);
-+		if (meta == NULL || ph[hash].p_offset + ph[hash].p_filesz > (uint64_t)mdt_size) {
-+			LOG("metadata: alloc or split hash segment not supported");
++		vm_offset_t meta_va = 0;
++		ppnum_t meta_page;
++		if (ph[hash].p_offset + ph[hash].p_filesz > (uint64_t)mdt_size ||
++		    kmem_alloc_contig(kernel_map, &meta_va, (vm_size_t)meta_size, PAGE_MASK, 0, 0,
++		    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS ||
++		    (meta_page = pmap_find_phys(kernel_pmap, (addr64_t)meta_va)) == 0) {
++			LOG("metadata: alloc (%llu bytes) failed", meta_size);
 +			IOFree(mdt, (vm_size_t)mdt_size);
 +			goto out_fat;
 +		}
-+		meta_pa = meta_phys;
++		meta = (uint8_t *)meta_va;
++		meta_pa = ptoa_64(meta_page);
 +		memcpy(meta, mdt, hdr);
 +		memcpy(meta + hdr, mdt + ph[hash].p_offset, ph[hash].p_filesz);
 +		mb();
