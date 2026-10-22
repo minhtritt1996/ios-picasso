@@ -1,6 +1,47 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 12:28, latest)
+## Agent handoff / active work (2026-10-22 12:45, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 21 Log Diagnosed — Wrong Clock Register; Run 22 Fix on branch `omp`) <<<
+
+**Work now happens on branch `omp`** (pushed to `picasso/omp`); `main` stays on
+`picasso/main`. CI only auto-runs on `main`, so builds use
+`gh workflow run xnu.yml --ref omp`.
+
+1. **Run 21 result (`/tmp/log-run21.txt`, 99,572 bytes, pulled from `darwin`):**
+   - Flash + readback MD5 `e0cab1eab5300105c93d33272c257468` matched; device rebooted.
+   - Host never enumerated CDC-ECM (`lsusb` has no `1209:`), so ep0 still fails.
+   - Log: `ahb2phy CBCR pre-enable: 0x80000002` -> `post-enable: 0x80000003`
+     (bit 31 CLK_OFF still set => the write did nothing);
+     `HSPHY pre-init` == `post-init` == `0x01010101/0x88888888/0x06060606`;
+     `overrides X0: 0x64646464 X1: 0xc8c8c8c8 X2: 0x24242424` (byte-repeated
+     bus-error fill, i.e. our own writes read back);
+     `ep0 cmd 0x1 timeout`.
+2. **Root cause (verified against downstream sources, not guessed):**
+   - `driver/clk/qcom/gcc-lito.c` has **no AHB2PHY branch clock at all**; the
+     only register is the reset `GCC_USB_PHY_CFG_AHB2PHY_BCR = 0x6a000`
+     (`gcc-lito.h` ID 14, also the value the DTB uses for `eud_ahb2phy_clk`).
+     So `GCC_AHB2PHY_CBCR 0x6a004` from Run 21 is an unrelated GCC offset.
+   - `dwc3-msm.c` (probe + `dwc3_msm_power_collapse_por`) documents: enable the
+     `USB3_GDSC` (`usb30_prim`, DTB `0x10f004`), then the AHB clock, then set
+     `PERIPH_SS_AHB2PHY_TOP_CFG = 0x11` (one read/write wait state).
+   - The live DTB (`dtb/boot_unpacked/dtb`, node `hsphy@88e3000`) gives
+     `reg = <0x88e3000 0x110>, <0x88e2000 0x04>` and
+     `qcom,param-override-seq = <0x63 0x6c>, <0x85 0x70>, <0x17 0x74>`.
+     Patch 0088 had been writing `0x64/0xc8/0x24` — wrong values.
+3. **Run 22 patch changes (`xnu/patches/0088-...patch`, commit `8aaec67`):**
+   - enable `GCC_USB30_PRIM_GDSC (0x10f004)` and poll status bit 31;
+   - deassert `GCC_USB_PHY_CFG_AHB2PHY_BCR (0x6a000)` instead of touching 0x6a004;
+   - program `AHB2PHY TOP_CFG = 0x11` via the `0x88e2000` window and read back
+     both TOP_CFG and the EUD mode-mgr2 register;
+   - use the DTB param override values `0x63/0x85/0x17`;
+   - new log tags to check: `GDSC usb30_prim`, `AHB2PHY BCR pre/post`,
+     `AHB2PHY TOP_CFG`.
+4. **Next:** CI run `39729652794` (branch `omp`) -> download artifact ->
+   package payload + `shim-boot.img` -> flash -> reboot -> check log for
+   `AHB2PHY BCR post: 0x00000000` and non-repeating HSPHY readbacks.
+
+## Agent handoff archive (2026-10-22 12:28)
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 21 Built & Packaged - Boot Image Ready to Flash) <<<
 
