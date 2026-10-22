@@ -1,6 +1,38 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 13:45, latest)
+## Agent handoff / active work (2026-10-22 14:05, latest)
+
+### >>> UPDATE 2026-10-22 (Run 24 boots; APB is fine; now voting PHY rails — Run 25) <<<
+
+1. **Run 24 (commit `3e2bc62`, image MD5 `e422b955…`) boots to the Apple logo**
+   and stays there, so the GDSC offset fix is correct. Log
+   (`/tmp/log-run24.txt`, 92,921 bytes, pull from recovery):
+   - `GDSC usb30_prim 0xf822f000 -> 0xf822f000` (already on, nothing written)
+   - `AHB2PHY BCR pre: 0x00000000`, `post: 0x00000000`, `QUSB2PHY PRIM_BCR post: 0`
+   - `HSPHY pre-init` == `post-init` (`0x01010101 / 0x00000000 / 0x88888888 / 0x06060606 / 0`)
+   - `HSPHY overrides X0 0x64646464 X1 0xc8c8c8c8 X2 0x24242424` — exactly the
+     bytes we wrote, i.e. **writes land and the registers are byte-replicated
+     8-bit registers**. The earlier "bus error fill" theory (Runs 19-21) was
+     wrong; the identical pre/post values are expected because the sequence
+     ends by clearing the bits it set.
+   - `ep0 cmd 0x1 timeout`, `endpoint 0 setup failed (speed 0 ep0_mps 64)`,
+     `DSTS 0x00520001` (CONNECTSPD = full speed, USBLNKST = 4).
+   - Host still does not enumerate anything.
+2. **New hypothesis:** the PHY's analog rails are off. `lito-regulators.dtsi`
+   gives `regulator-pm8150-l5-so` and `-l12-so` `qcom,init-enable = <0>`, so
+   the RPMh sleep set disables pm8150_l5 (0.88 V), l12 (1.8 V) and l2 (3.3 V)
+   after a warm reboot; a PHY without its PLL has no UTMI clock, which is
+   exactly a DWC3 command timeout.
+3. **Run 25 (commit `fe198e1`, CI `39736312469`):**
+   - `sweet_rpmh.c`: if the locator at `0x0c3f000c` is empty, fall back to the
+     DTB's cmd-db at `0x80860000` (0x20000) — picasso has no locator word.
+   - `sweet_usb_gadget_start` votes `ldoa5` 880 mV, `ldoa12` 1800 mV,
+     `ldoa2` 3300 mV through `sweet_rpmh_vreg_enable()` and logs the results.
+   - Both patches verified with `patch -p1` on a synthetic checkout.
+4. **Look for on the next boot:** `SWEET USB: rails ldoa5=… ldoa12=… ldoa2=…`,
+   the RPMh `TCS… done=1` lines, and whether `lsusb` shows `1209:`.
+
+## Agent handoff (2026-10-22 13:45)
 
 ### >>> UPDATE 2026-10-22 (Run 23 panic: GDSC offset wrong; Run 24 fixes it) <<<
 
