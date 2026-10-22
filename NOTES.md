@@ -1,6 +1,41 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 11:46, latest)
+## Agent handoff / active work (2026-10-22 12:15, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 21 in CI - Enable GCC_AHB2PHY_CLK for Femto PHY APB Access) <<<
+
+1. **Run 20 Log Diagnosis (`/tmp/log-run20.txt`, 113,660 bytes):**
+   - Pulled log confirmed:
+     * `SWEET USB: HSPHY pre-init 0x3c: 0x01010101 0x50: 0x00000000 0x54: 0x88888888 0x64: 0x06060606 0x94: 0x00000000`
+     * `SWEET USB: HSPHY post-init 0x3c: 0x01010101 0x50: 0x00000000 0x54: 0x88888888 0x64: 0x06060606 0x94: 0x00000000`
+     * `SWEET USB: VBUS override on: HS_PHY_CTRL 0x10100000`
+     * `SWEET USB: soft reset done after 1 ms, GCTL 0x00102001 DCFG 0x00080804`
+     * `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401 GCTL 0x00102001 GUSB2PHYCFG 0x00002400 GUSB3PIPECTL 0x030c0002 DCFG 0x00080800 DSTS 0x00520001)`
+     * `SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps 64)`
+   - **Root Cause:**
+     * Register values pre-init and post-init were 100% identical and showed repeating byte patterns (`0x88888888`, `0x01010101`, `0x06060606`), indicating the APB register bus to the Femto PHY (`0x088e3000`) was unclocked and returning AXI bus error fill!
+     * The `ahb2phy` bridge clock at GCC offset `0x6a004` (`GCC_USB_PHY_CFG_AHB2PHY_CBCR`) is gated off by default (`0x80000002`).
+     * Furthermore, `ml_io_map(GCC_PA, 0x20000)` only mapped 128KB, whereas `0x6a004` requires at least 435KB (`0x80000`).
+     * Without the AHB2PHY clock, writes to the Femto PHY were silently dropped, the PHY stayed in uninitialized power-down, and the UTMI clock never started, causing `SETEPCONFIG` (`ep0 cmd 0x1`) to time out.
+
+2. **Run 21 Implementation (Commit `b09b025`, CI Run `39727077471`):**
+   - Expanded GCC mapping to `0x80000` (512KB).
+   - In `sweet_usb_gadget_start`, before PHY reset and register access:
+     * Read `GCC_AHB2PHY_CBCR` (`0x6a004`).
+     * Set bit 0 (`*(gcc + 0x6a004) |= 1`) to enable `ahb2phy` clock.
+     * Polled bit 31 (`CBCR_CLK_OFF`) to confirm clock is active.
+     * Reset PHY block via `GCC_QUSB2PHY_PRIM_BCR` (`0x12000`).
+   - Added readback diagnostics for `HSPHY_PARAM_OVRD_X0/X1/X2` to confirm APB register writes succeed.
+   - Validated all patch hunks with Python script.
+   - Pushed to `picasso/main`, triggering CI Run `39727077471`.
+
+3. **Next Steps (Run 21 Deployment):**
+   - Wait for CI build to complete.
+   - Download kernel artifact to `xnu/out-0088-run21`.
+   - Package `payload-picasso-0116.bin` with `mkpayload.py`.
+   - Build `shim-boot.img`.
+   - Flash to `/dev/block/bootdevice/by-name/boot` on device `f9f3d7b0`.
+   - Reboot device into iOS and monitor for USB CDC-ECM gadget interface on host (`ip link`, `ssh root@192.168.7.2`).
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 20 Flashed & Ready - Complete SNPS Femto PHY Powerup & GCC Reset) <<<
 
