@@ -1,8 +1,53 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 12:15, latest)
+## Agent handoff / active work (2026-10-22 12:28, latest)
 
-### >>> UPDATE 2026-10-22 (picasso: Run 21 in CI - Enable GCC_AHB2PHY_CLK for Femto PHY APB Access) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 21 Built & Packaged - Boot Image Ready to Flash) <<<
+
+1. **Kernel Build & Artifact Verification (Commit `b09b025`, CI Run `39727077471`):**
+   - CI build completed in 6m29s.
+   - Downloaded artifact `xnu/out-0088-run21/kernel.development.sweet` (17,227,336 bytes).
+   - Binary string verification confirmed all new logic present:
+     * `SWEET USB: ahb2phy CBCR pre-enable: 0x%08x`
+     * `SWEET USB: ahb2phy CBCR post-enable: 0x%08x`
+     * `SWEET USB: HSPHY overrides X0(0x6c): 0x%08x X1(0x70): 0x%08x X2(0x74): 0x%08x`
+     * `SWEET USB: HSPHY pre-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x`
+     * `SWEET USB: HSPHY post-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x`
+     * `SWEET FB: display off request ignored (sweetfb_keepon=1)`
+
+2. **Boot Image Packaged (`payload-picasso-0116.bin` & `shim/out/shim-boot.img`):**
+   - Packaged `payload-picasso-0116.bin` with `mkpayload.py`:
+     * Command line: `debug=0x14e serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_keepon=1 sweettouch=0 sweetusb=2 sweetusblog=0 sweethidtest=5`
+   - Built `shim/out/shim-boot.img`:
+     * Size: 36,352,000 bytes
+     * MD5: `e0cab1eab5300105c93d33272c257468`
+
+3. **Concrete Instructions for Next Agent / User:**
+   - **Device Status:** `f9f3d7b0` is connected in **recovery mode**.
+   - **Flash & Test Run 21:**
+     ```bash
+     adb -s f9f3d7b0 push shim/out/shim-boot.img /tmp/shim-boot.img
+     adb -s f9f3d7b0 shell "dd if=/tmp/shim-boot.img of=/dev/block/bootdevice/by-name/boot bs=4M"
+     adb -s f9f3d7b0 shell "dd if=/dev/block/bootdevice/by-name/boot bs=36352000 count=1 2>/dev/null | md5sum"
+     # Verify output matches: e0cab1eab5300105c93d33272c257468
+     adb -s f9f3d7b0 reboot
+     ```
+   - **Check Results:**
+     * Watch host `journalctl -k -f` or `dmesg -w` for USB device enumeration (`1209:0001` or CDC-ECM interface).
+     * If CDC-ECM enumerates:
+       ```bash
+       ip -br link
+       sudo ip addr add 192.168.7.1/24 dev <ue0-host-interface>
+       sudo ip link set <ue0-host-interface> up
+       ping -c 3 192.168.7.2
+       ssh root@192.168.7.2  # password: alpine
+       ```
+     * If device is rebooted back to recovery:
+       ```bash
+       tools/sweet-log-pull.sh -p darwin /tmp/log-run21.txt
+       grep -nE "SWEET USB|HSPHY|ahb2phy" /tmp/log-run21.txt
+       ```
+     * Check if `ahb2phy CBCR post-enable` shows clock enabled (`bit 31 = 0`), if `HSPHY overrides` show non-zero values (`0x64`, `0xc8`, `0x24`), and whether `ep0 cmd 0x1` succeeds!
 
 1. **Run 20 Log Diagnosis (`/tmp/log-run20.txt`, 113,660 bytes):**
    - Pulled log confirmed:
