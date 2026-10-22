@@ -1,6 +1,28 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 08:35, latest)
+## Agent handoff / active work (2026-10-22 09:40, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 16 Analysis & Run 17 Fix - Physical USB 2.0 High-Speed, ep0_mps 64, & UTMI Clock) <<<
+
+**RUN 16 LOG ANALYSIS (`/tmp/log-run16.txt`, 98,350 bytes):**
+1. **Display Always-On (100% SUCCESS):**
+   - Panel stayed lit continuously with Apple logo; no fade-out (user confirmed: "dang hien logo apple, van sang lien tuc khong co phan ung gi").
+   - `sweetfb_keepon=1` kept panel lit, `SweetHID` Power (`0x30`) & Menu (`0x40`) keys fired continuously every 5s.
+2. **USB DWC3 Diagnosis:**
+   - Log showed:
+     * `DWC3 DCFG 0x00080804 DSTS 0x00520004` (link state `USBLNKST = 4` = `SS.Disabled`).
+     * `ep0 cmd 0x1 timeout (DEPCMD 0x00000401 DCFG 0x00080804 DSTS 0x00520004)`.
+     * `endpoint 0 setup failed (speed 4 ep0_mps 512)`.
+   - **Root Causes:**
+     a) **Hardware is USB 2.0 Only:** User emphasized Redmi K30 5G hardware specification is strictly USB 2.0. Verified against device tree (`picasso-sm7250.dtsi` line 962: `maximum-speed = "high-speed"; usb-phy = <&usb2_phy0>, <&usb_nop_phy>;`). Setting SuperSpeed (`DCFG = 4`) leaves DWC3 core stuck in `SS.Disabled` waiting for nonexistent PIPE clock.
+     b) **EP0 MPS Violation in High-Speed Mode:** In all prior runs, `ep0_mps` was passed as 512 bytes (`512u << 3`). Under USB 2.0 spec section 5.5.3, Control Endpoint 0 MPS MUST be 64 bytes. The DWC3 core rejects/hangs on `SETEPCONFIG` if MPS > 64 when configured for High-Speed.
+     c) **Qualcomm Wrapper UTMI Clock Selection:** In `dwc3-msm.c`, on platforms without SuperSpeed PHY operating at High-Speed, `QSCRATCH_GENERAL_CFG` must route the UTMI clock (`PIPE_UTMI_CLK_SEL` bit 0) and assert `PIPE3_PHYSTATUS_SW` (bit 3). `LANE0_PWR_PRESENT` must NOT be asserted in `QSCRATCH_SS_PHY_CTRL`.
+3. **RUN 17 FIX:**
+   - In `sweet_usb_gadget_start`:
+     * Set `QSCRATCH_GENERAL_CFG` (`0x08`) |= `(1u << 0) | (1u << 3)` (`PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW`) early and post-reset.
+     * Do NOT assert `LANE0_PWR_PRESENT` in `QSCRATCH_SS_PHY_CTRL` so SuperSpeed power is not falsely reported.
+     * Force `DCFG` to High-Speed (0): `dwc_wr(DCFG, dcfg | 0)`.
+     * Set initial `ep0_mps = 64` for both EP0 OUT and EP1 IN.
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 15 Analysis & Run 16 Fix - DCFG SuperSpeed & AHB2PHY Clock) <<<
 

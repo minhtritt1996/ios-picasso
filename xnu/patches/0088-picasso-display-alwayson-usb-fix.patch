@@ -112,19 +112,20 @@
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
  		}
-@@ -866,6 +892,27 @@
+@@ -866,6 +892,30 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
-+	/* Configure Qualcomm wrapper: enable VBUS session early */
++	/* Configure Qualcomm wrapper: enable VBUS session and select UTMI clock early (USB 2.0 High Speed) */
 +	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
 +	if (qs != 0) {
-+		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
++		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL);
 +		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
-+		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
++		uint32_t gcfg = usb_rd(qs, 0x08);
++		*(volatile uint32_t *)(qs + 0x08) = gcfg | (1u << 0) | (1u << 3); /* PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW */
 +		__asm__ volatile ("dsb sy" ::: "memory");
-+		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
-+		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
++		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x -> 0x%08x\n",
++		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), gcfg, usb_rd(qs, 0x08));
 +	}
 +
 +	/* Clear SUSPHY and ENBLSLPM on USB2 & USB3 PHYs, disable clock gating before soft reset */
@@ -140,17 +141,20 @@
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
-@@ -878,31 +925,40 @@
+@@ -878,31 +928,42 @@
  		return;
  	}
  
 +	/* Post-reset settle delay for DWC3 3.30a clock domain re-sync */
 +	delay(100000);	/* 100 ms */
 +
-+	/* Re-apply GUSB2PHYCFG, GUSB3PIPECTL and GCTL after soft reset */
++	/* Re-apply GUSB2PHYCFG, GUSB3PIPECTL, GCTL and UTMI clock after soft reset */
 +	dwc_wr(GUSB2PHYCFG, dwc_rd(GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
 +	dwc_wr(GUSB3PIPECTL, dwc_rd(GUSB3PIPECTL) & ~GUSB3PIPECTL_SUSPHY);
 +	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
++	if (qs != 0) {
++		*(volatile uint32_t *)(qs + 0x08) |= (1u << 0) | (1u << 3); /* PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW */
++	}
 +
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
@@ -159,17 +163,15 @@
  	ud.evt_pos = 0;
  
 -	/* High speed, address 0 */
-+	/* Keep hardware speed (SuperSpeed 4 on SM7250, HighSpeed 0 on SM7150), address 0 */
-+	uint32_t speed = dwc_rd(DCFG) & 7;
++	/* High speed (480 Mbps) mode on picasso (physical USB 2.0 port), address 0 */
  	uint32_t dcfg = dwc_rd(DCFG) & ~(7u | (0x7fu << 3));
--	dwc_wr(DCFG, dcfg | 0);
-+	dwc_wr(DCFG, dcfg | speed);
+ 	dwc_wr(DCFG, dcfg | 0);
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
 -	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
-+	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 for SuperSpeed, 64 for HighSpeed until connect done. */
-+	uint32_t ep0_mps = (speed == 4 || speed == 5) ? 512 : 64;
++	/* Endpoint 0 OUT/IN: start config, control type, max packet 64 for HighSpeed until connect done. */
++	uint32_t ep0_mps = 64;
  	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
 -	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
 +	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
@@ -178,7 +180,7 @@
 +	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
  	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
 -		printf("SWEET USB: endpoint 0 setup failed\n");
-+		printf("SWEET USB: endpoint 0 setup failed (speed %u ep0_mps %u)\n", speed, ep0_mps);
++		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
  		return;
  	}
  	dwc_wr(DALEPENA, 0x3);
