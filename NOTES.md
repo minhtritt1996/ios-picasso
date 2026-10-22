@@ -1,8 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 11:32, latest)
+## Agent handoff / active work (2026-10-22 11:46, latest)
 
-### >>> UPDATE 2026-10-22 (picasso: Run 19 Log Analysis & Run 20 Building - Complete SNPS Femto PHY Powerup & GCC Reset) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 20 Flashed & Ready - Complete SNPS Femto PHY Powerup & GCC Reset) <<<
+
+1. **Kernel Build & Artifact Verification (Commit `7fcf36d`, CI Run `39722914043`):**
+   - CI build completed in 7m32s.
+   - Downloaded artifact `xnu/out-0088-run20/kernel.development.sweet` (17,210,952 bytes).
+   - Binary string verification confirmed all new logic present:
+     * `SWEET USB: HSPHY pre-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x`
+     * `SWEET USB: HSPHY post-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x`
+     * `SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x`
+     * `SWEET FB: display off request ignored (sweetfb_keepon=1)`
+2. **Boot Image Packaged & Flashed:**
+   - Packaged `payload-picasso-0115.bin` with `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `1795eedddc7b86e6ddf0942c18ee81c5`).
+   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB.
+   - Verified readback MD5: `1795eedddc7b86e6ddf0942c18ee81c5` (100% match).
+3. **Execution Plan:**
+   - Reboot device from recovery into iOS.
+   - Monitor host network interface for CDC-ECM gadget (`1209:0001` / `02:00:5e:77:ee:01`).
+   - Assign host IP `192.168.7.1/24` and test SSH to `192.168.7.2` (password `alpine`).
 
 1. **Run 19 Log Analysis (`/tmp/log-run19.txt`, 90,926 bytes):**
    - Pulled directly from `darwin` partition (`/dev/block/sda35`) via `tools/sweet-log-pull.sh`.
