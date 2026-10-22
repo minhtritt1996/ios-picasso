@@ -1,6 +1,40 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 16:45, latest)
+## Agent handoff / active work (2026-10-22 17:05, latest)
+
+### >>> UPDATE 2026-10-22 (steps 2 and 3 boot; STARTTRANSFER powers off; SMMU suspect — Run 34) <<<
+
+Bisect with Run 33 (`sweetusbstep`, gates inside `ud_start_trb`):
+
+| step | adds | result |
+|---|---|---|
+| 0 | ep0 `SETEPCONFIG` | boots, SpringBoard |
+| 1 | `DALEPENA = 0x3` | boots (earlier failure was the removed `sweet_log_flush`) |
+| 2 | SETUP TRB write | boots |
+| 3 | `ud_sync` -> `flush_dcache64(pa,…,TRUE)` | boots |
+| 4 | `DEPCMD_STARTTRANSFER` | **phone powers off before the Apple logo** |
+
+So the fault is the moment the controller starts DMA. Evidence for the DMA
+path being the problem:
+
+- `GHWPARAMS0 = 0x4020400a` -> `AWIDTH = 0x40` = 64 bits, so the >4 GiB buffer
+  is not an address-width problem.
+- The USB node has **an IOMMU** (`iommus = <&apps_smmu 0xE0>`,
+  `qcom,iommu-dma-addr-pool = <0x90000000 0x60000000>`), while the UFS node has
+  none. That is consistent with UFS DMA working in this kernel while the first
+  USB DMA access kills the phone (an SMMU/XPU fault on Qualcomm resets the PMIC).
+
+**Run 34 (commit `f341c41`, CI `39755527450`)** adds:
+- prints of TRB/buffer physical addresses before the command and
+  `DEPCMD/DSTS` after it;
+- `sweetusbsmmu=1`, which reports `IDR0/CR0/GBPA/S2CR(0xE0)/CBAR(0)` at
+  `0x15000000` using the ARM SMMU-500 offsets.
+
+**Next:** boot `sweetusbstep=3` + `sweetusbsmmu=1` to read the SMMU state
+(that path does not crash), then decide between programming a bypass for stream
+0xE0 and building a translation table.
+
+## Agent handoff (2026-10-22 16:45)
 
 ### >>> UPDATE 2026-10-22 (step 1 boots; step 2 powers off; gates inside the TRB path — Run 33) <<<
 
