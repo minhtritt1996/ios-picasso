@@ -217,7 +217,7 @@
 +	int smmu_probe = 0;
 +	PE_parse_boot_argn("sweetusbsmmu", &smmu_probe, sizeof(smmu_probe));
 +	if (smmu_probe) {
-+		vm_offset_t smmu = ml_io_map(0x15000000, 0x1000);
++		vm_offset_t smmu = ml_io_map(0x15000000, 0x10000);
 +		if (smmu != 0) {
 +			/*
 +			 * ARM SMMU-500 layout: IDR0 0x0, CR0 0x20, GBPA 0x44,
