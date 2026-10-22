@@ -1,6 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 13:10, latest)
+## Agent handoff / active work (2026-10-22 13:35, latest)
+
+### >>> UPDATE 2026-10-22 (Run 22 panicked — my GDSC write collapsed the USB domain; Run 23 fixes it) <<<
+
+1. **Symptom:** Run 22 (`13b642d0…`) never reached the Apple logo; the user
+   reports a panic. Pulled `darwin` ring from recovery: byte-identical to the
+   Run 21 pull (`f4d03b75…`), i.e. the kernel died before the log thread
+   flushed anything.
+2. **Root cause (my bug in Run 22):** the probe line in the Run 21 log says
+   `GDSC usb30_prim 0xf822f000 (on)` — the GDSC was already on. Run 22 wrote
+   `gdsc | 1u`, and per `drivers/clk/qcom/gdsc.c` bit 0 is `SW_COLLAPSE`
+   (1 = power down), while bit 31 is read-only status. That powered the USB
+   domain down and wrote status bits back.
+3. **Run 23 (commit `ebb0e5b`, CI `39732072459`):** read the GDSC, clear bit 0
+   only if set, otherwise do not write at all; the `AHB2PHY BCR` is now a
+   masked read-modify-write of bits 0-1. Verified with a synthetic checkout:
+   `patch -p1` applies with no fuzz and no rejects.
+4. **Next:** artifact -> `payload-picasso-0118.bin` -> `shim-boot.img` ->
+   flash -> reboot -> check host `lsusb`; if it boots but still does not
+   enumerate, pull the log and look at `AHB2PHY BCR post` / `HSPHY pre-init`.
+
+## Agent handoff (2026-10-22 13:10)
 
 ### >>> UPDATE 2026-10-22 (Run 22 flashed — still no CDC-ECM; log pull pending) <<<
 
