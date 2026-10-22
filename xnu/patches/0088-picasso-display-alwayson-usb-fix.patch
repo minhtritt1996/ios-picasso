@@ -27,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,28 @@
+@@ -151,6 +151,33 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -37,10 +37,15 @@
 +#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
 +#define GUSB3PIPECTL         0xc2c0
 +#define GUSB3PIPECTL_SUSPHY  (1u << 17)
-+#define GCC_AHB2PHY_CBCR     0x6a004
++#define GCC_USB_PHY_CFG_AHB2PHY_BCR 0x6a000
++#define GCC_USB30_PRIM_GDSC  0x10f004
 +#define GCC_QUSB2PHY_PRIM_BCR 0x12000
++#define AHB2PHY_TOP_CFG      0x10
++#define AHB2PHY_ONE_WAIT     0x11
 +#define HSPHY_PA             0x088e3000
-+#define HSPHY_SIZE           0x00001000
++#define HSPHY_SIZE           0x1000
++#define HSPHY_EUD_MM2        0x088e2000
++#define HSPHY_EUD_SIZE       0x1000
 +#define HSPHY_UTMI_CTRL0     0x3c
 +#define HSPHY_UTMI_CTRL5     0x50
 +#define HSPHY_COMMON0        0x54
@@ -56,7 +61,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +294,7 @@
+@@ -273,7 +300,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -65,7 +70,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +304,10 @@
+@@ -283,9 +310,11 @@
  			}
  			return 0;
  		}
@@ -78,7 +83,7 @@
  	return -1;
  }
  
-@@ -715,10 +737,12 @@
+@@ -715,10 +744,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -95,30 +100,56 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +890,89 @@
+@@ -866,7 +897,115 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
 -	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
-+	/* 1. Map GCC, enable AHB2PHY clock (0x6a004), then reset PHY block via GCC BCR (0x12000) */
++	/*
++	 * 1. Bring the USB PHY AHB2PHY bridge out of reset. lito has no AHB2PHY
++	 *    branch clock: the bridge is gated by the GCC reset
++	 *    GCC_USB_PHY_CFG_AHB2PHY_BCR (0x6a000) and its APB access depends on
++	 *    the usb30_prim GDSC (0x10f004). Enable the GDSC, then deassert the
++	 *    BCR, otherwise every later PHY read returns repeating bus-error fill
++	 *    (0x11111111 / 0x88888888 / 0x06060606).
++	 */
 +	vm_offset_t gcc = ml_io_map(GCC_PA, 0x80000);
 +	if (gcc != 0) {
-+		uint32_t ahb = usb_rd(gcc, GCC_AHB2PHY_CBCR);
-+		printf("SWEET USB: ahb2phy CBCR pre-enable: 0x%08x\n", ahb);
-+		*(volatile uint32_t *)(gcc + GCC_AHB2PHY_CBCR) |= 1;
++		uint32_t gdsc = usb_rd(gcc, GCC_USB30_PRIM_GDSC);
++		*(volatile uint32_t *)(gcc + GCC_USB30_PRIM_GDSC) = gdsc | 1u;
 +		__asm__ volatile ("dsb sy" ::: "memory");
-+		for (int c = 0; c < 1000 && (usb_rd(gcc, GCC_AHB2PHY_CBCR) & (1u << 31)); c++) {
++		for (int c = 0; c < 1000 && !(usb_rd(gcc, GCC_USB30_PRIM_GDSC) & (1u << 31)); c++) {
 +			delay(10);
 +		}
-+		printf("SWEET USB: ahb2phy CBCR post-enable: 0x%08x\n", usb_rd(gcc, GCC_AHB2PHY_CBCR));
++		printf("SWEET USB: GDSC usb30_prim 0x%08x -> 0x%08x\n",
++		    gdsc, usb_rd(gcc, GCC_USB30_PRIM_GDSC));
++
++		printf("SWEET USB: AHB2PHY BCR pre: 0x%08x\n",
++		    usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR));
++		*(volatile uint32_t *)(gcc + GCC_USB_PHY_CFG_AHB2PHY_BCR) = 0;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(1000);
++		printf("SWEET USB: AHB2PHY BCR post: 0x%08x\n",
++		    usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR));
++
 +		*(volatile uint32_t *)(gcc + GCC_QUSB2PHY_PRIM_BCR) |= 1;
 +		delay(150);
 +		*(volatile uint32_t *)(gcc + GCC_QUSB2PHY_PRIM_BCR) &= ~1;
 +		delay(150);
++		printf("SWEET USB: QUSB2PHY PRIM_BCR post: 0x%08x\n",
++		    usb_rd(gcc, GCC_QUSB2PHY_PRIM_BCR));
 +	}
 +
 +	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
 +	vm_offset_t hsphy = ml_io_map(HSPHY_PA, HSPHY_SIZE);
++	vm_offset_t eud = ml_io_map(HSPHY_EUD_MM2, HSPHY_EUD_SIZE);
++	if (eud != 0) {
++		/* One wait state for AHB2PHY read/write, as dwc3-msm does. */
++		*(volatile uint32_t *)(eud + AHB2PHY_TOP_CFG) = AHB2PHY_ONE_WAIT;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		printf("SWEET USB: AHB2PHY TOP_CFG 0x%08x EUD mode-mgr2 0x%08x\n",
++		    usb_rd(eud, AHB2PHY_TOP_CFG), usb_rd(eud, 0));
++	}
 +	if (hsphy != 0) {
 +		printf("SWEET USB: HSPHY pre-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x\n",
 +		    usb_rd(hsphy, HSPHY_UTMI_CTRL0), usb_rd(hsphy, HSPHY_UTMI_CTRL5),
@@ -137,10 +168,10 @@
 +		/* Step f: Force VBUS valid at PHY level */
 +		*(volatile uint32_t *)(hsphy + HSPHY_COMMON1) |= (1u << 4); /* VBUSVLDEXTSEL0 */
 +		*(volatile uint32_t *)(hsphy + HSPHY_CTRL1)   |= (1u << 0); /* VBUSVLDEXT0 */
-+		/* Step g: Parameter overrides for picasso (<0xc8 0x70>, <0x24 0x74>, <0x64 0x6c>) */
-+		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X1) = 0xc8;
-+		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X2) = 0x24;
-+		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X0) = 0x64;
++		/* Step g: qcom,param-override-seq = <0x63 0x6c>, <0x85 0x70>, <0x17 0x74> */
++		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X0) = 0x63;
++		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X1) = 0x85;
++		*(volatile uint32_t *)(hsphy + HSPHY_PARAM_OVRD_X2) = 0x17;
 +		/* Step h: VREGBYPASS (0x5c |= 1) */
 +		*(volatile uint32_t *)(hsphy + HSPHY_COMMON2) |= (1u << 0);
 +		/* Step i: USB2_SUSPEND_N_SEL | USB2_SUSPEND_N (0x64 |= (1<<3) | (1<<2)) */
@@ -186,7 +217,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +974,39 @@
+@@ -878,42 +1017,39 @@
  		return;
  	}
  
