@@ -2,6 +2,21 @@
 
 ## Agent handoff / active work (2026-10-22 08:35, latest)
 
+### >>> UPDATE 2026-10-22 (picasso: Run 15 Built & Deployed - Kernel 0088 with Patch 0088 Applied) <<<
+
+1. **Kernel 0088 Build & Verification:**
+   - CI Run `39706958091` completed successfully in 7m29s.
+   - Build log confirms: `Applying patch: .../0088-picasso-display-alwayson-usb-fix.patch` applied cleanly without skipping or corrupt patch warnings.
+   - Kernel binary `xnu/out-0088/kernel.development.sweet` SHA256 `e1350fe6f6b117e0065992f714d53e8e6a3a57fed974ebaad04cb3180f5b298b`.
+   - Verified strings in binary:
+     * `SWEET FB: display off request ignored (sweetfb_keepon=1)`
+     * `SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x GUSB3PIPECTL 0x%08x -> 0x%08x GCTL 0x%08x`
+     * `SWEET USB: ep%u cmd 0x%x timeout (DEPCMD 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x GUSB3PIPECTL 0x%08x)`
+2. **Boot Image Packaged & Flashed:**
+   - Built `payload-picasso-0110.bin` with `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `dd7a363714a009ec03225956369df101`).
+   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via OrangeFox Recovery ADB, readback MD5 verified 100%.
+
 ### >>> UPDATE 2026-10-22 (picasso: Run 14 Analysis & Run 15 Fix - Patch 0088 Hunk Fix) <<<
 
 **RUN 14 ROOT CAUSE & FINDING:**
