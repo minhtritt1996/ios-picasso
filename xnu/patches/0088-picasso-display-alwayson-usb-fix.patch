@@ -27,11 +27,13 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,34 @@
+@@ -151,6 +151,36 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
 +extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++#define GINTSTS           0xc140
++#define GSTS              0xc118
 +#define QSCRATCH_GENERAL_CFG 0x08
 +#define PIPE_UTMI_CLK_SEL    (1u << 0)
 +#define PIPE3_PHYSTATUS_SW   (1u << 3)
@@ -62,7 +64,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +301,7 @@
+@@ -273,7 +303,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -71,7 +73,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +311,10 @@
+@@ -283,9 +313,10 @@
  			}
  			return 0;
  		}
@@ -84,7 +86,7 @@
  	return -1;
  }
  
-@@ -715,10 +744,12 @@
+@@ -715,10 +746,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -101,7 +103,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +897,138 @@
+@@ -866,7 +899,138 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -241,7 +243,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +1040,64 @@
+@@ -878,47 +1042,80 @@
  		return;
  	}
  
@@ -292,20 +294,47 @@
  	dwc_wr(DEVTEN, 0x7);
  
 -	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
-+	/* Endpoint 0 OUT/IN: start config, control type, max packet 64 for HighSpeed until connect done. */
-+	uint32_t ep0_mps = 64;
- 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
+-	/* Endpoint 0 OUT/IN: start config, control type, max packet 64 for HighSpeed until connect done. */
+-	uint32_t ep0_mps = 64;
+-	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
 -	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
-+	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
- 	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
+-	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
+-	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
 -	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
-+	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
- 	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
+-	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
+-	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
 -		printf("SWEET USB: endpoint 0 setup failed\n");
+-		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
+-		return;
+-	}
+-	dwc_wr(DALEPENA, 0x3);
++	/* Endpoint 0 OUT/IN: control type, max packet 64 for HighSpeed. */
++	uint32_t ep0_mps = 64;
++	int ep0_ok = 0, attempt;
++	/*
++	 * The host already resets the port every few seconds (xhci logs
++	 * "device descriptor read/64, error -110"), so retry instead of
++	 * failing the boot on the first attempt and log each attempt.
++	 */
++	for (attempt = 0; attempt < 20 && !ep0_ok; attempt++) {
++		if (attempt) {
++			delay(250000);	/* 250 ms */
++		}
++		int e0 = ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0);
++		int e1 = e0 || ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (0u << 25), 0);
++		int e2 = e1 || ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
++		int e3 = e2 || ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (1u << 25), 0);
++		int e4 = e3 || ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0);
++		ep0_ok = !(e0 || e1 || e2 || e3 || e4);
++		printf("SWEET USB: ep0 attempt %d %s (GINTSTS 0x%08x GSTS 0x%08x DSTS 0x%08x)\n",
++		    attempt, ep0_ok ? "ok" : "failed",
++		    dwc_rd(GINTSTS), dwc_rd(GSTS), dwc_rd(DSTS));
++	}
++	if (!ep0_ok) {
 +		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
- 		return;
- 	}
- 	dwc_wr(DALEPENA, 0x3);
++		return;
++	}
++	dwc_wr(DALEPENA, 0x3);
  	ud_start_setup();
  
 -	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
