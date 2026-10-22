@@ -1,6 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 16:00, latest)
+## Agent handoff / active work (2026-10-22 16:20, latest)
+
+### >>> UPDATE 2026-10-22 (step-1 fails; finer gates + flush removed — Run 32) <<<
+
+1. `sweetusbstep=0` (stop right after ep0 config) **boots to SpringBoard**: the
+   pulled ring (`/tmp/log-step0.txt`, fresh, flush #17) shows
+   `SWEET USB: bring-up step limit 0`, `ep0 attempt 0 ok`, then
+   `stop after ep0 config`, and later `SMP SpringBoard[26]` — userland is fine.
+2. `sweetusbstep=1` never reaches the Apple logo. Its console (photo) shows the
+   same lines up to `ep0 attempt 0 ok`, so the crash is in what step 1 adds:
+   `sweet_log_flush()`, `DALEPENA = 0x3`, `ud_start_setup()`.
+3. **Run 32 (commit `26d81d6`, CI `39751295350`)** removes the early
+   `sweet_log_flush()` (it never reached the partition and is itself a suspect)
+   together with its `sweet_ufs.c` helper, and splits the gates:
+   `0` ep0 config, `1` + DALEPENA, `2` + ep0 transfer start, `3` + RUN_STOP,
+   default 99 = everything. Patch validated against the CI tree (EXACT).
+4. **Test order:** step 1, then step 2, then 3. Whichever first fails is the
+   fault; each test is
+   `tools/picasso-boot.sh xnu/out-0088-run32/kernel.development.sweet "sweetusbstep=N"`.
+
+## Agent handoff (2026-10-22 16:00)
 
 ### >>> UPDATE 2026-10-22 (bisect: sweetusbstep=0 stays at the Apple logo; crash is after ep0 config) <<<
 
