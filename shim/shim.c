@@ -86,7 +86,7 @@ static uint64_t sgi_self(unsigned id)
 	       (1U << (m & 0xf));		/* target list: Aff0 */
 }
 
-void shim_usb_boot(void);
+void shim_usb_boot(uintptr_t dma_hint);
 
 static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
 {
@@ -808,7 +808,9 @@ void shim_main(uint64_t dtb)
 #endif
 
 #if defined(SWEET_USBBOOT)
-	shim_usb_boot();
+	/* The payload area is what the bootloader staged over USB, so the
+	 * firmware's stream mapping for USB must cover it. */
+	shim_usb_boot(hunt_result.payload ? hunt_result.payload + 0x800000 : 0);
 	con_str("USB", "loader usb probe done; reset in ~3 min");
 	delay_ms(180000);
 	reset(20);

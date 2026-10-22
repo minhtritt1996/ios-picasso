@@ -1,6 +1,43 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 17:45, latest)
+## Agent handoff / active work (2026-10-22 19:00, latest)
+
+### >>> UPDATE 2026-10-22 (USB: the SMMU wall blocks both XNU and the shim) <<<
+
+**Result of the whole USB investigation, with evidence:**
+
+1. Everything in XNU works up to endpoint configuration: PMIC rails voted via
+   RPMh (`ldoa5 880 / ldoa12 1710 / ldoa2 3050`), GDSC at GCC `0x0f004`, AHB2PHY
+   reset `0x6a000`, the Femto PHY sequence, the QSCRATCH `GENERAL_CFG` UTMI
+   clock handshake (`0x04 -> 0x0D`), and `ep0 SETEPCONFIG` returns success.
+   Bisect gates (`sweetusbstep=0..4`) showed the phone survives every step
+   except the transfer itself.
+2. `DEPCMD_STARTTRANSFER` (the first DMA) hangs the bus: in XNU the phone resets
+   through the watchdog, in the shim it just hangs. Tried buffers at
+   `0x140xxxxxx` (kernel RAM), `0xA22F0000` (splash carve-out), `0x90000000`
+   (Android's USB IOVA range) and the staged-payload area: all the same.
+3. **Root cause: the apps SMMU is enabled and locked.** Measured from the shim:
+   `IDR0 0x00260406`, `CR0 0x4C017E51` (SMMUEN=1), `GBPA 0x0`. A direct read of
+   `S2CR(0xE0)` (the USB stream, DT `iommus = <&apps_smmu 0xE0>`) **hangs**,
+   writing `CR0` to clear SMMUEN is **dropped**, and SCM `IO_READ/IO_WRITE`
+   return `0xffffffffffffffff`. So non-secure code cannot configure or bypass
+   the SMMU at all, and every DWC3 DMA faults.
+4. The shim route (loader-owned USB) reaches the same wall: with the PHY up, the
+   three ep0 commands succeed in the shim but `STARTTRANSFER` hangs exactly as
+   in XNU — the fault is the missing stream mapping, not the kernel.
+5. **What would work:** the vendor's UEFI path. HackiOS/UniXNU let Qualcomm's
+   `UsbDeviceDxe` own USB, because in that environment XBL has configured the
+   SMMU for USB. That means porting Mu-Silicium (SoC package for lito, vendor
+   DXE blobs from `xbl.img`) — a separate, multi-week project.
+
+**Practical state now:** the phone runs iOS to SpringBoard with no runtime USB.
+Flashing and logs work through recovery/fastboot with
+`tools/picasso-boot-remote.sh`, `tools/picasso-fastboot-remote.sh` and
+`tools/sweet-log-pull-remote.sh` (host `root@100.121.254.115`, pass `k60`).
+The shim keeps the compile-gated probes (`SWEET_SMMU*`, `SWEET_USB*`,
+`SWEET_USBBOOT`) for whoever picks this up.
+
+## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
 

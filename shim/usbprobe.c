@@ -18,6 +18,7 @@
 
 extern void delay_ms(uint32_t ms);
 extern void con_skip(void);
+extern void con_clear(uint32_t colour);
 
 #define DWC3_BASE	0x0a600000UL
 #define QSCRATCH_BASE	0x0a6f8800UL
@@ -157,15 +158,27 @@ static void phy_init(void)
 }
 
 void
-shim_usb_boot(void)
+shim_usb_boot(uintptr_t dma_hint)
 {
 	uint32_t v, gen;
+	uint8_t *area = dma;
 	uint64_t pa = (uint64_t)(uintptr_t)dma;
 	int st;
 
+	con_clear(0xff0000a0U);	/* own page: this report must fit on screen */
 	con_str("USB", "device mode in the loader");
 	con_hex("PHY 54", rd(phy, HSPHY_COMMON0));
 	con_hex("GSNPSID", rd(dwc, 0xc120));
+	/*
+	 * The XBL/ABL stage-2 mapping for the USB stream covers the buffer the
+	 * bootloader used for fastboot, which is where it staged our payload.
+	 * Put the transfer area there instead of in the shim's own .bss.
+	 */
+	if (dma_hint) {
+		area = (uint8_t *)dma_hint;
+		pa = (uint64_t)dma_hint;
+	}
+	con_hex("DMA area", pa);
 	con_skip();
 
 	phy_init();
@@ -193,8 +206,8 @@ shim_usb_boot(void)
 	delay_ms(1);
 	con_hex("GENERAL_CFG", rd(qs, QS_GENERAL_CFG));
 
-	for (uint32_t i = 0; i < sizeof(dma); i += 4)
-		*(volatile uint32_t *)(dma + i) = 0;
+	for (uint32_t i = 0; i < 0x4000; i += 4)
+		*(volatile uint32_t *)(area + i) = 0;
 	__asm__ volatile ("dsb sy" ::: "memory");
 
 	wr(dwc, GEVNTADRLO, (uint32_t)pa);
@@ -212,21 +225,29 @@ shim_usb_boot(void)
 	st = epcmd(0, 0x2, 1, 0);	/* SETTRANSFRESOURCE */
 	con_hex("SETRESOURCE", (uint64_t)st);
 
+	con_str("STEP", "dalepena");
 	wr(dwc, DALEPENA, 0x1);
+	con_hex("DALEPENA", rd(dwc, DALEPENA));
 
-	/* Arm one SETUP TRB on ep0 OUT. */
-	*(volatile uint32_t *)(dma + DMA_TRB_OUT + 0) = (uint32_t)(pa + DMA_SETUP);
-	*(volatile uint32_t *)(dma + DMA_TRB_OUT + 4) = 0;
-	*(volatile uint32_t *)(dma + DMA_TRB_OUT + 8) = 8;
-	*(volatile uint32_t *)(dma + DMA_TRB_OUT + 12) = 0x20 | 1u | 2u | 0x800u;
+	con_str("STEP", "arm trb");
+	*(volatile uint32_t *)(area + DMA_TRB_OUT + 0) = (uint32_t)(pa + DMA_SETUP);
+	*(volatile uint32_t *)(area + DMA_TRB_OUT + 4) = 0;
+	*(volatile uint32_t *)(area + DMA_TRB_OUT + 8) = 8;
+	*(volatile uint32_t *)(area + DMA_TRB_OUT + 12) = 0x20 | 1u | 2u | 0x800u;
 	__asm__ volatile ("dsb sy" ::: "memory");
+
+	con_str("STEP", "starttransfer");
 	st = epcmd(0, 0x6, 0, (uint32_t)(pa + DMA_TRB_OUT));
 	con_hex("STARTTRANSFER", (uint64_t)st);
 
+	con_str("STEP", "runstop");
 	wr(dwc, DCTL, rd(dwc, DCTL) | DCTL_RUN_STOP);
+	con_hex("DCTL run", rd(dwc, DCTL));
 	for (int i = 0; i < 200 && (rd(dwc, DSTS) & (1u << 22)); i++)
 		delay_ms(1);
 	con_hex("DSTS", rd(dwc, DSTS));
+	con_hex("GINTSTS", rd(dwc, GINTSTS));
+	con_hex("DCFG", rd(dwc, DCFG));
 
 	con_skip();
 	con_str("USB", "polling events for 5 s; host should see a device");
