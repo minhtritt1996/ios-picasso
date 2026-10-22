@@ -701,6 +701,23 @@ void shim_main(uint64_t dtb)
 		con_hex("IDR0", smmu[0x0000 / 4]);
 		con_hex("CR0", smmu[0x0020 / 4]);
 		con_hex("GBPA", smmu[0x0044 / 4]);
+#if defined(SWEET_SMMU_SCAN)
+		/*
+		 * Which parts of the SMMU block are reachable? CR0/GBPA/IDR0 read
+		 * fine, S2CR(0xE0) at 0x8700 hangs. Print a marker before each
+		 * read: the last marker on screen is the offset that hangs.
+		 */
+		{
+			static const uint32_t offs[] = {
+				0x0000, 0x0020, 0x0044, 0x1000, 0x2000, 0x4000,
+				0x6000, 0x8000, 0x8008, 0x8700, 0xf000
+			};
+			for (unsigned i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+				con_hex("scan off", offs[i]);
+				con_hex("  value", smmu[offs[i] / 4]);
+			}
+		}
+#endif
 #if defined(SWEET_SMMU_SCM)
 		/*
 		 * The SMMU registers look secure-locked: a direct S2CR read hangs and

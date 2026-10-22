@@ -56,6 +56,23 @@ have to build those DXE drivers from EDK2 sources instead of dropping in vendor
 binaries - significantly more than a "copy the blobs" port. Combined with the
 SMMU wall, the UEFI/USB route is a real project, not a quick experiment.
 
+
+### D1 result: SMMU configuration is not reachable from non-secure (negative)
+
+- Vendor `drivers/iommu/arm-smmu.c` has `disable_bypass = true`: a stream with no
+  IOMMU domain gets `S2CR = FAULT`, which is exactly the USB stream here.
+- That driver writes `S2CR` **directly** (no SCM), so a bypass would be possible
+  if the block were accessible. It is not:
+  - `IDR0`, `CR0`, `GBPA` read correctly from the shim, but a second read of
+    `CR0` (offset 0x20) in the page scan **hangs**, i.e. the block wedges after a
+    few accesses - no stable access without the SMMU's clocks/NoC votes.
+  - SCM `IO_READ`/`IO_WRITE` return `-1`; `CR0` writes are dropped.
+- Conclusion: USB DMA cannot be enabled from XNU or the shim. Only the vendor
+  UEFI/DXE environment (which XBL sets up before locking) does this.
+
+Machine state after D1: flash the normal image with `sweetusb=1` so the phone
+boots iOS without touching USB.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
