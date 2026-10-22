@@ -1,6 +1,22 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 09:40, latest)
+## Agent handoff / active work (2026-10-22 10:05, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 17 Built & Deployed - Patch 0088 Verified, USB 2.0 High-Speed & ep0_mps 64) <<<
+
+1. **Kernel Build & Artifact Verification (Commit `601a7bf`, CI Run `39713806931`):**
+   - CI build finished successfully in 7m21s.
+   - Build log confirmed clean patch application without any skips: `Applying patch: .../0088-picasso-display-alwayson-usb-fix.patch`.
+   - Downloaded `xnu-kernel` artifact (`kernel.development.sweet`, 17,227,336 bytes).
+   - Binary string verification confirmed all new logic present:
+     * `SWEET FB: display off request ignored (sweetfb_keepon=1)`
+     * `SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x -> 0x%08x`
+     * `SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)`
+     * `SWEET USB: ep%u cmd 0x%x timeout (DEPCMD 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x GUSB3PIPECTL 0x%08x DCFG 0x%08x DSTS 0x%08x)`
+2. **Boot Image Packaged & Flashed:**
+   - Built `payload-picasso-0112.bin` with `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `4f923d19da2fcb56f62491629ed0524d`).
+   - Flashed directly to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 16 Analysis & Run 17 Fix - Physical USB 2.0 High-Speed, ep0_mps 64, & UTMI Clock) <<<
 
