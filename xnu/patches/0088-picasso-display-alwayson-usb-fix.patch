@@ -27,11 +27,12 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,35 @@
+@@ -151,6 +151,36 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
 +extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++extern void sweet_log_flush(void);
 +#define GINTSTS           0xc140
 +#define GSTS              0xc118
 +#define QSCRATCH_GENERAL_CFG 0x08
@@ -63,7 +64,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +302,7 @@
+@@ -273,7 +303,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -72,7 +73,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +312,10 @@
+@@ -283,9 +313,10 @@
  			}
  			return 0;
  		}
@@ -85,7 +86,7 @@
  	return -1;
  }
  
-@@ -715,10 +745,12 @@
+@@ -715,10 +746,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -102,7 +103,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +898,138 @@
+@@ -866,7 +899,138 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -242,7 +243,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1041,39 @@
+@@ -878,6 +1042,39 @@
  		return;
  	}
  
@@ -282,7 +283,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,29 +1086,34 @@
+@@ -890,29 +1087,41 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -293,6 +294,8 @@
 -	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
 -	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
 -		printf("SWEET USB: endpoint 0 setup failed\n");
+-		return;
+-	}
 +	/*
 +	 * Endpoint 0 OUT/IN: control type, max packet 64 at HighSpeed. The host
 +	 * already resets the port every few seconds (xhci: "device descriptor
@@ -317,8 +320,12 @@
 +	}
 +	if (!ep0_ok) {
 +		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
- 		return;
- 	}
++		return;
++	}
++	/* Persist the log before the next steps: a panic here reboots the phone
++	 * long before the 10 s periodic flush, which is how Run 29 lost its log. */
++	sweet_log_flush();
++	delay(20000);	/* 20 ms for the log thread to reach the partition */
  	dwc_wr(DALEPENA, 0x3);
  	ud_start_setup();
 -
@@ -333,9 +340,36 @@
 -		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 -		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
 -	}
++	printf("SWEET USB: ep0 started, running\n");
++	sweet_log_flush();
++	delay(20000);
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
  	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+--- a/bsd/dev/sweet_ufs.c	2026-10-22 09:03:38.700000000 +0700
++++ b/bsd/dev/sweet_ufs.c	2026-10-22 09:05:15.300000000 +0700
+@@ -688,6 +688,21 @@
+ /* Called for all console output, any context: never blocks. */
+ void sweet_log_append(const char *c, int size);
+ 
++/*
++ * Flush the console ring now instead of waiting for the periodic tick
++ * (SWEET_LOG_SECS): early bring-up code can panic before that tick, and then
++ * the ring never reaches the partition and the crash leaves no evidence.
++ */
++void sweet_log_flush(void);
++
++void
++sweet_log_flush(void)
++{
++	if (sweet_log_chan != 0) {
++		wakeup(&sweet_log_chan);
++	}
++}
++
+ void
+ sweet_log_append(const char *c, int size)
+ {
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:38.783705078 +0700
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:55.684593567 +0700
 @@ -419,6 +419,7 @@
