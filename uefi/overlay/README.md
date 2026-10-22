@@ -47,6 +47,12 @@ dependency is only needed for x86 images):
 - `BdsEntry.c` also draws large hex digits: stage 1 -> A -> B -> 2 -> 3 -> 4 ->
   5 -> 6 (consoles connected) -> 7 (AfterConsole), using a 3x5 font scaled 12x.
 
+- `PlatformBootManagerLibNull` now launches `BootManagerMenuApp` from
+  `PlatformBootManagerUnableToBoot` (`EfiBootManagerGetBootManagerMenu` +
+  `EfiBootManagerBoot`); UiApp and BootManagerMenuApp are in the FV. Bands
+  950/980 confirm the call and the lookup. The app's HII UI does not draw
+  because there is no SimpleTextIn driver yet (no button/keyboard driver).
+
 ## State reached (2026-10-22)
 
 BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV

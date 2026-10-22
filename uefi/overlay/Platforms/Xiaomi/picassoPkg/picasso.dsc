@@ -89,6 +89,8 @@
   ConfigurationMapLib|picassoPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
 
 [Components]
+  MdeModulePkg/Application/UiApp/UiApp.inf
+  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
   #
   # ACPI Tables
   #
