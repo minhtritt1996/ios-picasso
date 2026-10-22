@@ -57,7 +57,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +296,7 @@
+@@ -273,7 +292,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -66,7 +66,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +306,10 @@
+@@ -283,9 +302,10 @@
  			}
  			return 0;
  		}
@@ -79,7 +79,7 @@
  	return -1;
  }
  
-@@ -715,10 +739,12 @@
+@@ -715,10 +735,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -96,7 +96,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +892,113 @@
+@@ -866,7 +888,113 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -211,7 +211,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +1010,39 @@
+@@ -878,42 +1006,39 @@
  		return;
  	}
  
