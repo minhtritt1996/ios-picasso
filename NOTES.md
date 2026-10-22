@@ -1338,4 +1338,16 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - Used direct local USB via `tools/write-direct-smart.py` (chunks 0, 1, 8, 13, 15, 17, 23, 24-30, 31).
    - All 15 chunks verified with MD5 on `/dev/block/sda35`. `BoundingPathData.bundle` is now present in the on-device rootfs.
 
+**2026-10-22, 07:23 - Run 9 Verified: Zero Crashes, SpringBoard Running, Ready for Auto-Wake (Run 10).**
+
+1. **Extracted 119 KiB log from Run 9 (`/tmp/log-run9.txt`):**
+   - `BoundingPathBitmap` assertion failure is 100% GONE.
+   - ZERO process crashes: `SpringBoard` (PID 26), `backboardd` (PID 56), `PosterBoard` all running smoothly.
+   - `backboardd` performed 5 swaps, then requested `display off` and waited for user wake/Home button input.
+2. **Run 10 Deployed (`payload-picasso-0105.bin`):**
+   - Added `sweethidtest=5` to inject automatic Home/Menu presses every 5 seconds.
+   - This fires wake events into `backboardd` to dismiss the boot splash and reveal the Lock Screen/Home Screen.
+   - Flashed `shim-boot-0105.img` to `boot` partition.
+
+
 
