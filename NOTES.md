@@ -1359,6 +1359,25 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - Set `sweetusb=2` with `sweetusblog=0` and `debug=0x14e`.
    - Flashed `shim-boot-0106.img` to `boot` partition. Ready to monitor USB network interface on host.
 
+**2026-10-22, 07:45 - Run 11 Bootloop Diagnosed & Run 12 Prepared (`payload-picasso-0107.bin`).**
+
+1. **Diagnosed 2-3s Bootloop in Run 11:**
+   - User reported: "hien console nhanh lam, tam 2-3 la bi bootloop roi".
+   - Root cause: Setting `sweetusb=2` executed Qualcomm wrapper clock sequence in `sweet_usb.c` (`QSCRATCH_GENERAL_CFG` clock switch with `PIPE_UTMI_CLK_DIS`). On Snapdragon 765G (SM7250), disabling the PIPE clock while GCC USB clocks are active causes the Qualcomm RPM clock watchdog to detect clock loss, triggering an immediate SoC **HARDWARE RESET** after 2-3s.
+   - When `sweetusb=0`, the USB driver code is bypassed entirely, and userland runs continuously for 10+ minutes with ZERO crashes.
+2. **Diagnosed 4-Minute Apple Logo Hang in Run 10:**
+   - Log `/tmp/log-run10.txt` confirms:
+     - 0 process crashes across the entire OS (`SpringBoard` PID 26, `backboardd` PID 56, `launchd`, all daemons running).
+     - `backboardd` swapped 5 frames (Apple logo) into surfaces 2 & 3, then called `kSweetFBRequestPowerChange(0)` (display off).
+     - `sweetfb_keepon=1` prevented hardware panel power-off, freezing the Apple logo on screen.
+     - `backboardd` put itself into display sleep waiting for wake events.
+     - `sweethidtest=5` fired simulated key 0x40 (`kHIDUsage_Csmr_Menu`), but on iPhone X (`D22AP`) there is no physical Home button; `backboardd` ignores 0x40 for screen wake.
+     - `usermanagerd` completed persona generation (UID 501 `mobile`), and SpringBoard is active in `CFRunLoopRunSpecific`.
+3. **Run 12 Built (`payload-picasso-0107.bin`):**
+   - Reverted `sweetusb=0` to eliminate the 2-3s hardware watchdog reset.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes). Ready to flash via recovery ADB.
+
+
 
 
 
