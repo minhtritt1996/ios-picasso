@@ -155,6 +155,27 @@ First coding step (patch 0089 in this tree):
 3. SCM PAS: `pas_init_image(4, mdt)`, `pas_mem_setup(4, base, size)`, `pas_auth_and_reset(4)`,
 4. console markers for each step (same style as the USB bring-up).
 
+### >>> UPDATE 2026-10-22 (picasso: modem PAS boot implemented, CI run 39806873749) <<<
+1. Decision: Wi-Fi follows `ios-topaz` (modem-hosted WLAN on SM7250), not HackiOS
+   (ath11k over PCIe for WCN6750). Topaz already carries HackiOS's upper half
+   (`redwood_apple80211.c`, `redwood_net.c`, `redwood_sta.c`, `RedwoodWLAN.cpp`,
+   `MiniIONetworkStack.cpp`) plus the modem/GLINK/QRTR/WLFW/WMI layers.
+2. Measured for picasso: `qcom,mss@4080000` pas-id 4, memory-region
+   `modem_wlan_region@8c000000` + 0xF800000; SMEM `0x80900000` + 2 MiB;
+   `qcom,smp2p-mpss` `qcom,smem = <0x1b3 0x1ac>` (in 435, out 428); tcsr-mutex
+   syscon `0x1F40000`; firmware `modem.mdt` + `modem.b00..b19` (78 MiB total)
+   on the vfat `modem` partition, read via a new UFS API.
+3. Patches: `0089-picasso-modem-fw-partition-read` (sweet_ufs_part/pread,
+   starts the thread), `0090-picasso-modem-pas-boot`
+   (`iokit/Kernel/arm/PicassoModem.cpp`, boot-arg `modem=1`): vfat reader,
+   ELF32 .mdt/.bNN loader into 0x8C000000, SCM PAS init_image/mem_setup/
+   auth_and_reset, SMP2P slave-kernel watch. Both validated with
+   `tools/check-patch.sh` against the run-39761351271 build tree; that script now
+   derives the file list from the patch itself.
+4. Next: CI build, flash with `tools/picasso-boot-remote.sh KERNEL "modem=1"`,
+   read the console for `PicassoModem:` lines (vfat geometry, phdrs region,
+   init_image/auth_and_reset returns, slave-kernel bits), then pull the ring.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
