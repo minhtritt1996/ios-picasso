@@ -86,6 +86,8 @@ static uint64_t sgi_self(unsigned id)
 	       (1U << (m & 0xf));		/* target list: Aff0 */
 }
 
+void shim_usb_boot(void);
+
 static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
 {
 	register uint64_t x0 __asm__("x0") = fn;
@@ -106,7 +108,7 @@ static uint64_t now(void)
 	return rsr("cntpct_el0");
 }
 
-static void delay_ms(unsigned ms)
+void delay_ms(unsigned ms)
 {
 	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
 	while (now() < end)
@@ -803,6 +805,13 @@ void shim_main(uint64_t dtb)
 		delay_ms(600000);
 		reset(20);
 	}
+#endif
+
+#if defined(SWEET_USBBOOT)
+	shim_usb_boot();
+	con_str("USB", "loader usb probe done; reset in ~3 min");
+	delay_ms(180000);
+	reset(20);
 #endif
 
 	const char *lwhy = loader_boot(dtb, (uintptr_t)boot_regs[0]);

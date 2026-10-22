@@ -129,7 +129,7 @@ mkdir -p out
 # size moved across a page, it is done again.
 compile_shim() {
 	extra_cflags="$1"
-	for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c; do
+	for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c hw.c adt.c board.c usbprobe.c; do
 		$CC $CFLAGS $cflags $extra_cflags -c $f -o out/${f%.*}.o
 	done
 	# The image runs wherever ABL puts it with no relocation pass: only the
@@ -143,7 +143,7 @@ compile_shim() {
 	fi
 	$CC $CFLAGS $cflags $extra_cflags $LDFLAGS \
 		out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o \
-		out/hw.o out/adt.o out/board.o -o out/shim.elf
+		out/hw.o out/adt.o out/board.o out/usbprobe.o -o out/shim.elf
 	$OBJCOPY -O binary out/shim.elf out/Image
 	# The file holds only the code and the data; the .bss and the stacks are
 	# zeroed by the shim itself (this bootloader only takes a 256 KB image).
