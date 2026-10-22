@@ -103,8 +103,19 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +899,138 @@
+@@ -864,9 +897,149 @@
+ 		return;
+ 	}
  	ud.dma_pa = ptoa_64(pn);
++
++	/*
++	 * Bring-up bisect: sweetusbstep=N stops after milestone N so the crash
++	 * can be localised without a new kernel build (only the payload cmdline
++	 * changes). 99 (default) runs the whole path.
++	 */
++	int usbstep = 99;
++	PE_parse_boot_argn("sweetusbstep", &usbstep, sizeof(usbstep));
++	printf("SWEET USB: bring-up step limit %d\n", usbstep);
  	ud_if_create();
  
 -	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
@@ -243,7 +254,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1042,39 @@
+@@ -878,6 +1051,39 @@
  		return;
  	}
  
@@ -283,7 +294,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,29 +1087,41 @@
+@@ -890,35 +1096,59 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -322,6 +333,10 @@
 +		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
 +		return;
 +	}
++	if (usbstep < 1) {
++		printf("SWEET USB: stop after ep0 config (sweetusbstep=%d)\n", usbstep);
++		return;
++	}
 +	/* Persist the log before the next steps: a panic here reboots the phone
 +	 * long before the 10 s periodic flush, which is how Run 29 lost its log. */
 +	sweet_log_flush();
@@ -339,13 +354,26 @@
 -		__asm__ volatile ("dsb sy" ::: "memory");
 -		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 -		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
--	}
 +	printf("SWEET USB: ep0 started, running\n");
++	if (usbstep < 2) {
++		printf("SWEET USB: stop after ep0 transfer start (sweetusbstep=%d)\n", usbstep);
++		return;
+ 	}
 +	sweet_log_flush();
 +	delay(20000);
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
  	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+ 		delay(1000);
+ 	}
+ 	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
++	if (usbstep < 3) {
++		printf("SWEET USB: stop after RUN_STOP (sweetusbstep=%d)\n", usbstep);
++		return;
++	}
+ 	if (kernel_thread_start(ud_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
 --- a/bsd/dev/sweet_ufs.c	2026-10-22 09:03:38.700000000 +0700
 +++ b/bsd/dev/sweet_ufs.c	2026-10-22 09:05:15.300000000 +0700
 @@ -688,6 +688,21 @@
