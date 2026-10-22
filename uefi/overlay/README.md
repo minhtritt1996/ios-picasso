@@ -1,0 +1,38 @@
+# Mu-Silicium overlay for picasso (lito, SM7250)
+
+Copy these files over a Mu-Silicium checkout at commit `42fe563` (the revision
+this was developed against):
+
+    cp -r uefi/overlay/. /path/to/Mu-Silicium/
+
+Build (the tree needs Python 3.11+ for `tomllib`, clang, and its NASM NuGet
+dependency is only needed for x86 images):
+
+    cd /path/to/Mu-Silicium
+    python3.11 -m venv .venv && .venv/bin/pip install -r pip-requirements.txt
+    mv Mu_Basecore/BaseTools/Bin/nasm_ext_dep.yaml{,.disabled}   # no mono/NuGet here
+    PATH=$HOME/toolchain/clang+llvm-17.0.6-*/bin:$PATH \
+        .venv/bin/python build_uefi.py -d picasso -r RELEASE
+    # -> Mu-picasso.img (BootShim + FD + DTB), flash with `fastboot boot`
+
+## What is in here
+
+- `BootShim/BootShim.S`: framebuffer markers (green = shim entered, red = FD
+  copied) and the literal-pool/.ltorg fix so `_Payload` is the last byte of
+  `BootShim.bin` (otherwise the concatenated FD is shifted and SEC reads
+  garbage).
+- `Silicon/Silicium/SiliciumPkg/Sec/Sec.c`: white marker at SEC entry plus
+  stage bands (300 green, 340 red, 380 cyan, 420 yellow, 460 magenta).
+- `Platforms/Xiaomi/picassoPkg`: platform with a **minimal** driver set
+  (DxeCore, GIC, timer, SimpleFbDxe, Bds) - no vendor DXE exists for this phone.
+- `Silicon/Qualcomm/LitoPkg`: rename of KodiakPkg (no lito package upstream).
+- `Resources/Configs/picasso.toml`: FD base `0xA3000000` + `0x200000`, boot image
+  header v1, `requires_kernel_header = true`.
+- `Resources/DTBs/picasso.dtb`: the phone's own DTB.
+
+## State reached (2026-10-22)
+
+BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV
+decompression all succeed (yellow band). The phone then hangs **inside
+DxeCore** (no magenta band); no reset. Next diagnostic: stage markers inside
+`MdeModulePkg/Core/Dxe`.
