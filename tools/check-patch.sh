@@ -21,10 +21,13 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # The files this patch set touches; --strip-components drops the top dir.
-tar xzf "$tgz" -C "$tmp" --strip-components=1 \
-	xnu/bsd/dev/sweet_usb.c \
-	xnu/iokit/Kernel/arm/SweetFramebuffer.cpp \
-	xnu/iokit/Kernel/arm/hid/SweetHID.cpp
+# New files (/dev/null) have nothing to extract.
+files=$(sed -n 's|^--- a/||p' "$patch_file" | sed 's|^xnu/||' | sort -u)
+set --
+for f in $files; do
+	set -- "$@" "xnu/$f"
+done
+tar xzf "$tgz" -C "$tmp" --strip-components=1 "$@" 2>/dev/null || true
 
 if patch -p1 --dry-run -i "$(cd "$(dirname "$patch_file")" && pwd)/$(basename "$patch_file")" -d "$tmp" 2>&1; then
 	echo "OK: applies cleanly"

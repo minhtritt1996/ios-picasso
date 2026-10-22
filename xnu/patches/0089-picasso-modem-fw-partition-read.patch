@@ -1,0 +1,118 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -49,6 +49,7 @@
+ extern void thread_deallocate(thread_t);
+ extern int hz;
+ static void sweet_log_start(void);
++extern void picasso_modem_init(void);
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+@@ -300,7 +301,7 @@
+ }
+ 
+ static int
+-ufs_find_partition(const char *want)
++ufs_gpt_entry(const char *want, uint64_t *first_out, uint64_t *last_out)
+ {
+ 	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
+ 	int error = ufs_read_blocks(1, 1);
+@@ -345,15 +346,86 @@
+ 		if (last < first) {
+ 			return ENXIO;
+ 		}
+-		su.first_block = first;
+-		su.nblocks = last - first + 1;
++		*first_out = first;
++		*last_out = last;
+ 		return 0;
+ 	}
+-	printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
+ 	return ENOENT;
+ }
+ 
+ static int
++ufs_find_partition(const char *want)
++{
++	uint64_t first, last;
++	int error = ufs_gpt_entry(want, &first, &last);
++	if (error == ENOENT) {
++		printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
++	}
++	if (error) {
++		return error;
++	}
++	su.first_block = first;
++	su.nblocks = last - first + 1;
++	return 0;
++}
++
++/*
++ * SWEET: read a GPT partition other than the root one, for the modem
++ * firmware on "modem" (iokit/Kernel/arm/PicassoModem.cpp). Lookup does not
++ * disturb su.first_block; reads share the bounce buffer and the lock.
++ */
++int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
++int sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len);
++
++int
++sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks)
++{
++	uint64_t f, l;
++	int error;
++
++	if (!su.ready) {
++		return ENXIO;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	error = ufs_gpt_entry(name, &f, &l);
++	lck_mtx_unlock(&sweet_ufs_lock);
++	if (error) {
++		return error;
++	}
++	*first = f;
++	*nblocks = l - f + 1;
++	return 0;
++}
++
++int
++sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len)
++{
++	const char *b = (const char *)(su.dma + DMA_BOUNCE);
++	int error = 0;
++
++	if (!su.ready) {
++		return ENXIO;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	while (len && !error) {
++		uint64_t lba = off / UFS_BLOCK;
++		uint32_t skip = (uint32_t)(off % UFS_BLOCK);
++		uint32_t want = MIN(len, BOUNCE_SIZE - skip);
++		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++		error = ufs_read_blocks(first + lba, blocks);
++		if (error) {
++			break;
++		}
++		memcpy(dst, b + skip, want);
++		dst = (char *)dst + want;
++		off += want;
++		len -= want;
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	return error;
++}
++
++static int
+ ufs_take_over_host(void)
+ {
+ 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
+@@ -660,6 +732,8 @@
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	/* Modem PAS boot (boot-arg modem=1): iokit/Kernel/arm/PicassoModem.cpp */
++	picasso_modem_init();
+ 	return 0;
+ }
+ 
