@@ -90,6 +90,38 @@ boots iOS without touching USB.
   (2.4k lines) expects a board `PlatformUsbfnLib`; that library is where our
   PMIC-rail/GDSC/AHB2PHY/Femto-PHY/QSCRATCH sequence goes.
 
+
+### D2 milestone: UEFI reaches DxeCore on picasso (2026-10-22 late)
+
+Mu-Silicium now boots our picasso platform far enough to decompress the FV and
+enter DxeCore. Evidence from the screen (framebuffer markers, no UART):
+
+| Marker | Stage | Seen |
+| --- | --- | --- |
+| green band | BootShim entered | yes |
+| red band | FD copied to FD_BASE | yes |
+| white band | `SecEntry` | yes |
+| row 300 green | before `InitializeMemory` | yes |
+| row 340 red | `InitializeMemory` done | yes |
+| row 380 cyan | platform HOBs done | yes |
+| row 420 yellow | FV decompressed | yes |
+| row 460 magenta | `LoadDxeCoreFromFv` returned | **no** |
+
+Fixes that got us here:
+- FD base cannot be `0x9FD00000` (picasso's secure CDSP window); use
+  `0xA3000000` in free low RAM, heaps/stacks just above it.
+- `BootShim.S`: the literal pool must be emitted **before** `_Payload`
+  (`.ltorg`), otherwise `BootShim.bin` is longer than `_Payload` and the
+  concatenated FD is shifted by 8 bytes.
+- `requires_kernel_header = true` so the image carries the `ARM\x64` magic.
+
+Overlay and build instructions: `uefi/overlay/README.md` (commit `bf158a2`).
+
+Next: stage markers inside `MdeModulePkg/Core/Dxe` (memory services, GCD,
+dispatcher, Bds) to find where DxeCore hangs. Note the phone now **hangs**
+instead of resetting, and the operator holds Volume Down, so every reset lands
+in fastboot.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
