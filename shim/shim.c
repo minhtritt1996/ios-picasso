@@ -680,6 +680,131 @@ void shim_main(uint64_t dtb)
 		reset(20);
 	}
 
+	/*
+	 * Optional SMMU report and bypass, for the USB bring-up. The shim maps
+	 * the first 8 GiB Device (VA == PA), so the apps SMMU at 0x15000000 is
+	 * reachable here while the clocks and NoC votes of the bootloader still
+	 * apply; from XNU that read hangs.
+	 */
+#if defined(SWEET_SMMU)
+	if (1) {
+#else
+	if (bootargs_have("sweetsmmu")) {
+#endif
+		volatile uint32_t *smmu = (volatile uint32_t *)0x15000000UL;
+		uint32_t s2 = (0x8000u + (0xe0u << 3)) / 4;
+
+		stage = "smmu";
+		con_str("SMMU", "apps-smmu@15000000");
+		con_hex("IDR0", smmu[0x0000 / 4]);
+		con_hex("CR0", smmu[0x0020 / 4]);
+		con_hex("GBPA", smmu[0x0044 / 4]);
+#if defined(SWEET_SMMU_SCM)
+		/*
+		 * The SMMU registers look secure-locked: a direct S2CR read hangs and
+		 * CR0 writes are dropped. Android's qcom_scm exposes SCM_IO_READ/WRITE
+		 * (service 0x5, cmd 0x1/0x2) for exactly such registers.
+		 */
+		{
+			static volatile uint64_t scm_read_val;
+			uint64_t r = smc(0x0501, 0x15000000UL + 0x8000 + (0xe0UL << 3),
+			    (uint64_t)&scm_read_val, 0);
+			con_hex("SCM rd rc", r);
+			con_hex("SCM rd val", scm_read_val);
+			uint32_t bypass = ((uint32_t)scm_read_val & ~0x3fu) | 1u;
+			r = smc(0x0502, 0x15000000UL + 0x8000 + (0xe0UL << 3), bypass, 0);
+			con_hex("SCM wr rc", r);
+			r = smc(0x0501, 0x15000000UL + 0x8000 + (0xe0UL << 3),
+			    (uint64_t)&scm_read_val, 0);
+			con_hex("SCM rd2 rc", r);
+			con_hex("SCM rd2 val", scm_read_val);
+		}
+#endif
+#if defined(SWEET_SMMU_DISABLE)
+		/* SMMUEN = 0 stops translation; transactions pass through. S2CR reads
+		 * hang on this part, but CR0 is readable/writable. */
+		smmu[0x0020 / 4] &= ~1u;
+		__asm__ volatile ("dsb sy" ::: "memory");
+		con_hex("CR0 now", smmu[0x0020 / 4]);
+#endif
+		con_hex("S2CR e0", smmu[s2]);
+#if defined(SWEET_SMMU_BYPASS)
+		if (1) {
+#else
+		if (bootargs_have("sweetsmmubypass")) {
+#endif
+			smmu[s2] = (smmu[s2] & ~0x3fu) | 1u;	/* TYPE = BYPASS */
+			__asm__ volatile ("dsb sy" ::: "memory");
+			con_hex("S2CR now", smmu[s2]);
+		}
+		con_skip();
+#if defined(SWEET_SMMU_STOP)
+		if (1) {
+#else
+		if (bootargs_have("sweetsmmustop")) {
+#endif
+			con_str("SHIM", "smmu probe: report above, reset in ~3 min");
+			delay_ms(600000);
+			reset(20);
+		}
+	}
+
+#if defined(SWEET_USB_DMA_PROBE)
+	/*
+	 * Feasibility probe for owning USB in the loader instead of XNU.
+	 * Everything is identity mapped here, so the buffer's VA is its PA.
+	 * We only ask the controller to start one ep0 control transfer; no PHY
+	 * setup, so a clean command timeout is the expected good outcome, and a
+	 * reset of the phone means DMA is refused to non-secure clients at this
+	 * point of the boot as well.
+	 */
+	{
+		static uint8_t uarea[0x1000] __attribute__((aligned(0x1000)));
+		volatile uint32_t *dwc = (volatile uint32_t *)0x0a600000UL;
+		uint64_t pa = (uint64_t)(uintptr_t)uarea;
+		uint32_t i, cmd;
+
+		stage = "usb dma probe";
+		con_str("USB", "DWC3 DMA probe at 0x0a600000");
+		con_hex("GSNPSID", dwc[0xc120 / 4]);
+		for (i = 0; i < sizeof(uarea); i += 4)
+			*(volatile uint32_t *)(uarea + i) = 0;
+		__asm__ volatile ("dsb sy" ::: "memory");
+
+		dwc[0xc700 / 4] = dwc[0xc700 / 4] & ~7u;	/* DCFG: high speed */
+		dwc[0xc400 / 4] = (uint32_t)pa;			/* GEVNTADRLO */
+		dwc[0xc404 / 4] = (uint32_t)(pa >> 32);
+		dwc[0xc408 / 4] = (1u << 31) | 0x1000;		/* GEVNTSIZ */
+		dwc[0xc40c / 4] = dwc[0xc40c / 4] & 0xffff;	/* GEVNTCOUNT */
+
+		/* One SETUP TRB at +0x100, buffer at +0x140. */
+		*(volatile uint32_t *)(uarea + 0x100) = (uint32_t)(pa + 0x140);
+		*(volatile uint32_t *)(uarea + 0x104) = 0;
+		*(volatile uint32_t *)(uarea + 0x108) = 8;
+		*(volatile uint32_t *)(uarea + 0x10c) = 0x20 | 1u | 2u | 0x400u | 0x800u;
+		__asm__ volatile ("dsb sy" ::: "memory");
+		con_hex("TRB pa", pa + 0x100);
+
+		dwc[0xc800 / 4] = 0;				/* PAR2 */
+		dwc[0xc804 / 4] = (uint32_t)(pa + 0x100);	/* PAR1 */
+		dwc[0xc808 / 4] = 0;				/* PAR0 */
+		dwc[0xc80c / 4] = 6u | (1u << 10);		/* STARTTRANSFER */
+		__asm__ volatile ("dsb sy" ::: "memory");
+		for (i = 0; i < 50; i++) {
+			cmd = dwc[0xc80c / 4];
+			if (!(cmd & (1u << 10)))
+				break;
+			delay_ms(2);
+		}
+		con_hex("DEPCMD", cmd);
+		con_hex("cmd status", (cmd >> 12) & 0xf);
+		con_skip();
+		con_str("USB", "dma probe done: reset in ~3 min if phone survives");
+		delay_ms(600000);
+		reset(20);
+	}
+#endif
+
 	const char *lwhy = loader_boot(dtb, (uintptr_t)boot_regs[0]);
 	con_str("LOADER", lwhy);
 	con_skip();

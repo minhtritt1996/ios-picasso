@@ -89,6 +89,10 @@ while [ $# -gt 0 ]; do
 		extra="$2"
 		shift
 		;;
+	--shim-cflags)
+		cflags="$cflags $2"
+		shift
+		;;
 	--extra=*)
 		extra="${1#--extra=}"
 		;;

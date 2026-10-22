@@ -21,7 +21,7 @@ stamp=$(date +%H%M%S)
 payload="shim/out/payload-picasso-$stamp.bin"
 python3 tools/mkpayload.py "$kernel" shim/out/picasso-clean.adt "$payload" \
 	--cmdline "$cmdline" >/dev/null
-bash shim/build.sh "$(cd "$(dirname "$payload")" && pwd)/$(basename "$payload")" --picasso >/dev/null 2>&1
+bash shim/build.sh "$(cd "$(dirname "$payload")" && pwd)/$(basename "$payload")" --picasso ${SHIM_EXTRA:+--extra "$SHIM_EXTRA"} ${SHIM_CFLAGS:+--shim-cflags "$SHIM_CFLAGS"} >/dev/null 2>&1
 
 img=shim/out/shim-boot.img
 echo "cmdline : $cmdline"
