@@ -136,7 +136,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -864,9 +910,161 @@
+@@ -864,9 +910,166 @@
  		return;
  	}
  	ud.dma_pa = ptoa_64(pn);
@@ -219,9 +219,14 @@
 +	if (smmu_probe) {
 +		vm_offset_t smmu = ml_io_map(0x15000000, 0x1000);
 +		if (smmu != 0) {
-+			printf("SWEET USB: SMMU SID0 0x%08x GBPA 0x%08x S2CR0 0x%08x CBAR 0x%08x\n",
-+			    usb_rd(smmu, 0x00), usb_rd(smmu, 0x800), usb_rd(smmu, 0x600),
-+			    usb_rd(smmu, 0x408));
++			/*
++			 * ARM SMMU-500 layout: IDR0 0x0, CR0 0x20, GBPA 0x44,
++			 * S2CR(n) 0x8000 + 8n, CBAR(n) 0x6000 + 4n. Stream 0xE0 is
++			 * the one the USB controller uses (DT iommus = <0x18 0xe0>).
++			 */
++			printf("SWEET USB: SMMU IDR0 0x%08x CR0 0x%08x GBPA 0x%08x S2CR(e0) 0x%08x CBAR(0) 0x%08x\n",
++			    usb_rd(smmu, 0x0000), usb_rd(smmu, 0x0020), usb_rd(smmu, 0x0044),
++			    usb_rd(smmu, 0x8000 + (0xe0 << 3)), usb_rd(smmu, 0x6000));
 +		}
 +	}
 +
@@ -299,7 +304,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1076,39 @@
+@@ -878,6 +1081,39 @@
  		return;
  	}
  
@@ -339,7 +344,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1121,46 @@
+@@ -890,28 +1126,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -404,7 +409,7 @@
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1168,10 @@
+@@ -919,6 +1173,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
