@@ -688,6 +688,27 @@ void shim_main(uint64_t dtb)
 	 * reachable here while the clocks and NoC votes of the bootloader still
 	 * apply; from XNU that read hangs.
 	 */
+#if defined(SWEET_SCM_PROBE)
+	/*
+	 * qcom_scm_restore_sec_cfg(device_id, spare): SVC_MP 0xc, cmd 2.
+	 * Green band = the call returned 0 (id accepted), red = error.
+	 * This is the last cheap way to reset the XPU/SMMU state of a device.
+	 */
+	{
+		con_clear(RED);
+		con_str("SCM", "restore_sec_cfg(0x0c02) ids 0..15");
+		con_skip();
+		for (unsigned id = 0; id < 16; id++) {
+			uint64_t rc = smc(0x0C02, id, 0, 0);
+			con_hex2("SCM", "id", id, "rc", rc);
+		}
+		con_skip();
+		con_str("SCM", "probe done, reset in ~3 min");
+		delay_ms(180000);
+		reset(20);
+	}
+#endif
+
 #if defined(SWEET_SMMU)
 	if (1) {
 #else
