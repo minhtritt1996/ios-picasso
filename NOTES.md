@@ -1373,9 +1373,12 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
      - `backboardd` put itself into display sleep waiting for wake events.
      - `sweethidtest=5` fired simulated key 0x40 (`kHIDUsage_Csmr_Menu`), but on iPhone X (`D22AP`) there is no physical Home button; `backboardd` ignores 0x40 for screen wake.
      - `usermanagerd` completed persona generation (UID 501 `mobile`), and SpringBoard is active in `CFRunLoopRunSpecific`.
-3. **Run 12 Built (`payload-picasso-0107.bin`):**
+3. **Run 12 Built & Deployed (`payload-picasso-0107.bin`):**
    - Reverted `sweetusb=0` to eliminate the 2-3s hardware watchdog reset.
-   - Built `shim/out/shim-boot.img` (36,352,000 bytes). Ready to flash via recovery ADB.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `2ad84d964ff9307f3f4860e3067ee98d`).
+   - Flashed directly to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
+   - Rebooted phone via `adb reboot` into iOS 16 at 07:47.
+
 
 
 
