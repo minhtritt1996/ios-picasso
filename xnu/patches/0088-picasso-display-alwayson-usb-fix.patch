@@ -27,48 +27,22 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -90,6 +90,15 @@
- 		printf("SWEET USB: GCC map failed\n");
- 		return;
- 	}
-+	/* Enable ahb2phy clock if off so QUSB2 PHY is clocked and accessible */
-+	if (usb_rd(gcc, 0x6a004) & CBCR_CLK_OFF) {
-+		*(volatile uint32_t *)(gcc + 0x6a004) |= 1;
-+		__asm__ volatile ("dsb sy" ::: "memory");
-+		for (int i = 0; i < 1000 && (usb_rd(gcc, 0x6a004) & CBCR_CLK_OFF); i++) {
-+			delay(10);
-+		}
-+		printf("SWEET USB: clk ahb2phy enabled: CBCR 0x%08x\n", usb_rd(gcc, 0x6a004));
-+	}
- 	gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
- 	printf("SWEET USB: GDSC usb30_prim 0x%08x (%s)\n", gdscr, (gdscr & (1u << 31)) ? "on" : "off");
- 	for (unsigned i = 0; i < sizeof(usb_cbcr) / sizeof(usb_cbcr[0]); i++) {
-@@ -151,6 +160,12 @@
+@@ -151,6 +151,14 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
-+#define GCTL_DSBLCLKGTNG (1u << 0)
-+#define GUSB2PHYCFG     0xc200
++#define GCTL_DSBLCLKGTNG     (1u << 0)
++#define GUSB2PHYCFG          0xc200
 +#define GUSB2PHYCFG_SUSPHY   (1u << 6)
 +#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
-+#define GUSB3PIPECTL    0xc2c0
-+#define GUSB3PIPECTL_SUSPHY (1u << 17)
++#define GUSB3PIPECTL         0xc2c0
++#define GUSB3PIPECTL_SUSPHY  (1u << 17)
++#define HSPHY_PA             0x088e3000
++#define HSPHY_SIZE           0x00001000
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -269,11 +284,19 @@
- static int
- ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
- {
-+	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
-+	if (phycfg & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM)) {
-+		dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
-+	}
-+	uint32_t pipecfg = dwc_rd(GUSB3PIPECTL);
-+	if (pipecfg & GUSB3PIPECTL_SUSPHY) {
-+		dwc_wr(GUSB3PIPECTL, pipecfg & ~GUSB3PIPECTL_SUSPHY);
-+	}
- 	dwc_wr(DEPCMDPAR0(ep), p0);
+@@ -273,7 +281,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -77,7 +51,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +306,10 @@
+@@ -283,9 +291,10 @@
  			}
  			return 0;
  		}
@@ -90,42 +64,66 @@
  	return -1;
  }
  
-@@ -713,13 +737,15 @@
- 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
- 			printf("SWEET USB: bus reset\n");
+@@ -715,10 +724,12 @@
  		} else if (type == 2) { /* connect done */
--			uint32_t speed = dwc_rd(DSTS) & 7;
-+			uint32_t conn_speed = dwc_rd(DSTS) & 7;
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
 -			ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 -			    (1u << 8) | (1u << 10) | (0u << 25), 0);
 -			ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 -			    (1u << 8) | (1u << 10) | (1u << 25), 0);
--			printf("SWEET USB: connected, speed %u\n", speed);
-+			if (conn_speed == 0 || conn_speed == 1) {
++			if (speed == 0 || speed == 1) {
 +				ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 +				    (1u << 8) | (1u << 10) | (0u << 25), 0);
 +				ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 +				    (1u << 8) | (1u << 10) | (1u << 25), 0);
 +			}
-+			printf("SWEET USB: connected, speed %u\n", conn_speed);
+ 			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
- 		}
-@@ -866,6 +892,25 @@
+@@ -866,7 +877,54 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
-+	/* Configure Qualcomm wrapper: enable VBUS session early */
-+	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
-+	if (qs != 0) {
-+		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL);
-+		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
+-	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/* 1. Wake SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
++	vm_offset_t hsphy = ml_io_map(HSPHY_PA, HSPHY_SIZE);
++	if (hsphy != 0) {
++		printf("SWEET USB: HSPHY pre-init 0x50: 0x%08x 0x54: 0x%08x 0x94: 0x%08x\n",
++		    usb_rd(hsphy, 0x50), usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x94));
++		/* Override common controls and assert POR */
++		*(volatile uint32_t *)(hsphy + 0x94) |= (1u << 1); /* UTMI_PHY_CMN_CTRL_OVERRIDE_EN */
++		*(volatile uint32_t *)(hsphy + 0x50) |= (1u << 1); /* POR */
++		delay(200);
++		/* Clear SIDDQ (bit 2) and RETENABLEN (bit 3), set FSEL_DEFAULT (3 << 4) */
++		uint32_t cmn = usb_rd(hsphy, 0x54);
++		*(volatile uint32_t *)(hsphy + 0x54) = (cmn & ~((1u << 2) | (1u << 3))) | (3u << 4);
++		delay(200);
++		/* De-assert POR and release override */
++		*(volatile uint32_t *)(hsphy + 0x50) &= ~(1u << 1); /* clear POR */
++		delay(200);
++		*(volatile uint32_t *)(hsphy + 0x94) &= ~(1u << 1); /* clear override */
++		/* Parameter overrides from DT */
++		*(volatile uint32_t *)(hsphy + 0x6c) = 0x63;
++		*(volatile uint32_t *)(hsphy + 0x70) = 0x85;
++		*(volatile uint32_t *)(hsphy + 0x74) = 0x17;
 +		__asm__ volatile ("dsb sy" ::: "memory");
-+		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x\n", usb_rd(qs, QSCRATCH_HS_PHY_CTRL));
++		printf("SWEET USB: HSPHY post-init 0x50: 0x%08x 0x54: 0x%08x 0x94: 0x%08x\n",
++		    usb_rd(hsphy, 0x50), usb_rd(hsphy, 0x54), usb_rd(hsphy, 0x94));
 +	}
 +
-+	/* Clear SUSPHY and ENBLSLPM on USB2 & USB3 PHYs, disable clock gating before soft reset */
++	/* 2. Configure Qualcomm wrapper: force VBUS session early */
++	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
++	if (qs != 0) {
++		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
++		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
++		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
++	}
++
++	/* 3. Clear SUSPHY and ENBLSLPM on USB2 & USB3 PHYs, disable clock gating before soft reset */
 +	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
 +	dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
 +	uint32_t pipecfg = dwc_rd(GUSB3PIPECTL);
@@ -135,15 +133,16 @@
 +	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x GUSB3PIPECTL 0x%08x -> 0x%08x GCTL 0x%08x\n",
 +	    phycfg, dwc_rd(GUSB2PHYCFG), pipecfg, dwc_rd(GUSB3PIPECTL), dwc_rd(GCTL));
 +
- 	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/* 4. Device controller soft reset */
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
-@@ -878,31 +923,39 @@
+ 	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
+@@ -878,42 +936,39 @@
  		return;
  	}
  
 +	/* Post-reset settle delay for DWC3 3.30a clock domain re-sync */
-+	delay(100000);	/* 100 ms */
++	delay(10000);	/* 10 ms */
 +
 +	/* Re-apply GUSB2PHYCFG, GUSB3PIPECTL and GCTL after soft reset */
 +	dwc_wr(GUSB2PHYCFG, dwc_rd(GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
@@ -181,9 +180,20 @@
  	ud_start_setup();
  
 -	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
- 	if (qs != 0) {
- 		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
- 		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+-	if (qs != 0) {
+-		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+-		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+-		    hs, ss, usb_rd(qs, 0x08));
+-		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
+-		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
+-		__asm__ volatile ("dsb sy" ::: "memory");
+-		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
+-		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
+-	}
+-
+ 	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
+ 	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
+ 		delay(1000);
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:38.783705078 +0700
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:55.684593567 +0700
 @@ -419,6 +419,7 @@

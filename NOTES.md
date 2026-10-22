@@ -1,8 +1,41 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 10:25, latest)
+## Agent handoff / active work (2026-10-22 11:08, latest)
 
-### >>> UPDATE 2026-10-22 (picasso: Run 17 Analysis & Run 18 Fix - Remove QSCRATCH_GENERAL_CFG Write, Keep HighSpeed & ep0_mps 64) <<<
+### >>> UPDATE 2026-10-22 (picasso: Run 18 Analysis & Run 19 Fix - Wake SNPS Femto High-Speed PHY & Early VBUS Override) <<<
+
+1. **Run 18 Execution & Verification (Commit `2743f0c`, CI Run `39716818236`):**
+   - User reported: Apple logo displayed continuously without any reset or reboot loop. Removing `QSCRATCH_GENERAL_CFG` write fully fixed the 2-3s RPM watchdog reset.
+   - Pulled 94,370-byte kernel log directly from the `darwin` partition (`/dev/block/sda35`) via `tools/sweet-log-pull.sh`:
+     * Log confirms: `SWEET FB: display off request ignored (sweetfb_keepon=1)` working 100%.
+     * `SWEET USB: soft reset done after 1 ms, GCTL 0x00102001 DCFG 0x00080804`
+     * `SWEET USB: ep0 cmd 0x1 timeout (DEPCMD 0x00000401 GCTL 0x00102001 GUSB2PHYCFG 0x00002400 GUSB3PIPECTL 0x030c0002 DCFG 0x00080800 DSTS 0x00520001)`
+     * `SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps 64)`
+     * `SWEET USB: ahb2phy clock off; QUSB2 PHY not read`
+2. **Root Cause Analysis:**
+   - **SNPS Femto High-Speed PHY (`0x088e3000`) Never Initialized:** On Snapdragon 765G (`picasso`), the High-Speed PHY is `qcom,usb-hsphy-snps-femto` at `0x088e3000` (driven by `phy-qcom-snps-femto-v2.c` in Linux). The driver had skipped reading `0x088e3000` due to `ahb2phy` check (which only applied to SM7150 QUSB2).
+   - Consequently, the SNPS Femto PHY remained in hardware powerdown/retention (`SIDDQ` bit 2 and `RETENABLEN` bit 3 in `USB2_PHY_USB_PHY_HS_PHY_CTRL_COMMON0` at `0x54`), keeping the UTMI clock halted.
+   - The DWC3 core requires an active UTMI clock handshake to synchronize `DEPCMD_SETEPCONFIG` (`ep0 cmd 0x1`), causing `CMDACT` to never clear.
+   - Additionally, VBUS override was placed after the endpoint setup return point, so VBUS session and `DCTL_RUN_STOP` were never reached.
+3. **Run 19 Fix:**
+   - **Wake SNPS Femto PHY at `0x088e3000`:** Assert POR (`0x50` |= 2) with override (`0x94` |= 2), clear `SIDDQ` (bit 2) and `RETENABLEN` (bit 3) in `0x54`, set `FSEL_DEFAULT` (`3 << 4`), de-assert POR, clear override, and write device-tree tuning overrides (`0x6c` = `0x63`, `0x70` = `0x85`, `0x74` = `0x17`).
+   - **Enable VBUS Override Early:** Set `QSCRATCH_HS_PHY_CTRL` (`UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL`) and `QSCRATCH_SS_PHY_CTRL` (`LANE0_PWR_PRESENT`) prior to soft reset so the session is valid throughout initialization.
+   - **Clean `ud_epcmd`:** Remove extraneous mid-command writes to `GUSB2PHYCFG` and `GUSB3PIPECTL`. Retain 100ms timeout and register dump on failure.
+   - **Strict High-Speed Mode:** Maintain `DCFG.DEVSPD = 0` and `ep0_mps = 64`.
+
+1. **Kernel Build & Verification (Commit `2743f0c`, CI Run `39716818236`):**
+   - CI build completed successfully in 8m13s.
+   - Downloaded `xnu-kernel` artifact (`xnu/out-0088-run18/kernel.development.sweet`).
+   - Verified strings: `SWEET FB: display off request ignored`, `SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)`.
+2. **Boot Image Packaged & Flashed:**
+   - Packaged `payload-picasso-0113.bin` with `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `8c1c07f580f2593a4d8e23e72ef0b2e7`).
+   - Flashed to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`).
+   - Readback verified MD5 `8c1c07f580f2593a4d8e23e72ef0b2e7`.
+3. **Execution Plan:**
+   - Reboot device from recovery into iOS.
+   - Monitor host network interface for CDC-ECM gadget (`1209:0001` / `02:00:5e:77:ee:01`).
+   - Assign host IP `192.168.7.1/24` and test SSH to `192.168.7.2`.
 
 1. **Run 17 Result & Root Cause Diagnosis:**
    - User reported: "may hien console tam 2-3s la tat" (console showed 2-3s then powered off / rebooted).
