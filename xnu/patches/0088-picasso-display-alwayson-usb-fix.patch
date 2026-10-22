@@ -112,7 +112,7 @@
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
  		}
-@@ -866,6 +892,30 @@
+@@ -866,6 +892,28 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -141,7 +141,7 @@
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
-@@ -878,31 +928,42 @@
+@@ -878,31 +926,42 @@
  		return;
  	}
  
