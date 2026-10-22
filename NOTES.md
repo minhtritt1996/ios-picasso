@@ -1,6 +1,35 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 15:00, latest)
+## Agent handoff / active work (2026-10-22 15:20, latest)
+
+### >>> UPDATE 2026-10-22 (patch 0088 had been silently skipped; regenerated — Run 29) <<<
+
+1. **Run 28 produced a stale kernel.** CI log:
+   `Skipping patch .../0088-picasso-display-alwayson-usb-fix.patch
+   (already upstream, previously applied, or malformed):
+   error: patch failed: bsd/dev/sweet_usb.c:878`
+   The artifact had none of the USB work (`AHB2PHY`, `GENERAL_CFG`, `ep0
+   attempt` strings all absent), so the flash/test of Run 28 was meaningless.
+2. **Cause:** my hand-edited patch had accumulated duplicate lines (two
+   `Endpoint 0 OUT/IN` comments and both the 512 and 64 MPS variants inside one
+   hunk), and its `@@ -878` hunk no longer matched the real file, whose region
+   sits at line 1042. My local check had rebuilt the base *from the patch
+   itself*, so it could not detect a wrong context.
+3. **Fix:** downloaded the CI artifact `xnu-buildtree` (22 MB) for the run,
+   edited the real `xnu/bsd/dev/sweet_usb.c`, and regenerated the whole
+   `sweet_usb.c` section of the patch with `diff -u`. That also restored the
+   post-reset settle + GUSB2PHYCFG/GUSB3PIPECTL/GCTL re-apply and the
+   `QSCRATCH GENERAL_CFG` UTMI handshake, which the broken hunk had dropped,
+   and removed the stale `SS_PHY_CTRL`/`LANE0_PWR_PRESENT` block.
+   Verified: `patch -p1` on the real tree applies with no fuzz and the result
+   is byte-identical to the edited file.
+4. **Guard:** new `tools/check-patch.sh PATCH buildtree.tgz` dry-runs any patch
+   against the real CI tree. Use it before every push; a synthetic base is not
+   a valid check.
+5. **Run 29 (commit `8b7ae57`, CI `39745379233`).** Before flashing, confirm the
+   log says `Applying patch:` and not `Skipping patch`.
+
+## Agent handoff (2026-10-22 15:00)
 
 ### >>> UPDATE 2026-10-22 (host log proves the PHY works; DWC3 ep0 is the only fault — Run 28) <<<
 
