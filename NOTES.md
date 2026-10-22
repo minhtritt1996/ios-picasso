@@ -1,6 +1,37 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 14:40, latest)
+## Agent handoff / active work (2026-10-22 15:00, latest)
+
+### >>> UPDATE 2026-10-22 (host log proves the PHY works; DWC3 ep0 is the only fault — Run 28) <<<
+
+1. **Decisive host-side evidence** (`journalctl -k` for the Run 27 window):
+   ```
+   14:41:37 usb 1-12: new high-speed USB device number 89 using xhci_hcd
+   14:41:42 usb 1-12: device descriptor read/64, error -110
+   ... repeated up to device number 108 ...
+   14:45:29 usb 1-12: New USB device found, idVendor=05c6 idProduct=9039
+   ```
+   Every ~6 s the host sees the phone connect at **high speed** and fails to
+   read the descriptor. So rails, GDSC, AHB2PHY, the Femto PHY, UTMI clock and
+   the D+ pull-up are all correct; the device never answers control transfers
+   because DWC3 still rejects `SETEPCONFIG` for ep0. All the clock/PHY/rail
+   work (patch 0088 + RPMh votes) is settled — do not re-litigate it.
+2. **Run 27 log could not be pulled:** the `darwin` ring still contains the
+   Run 26 content (flush #19, identical MD5), i.e. Run 27 rebooted before the
+   log thread flushed. The on-screen console did show
+   `GENERAL_CFG pre: 0x00000004` -> `post: 0x0000000d`, so the UTMI clock
+   routing ran.
+3. **Run 28 (commit `bbc199a`, CI `39743461678`):** ep0 setup retried up to 20
+   times, 250 ms apart, printing `ep0 attempt N ok|failed (GINTSTS … GSTS …
+   DSTS …)` for each attempt; the failure path still logs and returns.
+   Rationale: the core may only accept SETEPCONFIG after observing the USB
+   reset the host is already sending. Patch verified with `patch -p1`.
+4. **Next if it still fails:** the per-attempt GINTSTS/GSTS shows whether the
+   command is ignored (no USBRST seen) or errored; then compare with
+   `__dwc3_gadget_start` ordering (DCFG speed is programmed *after* the ep
+   config in Linux, we do it before).
+
+## Agent handoff (2026-10-22 14:40)
 
 ### >>> UPDATE 2026-10-22 (Run 26: rails voted OK; missing QSCRATCH UTMI clock — Run 27) <<<
 
