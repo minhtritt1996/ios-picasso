@@ -27,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,27 @@
+@@ -151,6 +151,28 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -37,6 +37,7 @@
 +#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
 +#define GUSB3PIPECTL         0xc2c0
 +#define GUSB3PIPECTL_SUSPHY  (1u << 17)
++#define GCC_AHB2PHY_CBCR     0x6a004
 +#define GCC_QUSB2PHY_PRIM_BCR 0x12000
 +#define HSPHY_PA             0x088e3000
 +#define HSPHY_SIZE           0x00001000
@@ -94,14 +95,22 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +890,79 @@
+@@ -866,7 +890,89 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
 -	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
-+	/* 1. Reset PHY block via GCC BCR (offset 0x12000) */
-+	vm_offset_t gcc = ml_io_map(GCC_PA, 0x20000);
++	/* 1. Map GCC, enable AHB2PHY clock (0x6a004), then reset PHY block via GCC BCR (0x12000) */
++	vm_offset_t gcc = ml_io_map(GCC_PA, 0x80000);
 +	if (gcc != 0) {
++		uint32_t ahb = usb_rd(gcc, GCC_AHB2PHY_CBCR);
++		printf("SWEET USB: ahb2phy CBCR pre-enable: 0x%08x\n", ahb);
++		*(volatile uint32_t *)(gcc + GCC_AHB2PHY_CBCR) |= 1;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		for (int c = 0; c < 1000 && (usb_rd(gcc, GCC_AHB2PHY_CBCR) & (1u << 31)); c++) {
++			delay(10);
++		}
++		printf("SWEET USB: ahb2phy CBCR post-enable: 0x%08x\n", usb_rd(gcc, GCC_AHB2PHY_CBCR));
 +		*(volatile uint32_t *)(gcc + GCC_QUSB2PHY_PRIM_BCR) |= 1;
 +		delay(150);
 +		*(volatile uint32_t *)(gcc + GCC_QUSB2PHY_PRIM_BCR) &= ~1;
@@ -149,6 +158,8 @@
 +		printf("SWEET USB: HSPHY post-init 0x3c: 0x%08x 0x50: 0x%08x 0x54: 0x%08x 0x64: 0x%08x 0x94: 0x%08x\n",
 +		    usb_rd(hsphy, HSPHY_UTMI_CTRL0), usb_rd(hsphy, HSPHY_UTMI_CTRL5),
 +		    usb_rd(hsphy, HSPHY_COMMON0), usb_rd(hsphy, HSPHY_CTRL2), usb_rd(hsphy, HSPHY_CFG0));
++		printf("SWEET USB: HSPHY overrides X0(0x6c): 0x%08x X1(0x70): 0x%08x X2(0x74): 0x%08x\n",
++		    usb_rd(hsphy, HSPHY_PARAM_OVRD_X0), usb_rd(hsphy, HSPHY_PARAM_OVRD_X1), usb_rd(hsphy, HSPHY_PARAM_OVRD_X2));
 +	}
 +
 +	/* 3. Configure Qualcomm wrapper: force VBUS session early (High-Speed only) */
