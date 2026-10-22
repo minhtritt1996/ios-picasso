@@ -27,11 +27,15 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,30 @@
+@@ -151,6 +151,34 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
 +extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++#define QSCRATCH_GENERAL_CFG 0x08
++#define PIPE_UTMI_CLK_SEL    (1u << 0)
++#define PIPE3_PHYSTATUS_SW   (1u << 3)
++#define PIPE_UTMI_CLK_DIS    (1u << 8)
 +#define GCTL_DSBLCLKGTNG     (1u << 0)
 +#define GUSB2PHYCFG          0xc200
 +#define GUSB2PHYCFG_SUSPHY   (1u << 6)
@@ -58,7 +62,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +297,7 @@
+@@ -273,7 +301,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -67,7 +71,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +307,10 @@
+@@ -283,9 +311,10 @@
  			}
  			return 0;
  		}
@@ -80,7 +84,7 @@
  	return -1;
  }
  
-@@ -715,10 +740,12 @@
+@@ -715,10 +744,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -97,7 +101,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +893,138 @@
+@@ -866,7 +897,138 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -237,7 +241,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +1036,39 @@
+@@ -878,42 +1040,64 @@
  		return;
  	}
  
@@ -248,6 +252,31 @@
 +	dwc_wr(GUSB2PHYCFG, dwc_rd(GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
 +	dwc_wr(GUSB3PIPECTL, dwc_rd(GUSB3PIPECTL) & ~GUSB3PIPECTL_SUSPHY);
 +	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
++
++	/*
++	 * 6. Route the UTMI clock to the controller. On a high-speed-only port
++	 *    without a SuperSpeed PHY, dwc3-msm does this in its POST_RESET
++	 *    event: assert PIPE_UTMI_CLK_DIS, then select the UTMI pipe clock
++	 *    and force PHYSTATUS, then release PIPE_UTMI_CLK_DIS. Without it the
++	 *    endpoint commands never complete (ep0 SETEPCONFIG timeout).
++	 */
++	if (qs != 0) {
++		uint32_t gen = usb_rd(qs, QSCRATCH_GENERAL_CFG);
++		printf("SWEET USB: GENERAL_CFG pre: 0x%08x\n", gen);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = gen | PIPE_UTMI_CLK_DIS;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(1000);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) =
++		    usb_rd(qs, QSCRATCH_GENERAL_CFG) | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(1000);
++		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) =
++		    usb_rd(qs, QSCRATCH_GENERAL_CFG) & ~PIPE_UTMI_CLK_DIS;
++		__asm__ volatile ("dsb sy" ::: "memory");
++		delay(1000);
++		printf("SWEET USB: GENERAL_CFG post: 0x%08x\n",
++		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
++	}
 +
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
