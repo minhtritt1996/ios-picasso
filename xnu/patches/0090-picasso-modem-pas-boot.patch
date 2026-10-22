@@ -8,3 +8,740 @@
  iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+--- /dev/null
++++ b/iokit/Kernel/arm/PicassoModem.cpp
+@@ -0,0 +1,734 @@
++/*
++ * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
++ *
++ * On this SoC the WLAN firmware runs inside the modem (the mss node owns
++ * modem_wlan_region@8c000000), so a running modem is Wi-Fi step 1: the
++ * WLAN services (WLFW on QRTR.0/1) come up with it.
++ *
++ * Sequence, as Linux qcom_mdt_load() + qcom_q6v5_pas() do it:
++ *   PIL is_supported -> init_image (.mdt metadata) -> mem_setup (only for
++ *   relocatable images) -> copy the .bNN segments into the carveout
++ *   0x8C000000+0xF800000 -> auth_and_reset -> watch the modem's SMP2P
++ *   "slave-kernel" value (bit0 fatal, bit1 ready, bit2 handover).
++ *
++ * Firmware is read from the GPT "modem" partition (vfat, the stock files
++ * this phone's EFS matches) through sweet_ufs_pread(); nothing is copied
++ * or modified. Boot-arg modem=1, polling only: no interrupts, no EFS.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <kern/thread.h>
++#include <pexpert/pexpert.h>
++#include <libkern/libkern.h>
++#include <sys/errno.h>
++#include <machine/atomic.h>
++
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" void flush_dcache64(addr64_t pa, unsigned int len, boolean_t phys);
++extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
++extern "C" int sweet_ufs_pread(uint64_t first, uint64_t off, void *dst, uint32_t len);
++
++#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
++
++#define PAS_ID_MODEM        4
++#define SCM_FN(svc, cmd)    (0x42000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
++#define SCM_SVC_PIL         0x02
++#define PIL_INIT_IMAGE      0x01
++#define PIL_MEM_SETUP       0x02
++#define PIL_AUTH_RESET      0x05
++#define PIL_SHUTDOWN        0x06
++#define PIL_IS_SUPPORTED    0x07
++#define SCM_ARG_RW          2
++
++#define PT_LOAD             1
++#define MDT_TYPE_MASK       (7u << 24)
++#define MDT_TYPE_HASH       (2u << 24)
++#define MDT_RELOCATABLE     (1u << 27)
++
++/* picasso device tree: smem_region@80900000 (2 MiB), mss memory-region
++ * modem_wlan_region@8c000000 (248 MiB). */
++#define SMEM_PA             0x80900000ull
++#define SMEM_SIZE           0x00200000u
++#define MODEM_CARVEOUT      0x8C000000ull
++#define MODEM_CARVEOUT_SIZE 0x0F800000ull
++
++/* qcom,smp2p-mpss: qcom,smem = <0x1b3 0x1ac> -> in 435, out 428 */
++#define ITEM_SMP2P_IN       435
++#define ITEM_MSS_CRASH      421
++#define SMP2P_MAGIC         0x504D5324u         /* "$SMP" */
++#define SMP2P_MAX_ENTRY     16
++
++struct elf32_ehdr {
++	uint8_t  e_ident[16];
++	uint16_t e_type, e_machine;
++	uint32_t e_version, e_entry, e_phoff, e_shoff, e_flags;
++	uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx;
++} __attribute__((packed));
++
++struct elf32_phdr {
++	uint32_t p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align;
++} __attribute__((packed));
++
++struct smem_pt_entry { uint32_t offset, size, flags; uint16_t host0, host1; uint32_t cacheline, rsvd[7]; } __attribute__((packed));
++struct smem_pt { uint8_t magic[4]; uint32_t version, num_entries, rsvd[5]; } __attribute__((packed));
++struct smem_part_hdr { uint8_t magic[4]; uint16_t host0, host1; uint32_t size, free_uncached, free_cached, rsvd[3]; } __attribute__((packed));
++struct smem_priv_entry { uint16_t canary, item; uint32_t size; uint16_t pad_data, pad_hdr; uint32_t rsvd; } __attribute__((packed));
++struct smp2p_hdr { uint32_t magic; uint8_t version, features[3]; uint16_t local_pid, remote_pid, total, valid; uint32_t flags; } __attribute__((packed));
++struct smp2p_entry { char name[16]; uint32_t value; } __attribute__((packed));
++
++static uint8_t *smem;
++
++/* ---------------------------------------------------------------- mappings */
++
++/* Large or RAM regions: an IOMemoryDescriptor mapping (ml_io_map space is small). */
++static IOMemoryMap *
++map_phys(uint64_t pa, uint64_t size, bool wc)
++{
++	IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(pa, size, kIODirectionInOut);
++	IOMemoryMap *m;
++
++	if (md == NULL) {
++		return NULL;
++	}
++	m = md->map(wc ? kIOMapWriteCombineCache : kIOMapInhibitCache);
++	md->release();
++	return m;
++}
++
++static inline void
++mb(void)
++{
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* ---------------------------------------------------------------- TrustZone */
++
++static uint64_t
++smc_call(uint64_t a[8])
++{
++	register uint64_t x0 __asm__("x0") = a[0], x1 __asm__("x1") = a[1], x2 __asm__("x2") = a[2],
++	    x3 __asm__("x3") = a[3], x4 __asm__("x4") = a[4], x5 __asm__("x5") = a[5], x6 __asm__("x6") = a[6],
++	    x7 __asm__("x7") = a[7];
++	__asm__ volatile ("smc #0"
++            : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++            :
++            : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++	a[0] = x0; a[1] = x1; a[2] = x2; a[3] = x3; a[4] = x4; a[5] = x5; a[6] = x6; a[7] = x7;
++	return x0;
++}
++
++static unsigned scm_resumes;
++
++static uint64_t
++scm(uint32_t fn, uint64_t arginfo, uint64_t a, uint64_t b, uint64_t c, uint64_t *res1)
++{
++	uint64_t args[8] = { fn, arginfo, a, b, c, 0, 0, 0 };
++	unsigned n;
++
++	smc_call(args);
++	/* long calls return INTERRUPTED (1): resume with x0 = 1 and the session from x6 */
++	for (n = 0; args[0] == 1 && n < 100000; n++) {
++		uint64_t again[8] = { 1, arginfo, a, b, c, 0, args[6], 0 };
++		memcpy(args, again, sizeof(args));
++		smc_call(args);
++	}
++	scm_resumes = n;
++	if (res1 != NULL) {
++		*res1 = args[1];
++	}
++	return args[0];
++}
++
++/* ---------------------------------------------------------------- vfat (read only) */
++
++struct fat_vol {
++	uint64_t first;                 /* absolute device LBA of the partition */
++	uint32_t bps, spc, rsvd, nfats, root_ents, fatsz, root_clus;
++	uint32_t root_sec, root_secs, data_sec, fat_ents;
++	uint8_t *fat;                   /* raw FAT; 4-byte entries if FAT32, else 2-byte */
++};
++
++static int
++fat_read32(const uint8_t *p, uint32_t off)
++{
++	uint32_t v;
++	memcpy(&v, p + off, 4);
++	return (int)v;
++}
++
++static int
++fat_read16(const uint8_t *p, uint32_t off)
++{
++	uint16_t v;
++	memcpy(&v, p + off, 2);
++	return (int)v;
++}
++
++static int
++fat_mount(struct fat_vol *v, uint64_t first, uint64_t nblocks)
++{
++	uint8_t bs[512];
++	uint64_t total_sec;
++	int err;
++
++	bzero(v, sizeof(*v));
++	err = sweet_ufs_pread(first, 0, bs, sizeof(bs));
++	if (err) {
++		LOG("vfat: cannot read boot sector: %d", err);
++		return err;
++	}
++	if (bs[510] != 0x55 || bs[511] != 0xaa) {
++		LOG("vfat: no boot signature");
++		return EINVAL;
++	}
++	v->first = first;
++	v->bps = (uint32_t)fat_read16(bs, 11);
++	v->spc = bs[13];
++	v->rsvd = (uint32_t)fat_read16(bs, 14);
++	v->nfats = bs[16];
++	v->root_ents = (uint32_t)fat_read16(bs, 17);
++	v->fatsz = (uint32_t)fat_read16(bs, 22);
++	total_sec = (uint64_t)fat_read16(bs, 19);
++	if (v->fatsz == 0) {
++		v->fatsz = (uint32_t)fat_read32(bs, 36);
++		v->root_clus = (uint32_t)fat_read32(bs, 44);
++	}
++	if (total_sec == 0) {
++		total_sec = (uint32_t)fat_read32(bs, 32);
++	}
++	if (v->bps < 512 || v->bps > 4096 || (v->bps & (v->bps - 1)) || v->spc == 0 || v->nfats == 0 ||
++	    v->fatsz == 0 || total_sec == 0 || total_sec > nblocks * (4096 / v->bps)) {
++		LOG("vfat: bad geometry bps %u spc %u rsvd %u nfats %u fatsz %u total %llu",
++		    v->bps, v->spc, v->rsvd, v->nfats, v->fatsz, total_sec);
++		return EINVAL;
++	}
++	v->root_secs = (v->root_ents * 32 + v->bps - 1) / v->bps;
++	v->root_sec = v->rsvd + v->nfats * v->fatsz;
++	v->data_sec = v->root_sec + v->root_secs;
++	if (v->root_clus == 0 && v->root_ents == 0) {
++		LOG("vfat: neither a FAT16 root directory nor a FAT32 root cluster");
++		return EINVAL;
++	}
++	v->fat_ents = v->fatsz * v->bps / (v->root_clus ? 4 : 2);
++
++	v->fat = (uint8_t *)IOMalloc(v->fatsz * v->bps);
++	if (v->fat == NULL) {
++		return ENOMEM;
++	}
++	err = sweet_ufs_pread(first, (uint64_t)v->rsvd * v->bps, v->fat, v->fatsz * v->bps);
++	if (err) {
++		LOG("vfat: cannot read the FAT: %d", err);
++		return err;
++	}
++	LOG("vfat: bps %u spc %u root %u entries, FAT %u KiB, data at sector %u%s",
++	    v->bps, v->spc, v->root_ents, v->fatsz * v->bps >> 10, v->data_sec,
++	    v->root_clus ? " (fat32)" : " (fat16)");
++	return 0;
++}
++
++static uint32_t
++fat_next(struct fat_vol *v, uint32_t clus)
++{
++	if (clus >= v->fat_ents) {
++		return 0x0fffffffu;
++	}
++	if (v->root_clus) {
++		uint32_t next;
++		memcpy(&next, v->fat + (size_t)clus * 4, 4);
++		return next & 0x0fffffffu;
++	}
++	uint16_t next;
++	memcpy(&next, v->fat + (size_t)clus * 2, 2);
++	return next;
++}
++
++/* Read len bytes of a file starting at cluster clus into dst (no bounce). */
++static int
++fat_read_chain(struct fat_vol *v, uint32_t clus, void *dst, uint32_t len)
++{
++	uint32_t per = v->spc * v->bps;
++	uint8_t *out = (uint8_t *)dst;
++	int err = 0;
++
++	while (len && !err) {
++		uint64_t off;
++		uint32_t n;
++
++		if (clus < 2 || clus >= v->fat_ents) {
++			return EIO;
++		}
++		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
++		n = MIN(len, per);
++		err = sweet_ufs_pread(v->first, off, out, n);
++		out += n;
++		len -= n;
++		clus = fat_next(v, clus);
++	}
++	return err;
++}
++
++/* Root directory into buf (up to cap bytes); *used gets the entry bytes read. */
++static int
++fat_root_read(struct fat_vol *v, void *buf, uint32_t cap, uint32_t *used)
++{
++	int err;
++
++	*used = 0;
++	if (v->root_clus == 0) {
++		uint32_t n = MIN(cap, v->root_secs * v->bps);
++		err = sweet_ufs_pread(v->first, (uint64_t)v->root_sec * v->bps, buf, n);
++		if (!err) {
++			*used = n;
++		}
++		return err;
++	}
++	uint32_t clus = v->root_clus, per = v->spc * v->bps;
++	while (v->root_clus && *used < cap) {
++		uint64_t off;
++		uint32_t n;
++
++		if (clus < 2 || clus >= v->fat_ents) {
++			break;
++		}
++		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
++		n = MIN(cap - *used, per);
++		err = sweet_ufs_pread(v->first, off, (uint8_t *)buf + *used, n);
++		if (err) {
++			return err;
++		}
++		*used += n;
++		clus = fat_next(v, clus);
++	}
++	return 0;
++}
++
++static int
++fat_lookup(struct fat_vol *v, const char *name83, uint32_t *clus, uint32_t *size)
++{
++	uint8_t *dir = (uint8_t *)IOMalloc(128 * 1024);
++	uint32_t used = 0;
++	int err;
++
++	if (dir == NULL) {
++		return ENOMEM;
++	}
++	err = fat_root_read(v, dir, 128 * 1024, &used);
++	bool found = false;
++	for (uint32_t i = 0; !err && i + 32 <= used; i += 32) {
++		const uint8_t *e = dir + i;
++		if (e[0] == 0) {
++			break;
++		}
++		if (e[0] == 0xe5 || (e[11] & 0x18) == 0x08) {    /* deleted, volume label */
++			continue;
++		}
++		if (memcmp(e, name83, 11) != 0) {
++			continue;
++		}
++		*clus = (uint32_t)fat_read16(e, 26) | ((uint32_t)fat_read16(e, 20) << 16);
++		*size = (uint32_t)fat_read32(e, 28);
++		found = true;
++		break;
++	}
++	IOFree(dir, 128 * 1024);
++	if (err) {
++		return err;
++	}
++	return (found && *clus != 0) ? 0 : ENOENT;
++}
++
++static void
++fat_name83(const char *name, char out[11])
++{
++	unsigned n = 0, i = 0;
++	char c;
++
++	bzero(out, 11);
++	while (name[n] != 0 && name[n] != '.' && n < 8) {
++		c = name[n++];
++		out[i++] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
++	}
++	i = 8;
++	if (name[n] == '.') {
++		n++;
++	}
++	while (name[n] != 0 && i < 11) {
++		c = name[n++];
++		out[i++] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
++	}
++}
++
++/* ---------------------------------------------------------------- SMEM */
++
++static struct smem_pt *
++smem_toc(void)
++{
++	/* The TOC sits at the end of SMEM on recent SoCs; older layouts put it
++	 * first. Accept either, then scan the first 64 KiB in page steps. */
++	struct smem_pt *pt;
++
++	pt = (struct smem_pt *)(smem + SMEM_SIZE - 0x1000);
++	if (memcmp(pt->magic, "$TOC", 4) == 0 && pt->num_entries <= 64) {
++		return pt;
++	}
++	for (uint32_t off = 0; off < 0x10000; off += 0x1000) {
++		pt = (struct smem_pt *)(smem + off);
++		if (memcmp(pt->magic, "$TOC", 4) == 0 && pt->num_entries <= 64) {
++			return pt;
++		}
++	}
++	return NULL;
++}
++
++static struct smem_part_hdr *
++smem_partition(uint16_t a, uint16_t b)
++{
++	struct smem_pt *pt = smem_toc();
++	struct smem_pt_entry *e;
++
++	if (pt == NULL) {
++		return NULL;
++	}
++	e = (struct smem_pt_entry *)(pt + 1);
++	for (uint32_t i = 0; i < pt->num_entries; i++) {
++		if (e[i].offset != 0 && e[i].size != 0 && e[i].offset < SMEM_SIZE &&
++		    ((e[i].host0 == a && e[i].host1 == b) || (e[i].host0 == b && e[i].host1 == a))) {
++			return (struct smem_part_hdr *)(smem + e[i].offset);
++		}
++	}
++	return NULL;
++}
++
++static void *
++smem_get(struct smem_part_hdr *p, uint16_t item, uint32_t *size)
++{
++	uint8_t *e, *end;
++
++	if (p == NULL || memcmp(p->magic, "$PRT", 4) != 0 || p->free_uncached > p->size) {
++		return NULL;
++	}
++	e = (uint8_t *)p + sizeof(*p);
++	end = (uint8_t *)p + p->free_uncached;
++	while (e + sizeof(struct smem_priv_entry) <= end) {
++		struct smem_priv_entry *h = (struct smem_priv_entry *)e;
++		if (h->canary != 0xA5A5) {
++			return NULL;
++		}
++		if (h->item == item) {
++			if (size != NULL) {
++				*size = h->size - h->pad_data;
++			}
++			return e + sizeof(*h) + h->pad_hdr;
++		}
++		e += sizeof(*h) + h->pad_hdr + h->size;
++	}
++	return NULL;
++}
++
++/* ---------------------------------------------------------------- PAS boot */
++
++static bool
++loadable(const struct elf32_phdr *p)
++{
++	return p->p_type == PT_LOAD && p->p_memsz != 0 && (p->p_flags & MDT_TYPE_MASK) != MDT_TYPE_HASH;
++}
++
++/* Read a firmware file from the "modem" partition into dst (dst may be a WC mapping). */
++static int64_t
++fw_read(struct fat_vol *v, const char *name, void *dst, uint64_t max)
++{
++	char name83[11];
++	uint32_t clus = 0, size = 0;
++	int err;
++
++	fat_name83(name, name83);
++	err = fat_lookup(v, name83, &clus, &size);
++	if (err) {
++		LOG("%s: not in the modem partition (%d)", name, err);
++		return -1;
++	}
++	if (size > max) {
++		LOG("%s: %u bytes, buffer is %llu", name, size, max);
++		return -1;
++	}
++	err = fat_read_chain(v, clus, dst, size);
++	if (err) {
++		LOG("%s: read error %d", name, err);
++		return -1;
++	}
++	return size;
++}
++
++static bool
++modem_boot(void)
++{
++	struct fat_vol v;
++	uint64_t part_lba = 0, part_blocks = 0, meta_pa = 0, res = 0, st;
++	uint8_t *mdt = NULL, *meta;
++	int64_t mdt_size;
++	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
++	bool relocate = false, ok = false;
++	IOPhysicalAddress meta_phys = 0;
++
++	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0) {
++		LOG("no \"modem\" partition");
++		return false;
++	}
++	LOG("modem partition: block 0x%llx, %llu MiB", part_lba, part_blocks * 4096 >> 20);
++	if (fat_mount(&v, part_lba, part_blocks) != 0) {
++		return false;
++	}
++
++	st = scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, PAS_ID_MODEM, 0, 0, &res);
++	LOG("PAS id %u supported: ret=%llx res=%llx", PAS_ID_MODEM, st, res);
++	if (st != 0 || res != 1) {
++		goto out_fat;
++	}
++
++	/* The .mdt is small: read it whole, it holds the ELF header and phdrs. */
++	{
++		char name83[11];
++		uint32_t clus = 0, size = 0;
++
++		fat_name83("modem.mdt", name83);
++		if (fat_lookup(&v, name83, &clus, &size) != 0 || size < 52 || size > 0x100000) {
++			LOG("modem.mdt: not in the modem partition or unusable size");
++			goto out_fat;
++		}
++		mdt_size = size;
++		mdt = (uint8_t *)IOMalloc((vm_size_t)mdt_size);
++		if (mdt == NULL) {
++			goto out_fat;
++		}
++		if (fat_read_chain(&v, clus, mdt, (uint32_t)mdt_size) != 0) {
++			LOG("modem.mdt: cannot read");
++			IOFree(mdt, (vm_size_t)mdt_size);
++			goto out_fat;
++		}
++	}
++
++	struct elf32_ehdr *eh = (struct elf32_ehdr *)mdt;
++	if (memcmp(eh->e_ident, "\x7f" "ELF", 4) != 0 ||
++	    eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr) > (uint64_t)mdt_size) {
++		LOG("modem.mdt: bad ELF header");
++		IOFree(mdt, (vm_size_t)mdt_size);
++		goto out_fat;
++	}
++	struct elf32_phdr *ph = (struct elf32_phdr *)(mdt + eh->e_phoff);
++	for (uint32_t i = 0; i < eh->e_phnum; i++) {
++		if ((ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH) {
++			hash = i;
++		}
++		if (!loadable(&ph[i])) {
++			continue;
++		}
++		if (ph[i].p_flags & MDT_RELOCATABLE) {
++			relocate = true;
++		}
++		min_a = MIN(min_a, ph[i].p_paddr);
++		max_a = MAX(max_a, ph[i].p_paddr + ph[i].p_memsz);
++	}
++	LOG("phdrs=%u hash=%u region %08x..%08x relocate=%u", eh->e_phnum, hash, min_a, max_a, relocate);
++	if (hash == ~0u || min_a < MODEM_CARVEOUT || max_a > MODEM_CARVEOUT + MODEM_CARVEOUT_SIZE) {
++		LOG("unexpected layout (carveout is 0x%llx+0x%llx)", MODEM_CARVEOUT, MODEM_CARVEOUT_SIZE);
++		IOFree(mdt, (vm_size_t)mdt_size);
++		goto out_fat;
++	}
++
++	/* Metadata = ELF header + phdrs + hash segment, contiguous and flushed. */
++	{
++		uint64_t hdr = eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr);
++		uint64_t meta_size = hdr + ph[hash].p_filesz;
++
++		meta = (uint8_t *)IOMallocContiguous((vm_size_t)meta_size, 0x1000, &meta_phys);
++		if (meta == NULL || ph[hash].p_offset + ph[hash].p_filesz > (uint64_t)mdt_size) {
++			LOG("metadata: alloc or split hash segment not supported");
++			IOFree(mdt, (vm_size_t)mdt_size);
++			goto out_fat;
++		}
++		meta_pa = meta_phys;
++		memcpy(meta, mdt, hdr);
++		memcpy(meta + hdr, mdt + ph[hash].p_offset, ph[hash].p_filesz);
++		mb();
++		flush_dcache64(meta_pa, (unsigned int)meta_size, TRUE);
++
++		st = scm(SCM_FN(SCM_SVC_PIL, PIL_INIT_IMAGE), 2 | (SCM_ARG_RW << 6), PAS_ID_MODEM, meta_pa, 0, &res);
++		LOG("init_image: ret=%llx res=%llx resumes=%u (meta %llu bytes @%llx)", st, res, scm_resumes, meta_size, meta_pa);
++		if (st != 0 || res != 0) {
++			IOFree(mdt, (vm_size_t)mdt_size);
++			goto out_fat;
++		}
++	}
++	if (relocate) {
++		st = scm(SCM_FN(SCM_SVC_PIL, PIL_MEM_SETUP), 3, PAS_ID_MODEM, min_a,
++		    ((uint64_t)(max_a - min_a) + 0xfff) & ~0xfffull, &res);
++		LOG("mem_setup: ret=%llx res=%llx", st, res);
++		if (st != 0 || res != 0) {
++			goto shutdown;
++		}
++	}
++
++	for (uint32_t i = 0; i < eh->e_phnum; i++) {
++		char name[16];
++		uint64_t pa, off, len;
++		IOMemoryMap *m;
++		uint8_t *dst;
++		int64_t got;
++
++		if (!loadable(&ph[i])) {
++			continue;
++		}
++		/* map only while copying: TZ locks the carveout at auth_and_reset */
++		pa = ph[i].p_paddr & ~0x3fffull;
++		off = ph[i].p_paddr - pa;
++		len = (off + ph[i].p_memsz + 0x3fff) & ~0x3fffull;
++		m = map_phys(pa, len, true);
++		if (m == NULL) {
++			LOG("segment %u: cannot map %08x+%x", i, ph[i].p_paddr, ph[i].p_memsz);
++			goto shutdown;
++		}
++		dst = (uint8_t *)m->getVirtualAddress() + off;
++		got = 0;
++		if (ph[i].p_filesz != 0) {
++			snprintf(name, sizeof(name), "modem.b%02u", i);
++			got = fw_read(&v, name, dst, ph[i].p_filesz);
++			if (got != (int64_t)ph[i].p_filesz) {
++				LOG("%s: %lld of %u bytes", name, got, ph[i].p_filesz);
++				m->release();
++				goto shutdown;
++			}
++		}
++		if (ph[i].p_memsz > got) {
++			bzero(dst + got, ph[i].p_memsz - got);
++		}
++		mb();
++		m->release();
++	}
++	LOG("segments loaded");
++	IOFree(mdt, (vm_size_t)mdt_size);
++
++	st = scm(SCM_FN(SCM_SVC_PIL, PIL_AUTH_RESET), 1, PAS_ID_MODEM, 0, 0, &res);
++	LOG("auth_and_reset: ret=%llx res=%llx resumes=%u", st, res, scm_resumes);
++	if (st != 0 || res != 0) {
++		goto shutdown;
++	}
++	ok = true;
++	goto out_fat;
++
++shutdown:
++	st = scm(SCM_FN(SCM_SVC_PIL, PIL_SHUTDOWN), 1, PAS_ID_MODEM, 0, 0, &res);
++	LOG("shutdown after failure: ret=%llx res=%llx", st, res);
++out_fat:
++	if (v.fat != NULL) {
++		IOFree(v.fat, v.fatsz * v.bps);
++	}
++	return ok;
++}
++
++/* Watch the modem's SMP2P "slave-kernel" entry (bit0 fatal, bit1 ready). */
++static void
++modem_watch(unsigned seconds)
++{
++	struct smem_part_hdr *part = smem_partition(0, 1);
++	struct smp2p_hdr *in = NULL;
++	volatile uint32_t *sk = NULL;
++	uint32_t last = ~0u;
++	bool ready = false;
++
++	if (part == NULL) {
++		LOG("no apps<->modem SMEM partition");
++		return;
++	}
++	for (unsigned ms = 0; ms < seconds * 1000; ms++) {
++		if (in == NULL) {
++			uint32_t sz = 0;
++			in = (struct smp2p_hdr *)smem_get(part, ITEM_SMP2P_IN, &sz);
++			if (in != NULL && in->magic != SMP2P_MAGIC) {
++				in = NULL;
++			}
++			if (in != NULL) {
++				LOG("t=%u ms: modem SMP2P item %u up (v%u, %u entries)", ms, ITEM_SMP2P_IN, in->version, in->valid);
++			}
++		}
++		if (in != NULL && sk == NULL) {
++			struct smp2p_entry *e = (struct smp2p_entry *)(in + 1);
++			for (uint32_t i = 0; i < in->valid && i < SMP2P_MAX_ENTRY; i++) {
++				if (strncmp(e[i].name, "slave-kernel", 16) == 0) {
++					sk = &e[i].value;
++					break;
++				}
++			}
++		}
++		if (sk != NULL && *sk != last) {
++			last = *sk;
++			LOG("t=%u ms: slave-kernel %08x%s%s%s", ms, last, (last & 1) ? " FATAL" : "",
++			    (last & 2) ? " READY" : "", (last & 4) ? " HANDOVER" : "");
++			if ((last & 2) && !ready) {
++				ready = true;
++				LOG("modem is up (MODEM READY)");
++			}
++			if (last & 1) {
++				uint32_t sz = 0;
++				const char *why = (const char *)smem_get(smem_partition(0xfffe, 0xfffe), ITEM_MSS_CRASH, &sz);
++				char buf[128] = {};
++				if (why != NULL) {
++					memcpy(buf, why, MIN(sz, (uint32_t)sizeof(buf) - 1));
++				}
++				LOG("modem crash reason: %s", why != NULL ? buf : "(none)");
++				return;
++			}
++		}
++		IOSleep(1);
++	}
++	LOG("watch done: slave-kernel %08x, %s", last, ready ? "READY" : "NOT ready");
++}
++
++static void
++modem_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	IOMemoryMap *smem_map;
++	unsigned watch = 60;
++
++	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
++	smem_map = map_phys(SMEM_PA, SMEM_SIZE, true);
++	if (smem_map == NULL) {
++		LOG("cannot map SMEM at 0x%llx", SMEM_PA);
++		goto done;
++	}
++	smem = (uint8_t *)smem_map->getVirtualAddress();
++	if (smem_toc() == NULL) {
++		LOG("SMEM at 0x%llx: no TOC", SMEM_PA);
++		goto done;
++	}
++	LOG("SMEM version %u", *(volatile uint32_t *)(smem + 64 + 7 * 4) >> 16);
++	if (modem_boot()) {
++		modem_watch(watch);
++	}
++	/* keep the mapping: the modem uses SMEM from now on */
++done:
++	LOG("done");
++	thread_terminate(current_thread());
++}
++
++extern "C" void
++picasso_modem_init(void)
++{
++	static bool started;
++	uint32_t on = 0;
++	thread_t thread;
++
++	if (started || !PE_parse_boot_argn("modem", &on, sizeof(on)) || on == 0) {
++		return;
++	}
++	started = true;
++	if (kernel_thread_start(modem_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
++#else
++extern "C" void picasso_modem_init(void) {}
++#endif
