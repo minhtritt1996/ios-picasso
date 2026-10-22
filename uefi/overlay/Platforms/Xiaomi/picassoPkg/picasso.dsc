@@ -35,6 +35,8 @@
 !include LitoPkg/LitoPkg.dsc.inc
 
 [PcdsFixedAtBuild]
+  # No flash variable store: keep variables in RAM for bring-up.
+  gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable|TRUE
   #
   # DDR Memory
   #

@@ -34,10 +34,21 @@ dependency is only needed for x86 images):
   DxeCore (500 orange memory services, 540 purple GCD, 580 spring green event
   services, 620 grey dispatcher, 660 white before `gBds->Entry`).
 
+- `Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c`: GOP bands
+  (700 cyan/red = region found/missing, 740 magenta, 780 white).
+- `Mu_Basecore/MdeModulePkg/Universal/BdsDxe/BdsEntry.c`: BDS bands
+  (820 orange = BdsEntry start, 860 purple = BeforeConsole returned).
+- Emulated variable store: `PcdEmuVariableNvModeEnable = TRUE` in the DSC and
+  `VariableRuntimeDxe` in DXE.inc/APRIORI.inc (BDS needs variables early).
+
 ## State reached (2026-10-22)
 
 BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV
 decompression all succeed (yellow band). DxeCore then runs to completion: the white band at
 row 660 (just before `gBds->Entry`) is the last thing on screen, so the
-firmware core, dispatcher and BDS entry all execute. What is missing is the
-console/menu (GOP + ConSplitter) and, later, USB/UFS drivers.
+firmware core, dispatcher and BDS entry all execute. GOP initialises too (bands at 700/740/780). BDS reaches `BdsEntry`
+(orange, row 820) but not `PlatformBootManagerBeforeConsole` (purple, 860),
+even with emulated variables. Next: markers between those points inside
+BdsEntry (BdsInitialize, EfiBootManager init, console connect) to find the
+first call that never returns; the platform's PlatformBootManagerLib may also
+be a Null implementation now that the vendor Binaries are gone.
