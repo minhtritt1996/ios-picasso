@@ -1,6 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 13:35, latest)
+## Agent handoff / active work (2026-10-22 13:45, latest)
+
+### >>> UPDATE 2026-10-22 (Run 23 panic: GDSC offset wrong; Run 24 fixes it) <<<
+
+1. **Run 23 panic (photo of the screen):**
+   `panic(cpu 0 caller ...): Kernel data abort`, `far 0xffffffe08fff7c7004`,
+   `esr 0x96000007` (data abort, translation fault level 3), `x8 0x10f004`,
+   `x9 0x813fd0a8309a0053`. The USB probe lines before it are normal
+   (`GDSC usb30_prim 0xf822f000 (on)`, all clocks on except `ahb2phy`).
+2. **Root cause:** patch 0072 reads the GDSC at **GCC offset 0x0f004** (GCC
+   base 0x100000 -> PA 0x10f004). Run 23 used the absolute PA `0x10f004` as an
+   offset (-> PA 0x20f004), which is outside the 0x80000 GCC mapping, hence the
+   level-3 translation fault.
+3. **Run 24 (commit `3e2bc62`, CI `39733926647`):** define is
+   `GCC_USB30_PRIM_GDSCR 0x0f004`, mapping back to 0x90000 like the probe.
+   The masked "never set SW_COLLAPSE" logic from Run 23 stays.
+4. **Next:** package `payload-picasso-0119.bin`, flash, boot; the interesting
+   log lines are `AHB2PHY BCR pre/post` and `HSPHY pre-init`.
+
+## Agent handoff (2026-10-22 13:35)
 
 ### >>> UPDATE 2026-10-22 (Run 22 panicked — my GDSC write collapsed the USB domain; Run 23 fixes it) <<<
 
