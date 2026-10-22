@@ -154,7 +154,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -854,19 +904,216 @@
+@@ -854,19 +904,220 @@
  	thread_t thread;
  
  	ud.dwc = dwc;
@@ -181,7 +181,11 @@
 +		}
 +		ud.dma_pa = dma_pa_arg;
 +		ud.dma_uncached = 1;
-+		memset((void *)ud.dma, 0, UD_SIZE);
++		/* Device mappings reject dc zva, so clear with volatile words. */
++		for (uint32_t i = 0; i < UD_SIZE; i += 4) {
++			*(volatile uint32_t *)(ud.dma + i) = 0;
++		}
++		__asm__ volatile ("dsb sy" ::: "memory");
 +		printf("SWEET USB: DMA area at 0x%llx (uncached, sweetusbdma)\n",
 +		    (unsigned long long)ud.dma_pa);
 +	} else {
@@ -381,7 +385,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1125,39 @@
+@@ -878,6 +1129,39 @@
  		return;
  	}
  
@@ -421,7 +425,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1170,46 @@
+@@ -890,28 +1174,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -486,7 +490,7 @@
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1217,10 @@
+@@ -919,6 +1221,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
