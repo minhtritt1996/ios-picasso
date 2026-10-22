@@ -27,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 01:40:47.137752414 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 01:52:00.287526950 +0700
-@@ -151,6 +151,14 @@
+@@ -151,6 +151,10 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -35,14 +35,10 @@
 +#define GUSB2PHYCFG     0xc200
 +#define GUSB2PHYCFG_SUSPHY   (1u << 6)
 +#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
-+#define QSCRATCH_GENERAL_CFG 0x08
-+#define PIPE_UTMI_CLK_SEL    (1u << 0)
-+#define PIPE3_PHYSTATUS_SW   (1u << 3)
-+#define PIPE_UTMI_CLK_DIS    (1u << 8)
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -269,11 +277,15 @@
+@@ -269,11 +273,15 @@
  static int
  ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
  {
@@ -59,7 +55,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +295,10 @@
+@@ -283,9 +291,10 @@
  			}
  			return 0;
  		}
@@ -72,27 +68,19 @@
  	return -1;
  }
  
-@@ -867,6 +880,33 @@
+@@ -867,6 +876,25 @@
  	ud_if_create();
  
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
-+	/* Configure Qualcomm wrapper: select UTMI clock and enable VBUS session early */
++	/* Configure Qualcomm wrapper: enable VBUS session early */
 +	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
 +	if (qs != 0) {
-+		uint32_t gcfg = usb_rd(qs, QSCRATCH_GENERAL_CFG);
-+		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = gcfg | PIPE_UTMI_CLK_DIS;
-+		delay(1000);
-+		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = gcfg | PIPE_UTMI_CLK_DIS | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW;
-+		delay(1000);
-+		*(volatile uint32_t *)(qs + QSCRATCH_GENERAL_CFG) = (gcfg | PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW) & ~PIPE_UTMI_CLK_DIS;
-+		delay(1000);
-+
 +		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
 +		*(volatile uint32_t *)(qs + QSCRATCH_HS_PHY_CTRL) = hs | UTMI_OTG_VBUS_VALID | SW_SESSVLD_SEL;
 +		*(volatile uint32_t *)(qs + QSCRATCH_SS_PHY_CTRL) = ss | LANE0_PWR_PRESENT;
 +		__asm__ volatile ("dsb sy" ::: "memory");
-+		printf("SWEET USB: QSCRATCH GENERAL_CFG 0x%08x HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
-+		    usb_rd(qs, QSCRATCH_GENERAL_CFG), usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
++		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
 +	}
 +
 +	/* Clear SUSPHY and ENBLSLPM, disable clock gating before soft reset */
@@ -106,7 +94,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +918,13 @@
+@@ -878,6 +906,13 @@
  		return;
  	}
  
@@ -120,7 +108,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -902,7 +949,6 @@
+@@ -902,7 +937,6 @@
  	dwc_wr(DALEPENA, 0x3);
  	ud_start_setup();
  
@@ -128,3 +116,14 @@
  	if (qs != 0) {
  		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
  		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 01:40:47.137752414 +0700
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 01:43:10.313171883 +0700
+@@ -404,6 +404,7 @@
+ 	 * Home (Menu) press, then the release 100 ms later; Setup's "Hello"
+ 	 * screen waits for it. Even counts press, odd counts release.
+ 	 */
+ 	bool press = (self->fTestCount & 1) == 0;
++	self->key(kHIDUsage_Csmr_Power, press);
+ 	self->key(kHIDUsage_Csmr_Menu, press);
+ 	if (++self->fTestCount < 60) {
+ 		sender->setTimeoutMS(press ? 100 : self->fTestSecs * 1000);
