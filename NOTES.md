@@ -1,6 +1,38 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 14:05, latest)
+## Agent handoff / active work (2026-10-22 14:40, latest)
+
+### >>> UPDATE 2026-10-22 (Run 26: rails voted OK; missing QSCRATCH UTMI clock — Run 27) <<<
+
+1. **Run 26 (`284348027a…`) log, `/tmp/log-run26.txt`:**
+   - All three rail votes went through:
+     `ldoa5 addr=0x40b00`, `ldoa12 addr=0x42000`, `ldoa2 addr=0x40f00`,
+     each `TCS0 done=1 … cmd-status=0x10101/0x10101/0x10101`,
+     `SWEET USB: rails ldoa5=0 ldoa12=0 ldoa2=0`.
+   - PHY still reads the same, `ep0 cmd 0x1 timeout`, host still nothing.
+   - So rails were not the blocker.
+2. **Real gap found in the downstream driver:** `dwc3-msm.c:2036`
+   (`DWC3_CONTROLLER_POST_RESET_EVENT`) handles the HS/FS-only case (exactly
+   lito: `maximum-speed = "high-speed"`, `usb_nop_phy`):
+   ```
+   GENERAL_CFG |= PIPE_UTMI_CLK_DIS;   // bit 8
+   usleep 2..5
+   GENERAL_CFG |= PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW;  // bits 0,3
+   usleep 2..5
+   GENERAL_CFG &= ~PIPE_UTMI_CLK_DIS;
+   ```
+   Run 17 had only set bits 0|3 without the DIS handshake, which is presumably
+   why it tripped the RPM watchdog. Without any of this the UTMI clock never
+   reaches the controller, so DEPCMD never completes.
+3. **Run 27 (commit `7afb4e8`, CI `39740539194`):** apply the documented
+   three-step sequence right after the DWC3 soft reset (and after the
+   GUSB2PHYCFG/GUSB3PIPECTL/GCTL re-apply), guarded by `qs != 0`, logging
+   `GENERAL_CFG pre/post`. Patch verified with `patch -p1` (no fuzz/rejects).
+4. **Also confirmed from recovery sysfs** (Android running USB):
+   `pm8150_l5=880000`, `l12=1710000`, `l2=3050000`, `usb30_prim_gdsc=enabled`,
+   `l5_so`/`l12_so` disabled — the rails are now voted at those values.
+
+## Agent handoff (2026-10-22 14:05)
 
 ### >>> UPDATE 2026-10-22 (Run 24 boots; APB is fine; now voting PHY rails — Run 25) <<<
 
