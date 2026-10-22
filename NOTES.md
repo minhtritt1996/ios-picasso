@@ -1,6 +1,19 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 01:44, latest)
+## Agent handoff / active work (2026-10-22 08:35, latest)
+
+### >>> UPDATE 2026-10-22 (picasso: Run 14 Analysis & Run 15 Fix - Patch 0088 Hunk Fix) <<<
+
+**RUN 14 ROOT CAUSE & FINDING:**
+1. User observed: "logo apple hien 2-3s roi mo dan. dien thoai dang o recovery ban check di" (Apple logo showed 2-3s then faded out).
+2. Log inspection revealed that CI Job 119583102690 / Run `39705075878` had skipped `0088-picasso-display-alwayson-usb-fix.patch` due to `error: corrupt patch at line 105`.
+3. Consequently, Run 14 executed with **Kernel 0087** without patch 0088!
+4. In Kernel 0087:
+   - `kSweetFBRequestPowerChange` lacked the `sweetfb_keepon=1` guard, allowing `backboardd`'s sleep request to activate the fade-out loop in `SweetFramebuffer.cpp`.
+   - `GUSB3PIPECTL` SUSPHY was not cleared and `SweetHID` Power key was not fired.
+5. **FIX:**
+   - Re-generated unified diff headers for `0088-picasso-display-alwayson-usb-fix.patch`.
+   - Verified clean application (`patch -p1 --dry-run` and apply/revert tests on real buildtree with zero warnings/errors).
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 6 Analysis & Run 7 Fix - DWC3 UTMI Clock + ENBLSLPM) <<<
 
