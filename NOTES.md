@@ -1,6 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 12:45, latest)
+## Agent handoff / active work (2026-10-22 13:10, latest)
+
+### >>> UPDATE 2026-10-22 (Run 22 flashed — still no CDC-ECM; log pull pending) <<<
+
+1. **Run 22 build:** CI `39730338285` on `omp` (commit `cb0ae46`) succeeded;
+   log shows `Applying patch: 0088-picasso-display-alwayson-usb-fix.patch`
+   (no "corrupt patch" this time). Artifact in `xnu/out-0088-run22/`
+   (`kernel.development.sweet`, 17,210,952 bytes); new strings verified:
+   `AHB2PHY BCR pre/post`, `QUSB2PHY PRIM_BCR post`, `GDSC usb30_prim ... ->`.
+2. **Packaging:** `payload-picasso-0117.bin` (16,615,680 B, ADT
+   `picasso-clean.adt`, same cmdline as 0116) -> `shim/out/shim-boot.img`
+   36,352,000 B, MD5 `13b642d0b5028a91b1789d2ae258fbb2`. Payload verified
+   embedded at boot-image offset 0x41000.
+3. **Flash:** `dd` to `by-name/boot`, readback MD5 identical. Rebooted.
+4. **Result:** host `lsusb` shows no `1209:` after ~2.5 min and `adb` is gone,
+   i.e. the device left recovery but still enumerates nothing. Same symptom as
+   Run 21. **Log not yet pulled** — needs the phone back in OrangeFox recovery.
+
+## Agent handoff (2026-10-22 12:45)
 
 ### >>> UPDATE 2026-10-22 (picasso: Run 21 Log Diagnosed — Wrong Clock Register; Run 22 Fix on branch `omp`) <<<
 
