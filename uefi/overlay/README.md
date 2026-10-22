@@ -30,9 +30,14 @@ dependency is only needed for x86 images):
   header v1, `requires_kernel_header = true`.
 - `Resources/DTBs/picasso.dtb`: the phone's own DTB.
 
+- `Mu_Basecore/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c`: stage bands inside
+  DxeCore (500 orange memory services, 540 purple GCD, 580 spring green event
+  services, 620 grey dispatcher, 660 white before `gBds->Entry`).
+
 ## State reached (2026-10-22)
 
 BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV
-decompression all succeed (yellow band). The phone then hangs **inside
-DxeCore** (no magenta band); no reset. Next diagnostic: stage markers inside
-`MdeModulePkg/Core/Dxe`.
+decompression all succeed (yellow band). DxeCore then runs to completion: the white band at
+row 660 (just before `gBds->Entry`) is the last thing on screen, so the
+firmware core, dispatcher and BDS entry all execute. What is missing is the
+console/menu (GOP + ConSplitter) and, later, USB/UFS drivers.

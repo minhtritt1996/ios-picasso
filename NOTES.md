@@ -105,7 +105,9 @@ enter DxeCore. Evidence from the screen (framebuffer markers, no UART):
 | row 340 red | `InitializeMemory` done | yes |
 | row 380 cyan | platform HOBs done | yes |
 | row 420 yellow | FV decompressed | yes |
-| row 460 magenta | `LoadDxeCoreFromFv` returned | **no** |
+| row 460 magenta | `LoadDxeCoreFromFv` returned | (not reached on screen) |
+| row 500/540/580/620 | DxeCore: memory, GCD, events, dispatcher | yes |
+| row 660 white | just before `gBds->Entry` | **yes** |
 
 Fixes that got us here:
 - FD base cannot be `0x9FD00000` (picasso's secure CDSP window); use
