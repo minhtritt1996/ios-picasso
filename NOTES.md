@@ -1,6 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 16:20, latest)
+## Agent handoff / active work (2026-10-22 16:45, latest)
+
+### >>> UPDATE 2026-10-22 (step 1 boots; step 2 powers off; gates inside the TRB path — Run 33) <<<
+
+1. `sweetusbstep=1` (`DALEPENA = 0x3`) **boots to the Apple logo**: the early
+   `sweet_log_flush()` was the reason step 1 died before. Removed.
+2. `sweetusbstep=2` (`ud_start_setup()`), with Run 32: console appears, then the
+   phone **powers off** before the Apple logo. So the fault is inside the SETUP
+   TRB path, not in the PHY/ep0 config.
+3. **Run 33 (commit `915d1a9`, CI `39753347024`)** splits that path:
+   `0` ep0 config, `1` + DALEPENA, `2` + TRB write, `3` + dcache flush,
+   `4` + `STARTTRANSFER`, `5` + `RUN_STOP`, 99 all.
+   Applied inside `ud_start_trb` (returns at 2 and 3) and in the caller
+   (returns below 5 and 6). Patch validated against the CI tree.
+4. **Suspects for the next cycle:** the dcache maintenance uses
+   `flush_dcache64(pa, len, TRUE)`, which converts PA -> linear VA with
+   `gPhysBase/gVirtBase`; if `ud.dma_pa` falls outside that MAP, the `dc vcac`
+   takes a data abort (looks like a power-off through the watchdog). Print
+   `ud.dma` and `ud.dma_pa` before the first sync if step 2 is the one that
+   fails.
+
+## Agent handoff (2026-10-22 16:20)
 
 ### >>> UPDATE 2026-10-22 (step-1 fails; finer gates + flush removed — Run 32) <<<
 
