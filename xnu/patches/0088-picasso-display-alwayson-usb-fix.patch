@@ -57,7 +57,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +292,7 @@
+@@ -273,7 +296,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -66,7 +66,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +302,10 @@
+@@ -283,9 +306,10 @@
  			}
  			return 0;
  		}
@@ -79,7 +79,7 @@
  	return -1;
  }
  
-@@ -715,10 +735,12 @@
+@@ -715,10 +739,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -96,7 +96,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +888,113 @@
+@@ -866,7 +892,124 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -111,20 +111,31 @@
 +	 */
 +	vm_offset_t gcc = ml_io_map(GCC_PA, 0x80000);
 +	if (gcc != 0) {
++		/*
++		 * usb30_prim GDSC: bit 0 is SW_COLLAPSE (1 = power down, 0 = on),
++		 * bit 31 is the read-only power status. ABL usually leaves it on;
++		 * clearing bit 0 when it is already 0 is a no-op, and writing the
++		 * status bits back would be harmful, so do a masked update only.
++		 */
 +		uint32_t gdsc = usb_rd(gcc, GCC_USB30_PRIM_GDSC);
-+		*(volatile uint32_t *)(gcc + GCC_USB30_PRIM_GDSC) = gdsc | 1u;
-+		__asm__ volatile ("dsb sy" ::: "memory");
++		if (gdsc & 1u) {
++			*(volatile uint32_t *)(gcc + GCC_USB30_PRIM_GDSC) = gdsc & ~1u;
++			__asm__ volatile ("dsb sy" ::: "memory");
++		}
 +		for (int c = 0; c < 1000 && !(usb_rd(gcc, GCC_USB30_PRIM_GDSC) & (1u << 31)); c++) {
 +			delay(10);
 +		}
 +		printf("SWEET USB: GDSC usb30_prim 0x%08x -> 0x%08x\n",
 +		    gdsc, usb_rd(gcc, GCC_USB30_PRIM_GDSC));
 +
-+		printf("SWEET USB: AHB2PHY BCR pre: 0x%08x\n",
-+		    usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR));
-+		*(volatile uint32_t *)(gcc + GCC_USB_PHY_CFG_AHB2PHY_BCR) = 0;
-+		__asm__ volatile ("dsb sy" ::: "memory");
-+		delay(1000);
++		/* AHB2PHY block reset: bit 0 (and its SW mirror, bit 1) deassert low. */
++		uint32_t ahbbcr = usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR);
++		printf("SWEET USB: AHB2PHY BCR pre: 0x%08x\n", ahbbcr);
++		if (ahbbcr & 3u) {
++			*(volatile uint32_t *)(gcc + GCC_USB_PHY_CFG_AHB2PHY_BCR) = ahbbcr & ~3u;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(1000);
++		}
 +		printf("SWEET USB: AHB2PHY BCR post: 0x%08x\n",
 +		    usb_rd(gcc, GCC_USB_PHY_CFG_AHB2PHY_BCR));
 +
@@ -211,7 +222,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,42 +1006,39 @@
+@@ -878,42 +1021,39 @@
  		return;
  	}
  
