@@ -1349,5 +1349,16 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
    - This fires wake events into `backboardd` to dismiss the boot splash and reveal the Lock Screen/Home Screen.
    - Flashed `shim-boot-0105.img` to `boot` partition.
 
+**2026-10-22, 07:35 - Run 10 Diagnosis & Run 11 Deployment with USB Gadget (`sweetusb=2`).**
+
+1. **Analyzed Run 10 Log (`/tmp/log-run10.txt`):**
+   - Zero crashes maintained.
+   - `SweetHIDButtons` fired simulated key 0x40 (`kHIDUsage_Csmr_Menu`), but on iPhone X (`D22AP`) the device has no physical Home button; display wake requires Side button (`kHIDUsage_Csmr_Power` 0x30) or touch.
+   - User requested USB networking verification.
+2. **Run 11 Deployed (`payload-picasso-0106.bin`):**
+   - Set `sweetusb=2` with `sweetusblog=0` and `debug=0x14e`.
+   - Flashed `shim-boot-0106.img` to `boot` partition. Ready to monitor USB network interface on host.
+
+
 
 
