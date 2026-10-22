@@ -75,6 +75,7 @@
   gQcomPkgTokenSpaceGuid.PcdStorageIsUfs3|FALSE
 
 [LibraryClasses]
+  PlatformUsbfnLib|picassoPkg/Library/PlatformUsbfnLib/PlatformUsbfnLib.inf
   # Bring-up: skip the secure-boot/ACPI setup in BootManagerLib (those need
   # drivers we do not ship yet and hang before the console is up).
   PlatformBootManagerLib|picassoPkg/Library/PlatformBootManagerLibNull/PlatformBootManagerLibNull.inf
@@ -89,6 +90,8 @@
   ConfigurationMapLib|picassoPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
 
 [Components]
+  picassoPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
+  picassoPkg/Library/PlatformUsbfnLib/PlatformUsbfnLib.inf
   MdeModulePkg/Application/UiApp/UiApp.inf
   MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
   #

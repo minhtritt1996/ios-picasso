@@ -53,6 +53,14 @@ dependency is only needed for x86 images):
   950/980 confirm the call and the lookup. The app's HII UI does not draw
   because there is no SimpleTextIn driver yet (no button/keyboard driver).
 
+- `Drivers/UsbfnDwc3Dxe` (adapted from the Samsung open driver: ChipInfo
+  dependency removed, package references pointed at picassoPkg) and
+  `Library/PlatformUsbfnLib` (picasso PHY: GDSC, AHB2PHY reset, Femto PHY,
+  VBUS override, QSCRATCH UTMI handshake). Both build into the FD; BDS still
+  completes (digit 7) with them present. They expose `EFI_USBFN_IO_PROTOCOL`,
+  not `EFI_USB_DEVICE_PROTOCOL`, so a fastboot transport on UsbFnIo is the next
+  piece (Mu has no open producer of the latter).
+
 ## State reached (2026-10-22)
 
 BootShim runs, copies the FD to 0xA3000000, SEC runs: memory map, HOBs and FV

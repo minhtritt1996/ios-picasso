@@ -1,0 +1,8 @@
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = picassoPkg
+  PACKAGE_GUID      = 6C2E7F1A-3B4D-4E8A-9F52-1A7C0D3B5E64
+  PACKAGE_VERSION   = 1.0
+
+[Includes]
+  Include

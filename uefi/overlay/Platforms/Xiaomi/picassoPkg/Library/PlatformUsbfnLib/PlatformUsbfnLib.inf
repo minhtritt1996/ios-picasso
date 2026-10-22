@@ -1,0 +1,22 @@
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = PlatformUsbfnLib
+  FILE_GUID      = 5F1B5E8C-2C7A-4E6B-9C31-8D1F0B2A7C55
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = PlatformUsbfnLib
+
+[Sources]
+  PlatformUsbfnLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  picassoPkg/picasso.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  IoLib
+  BaseMemoryLib
+  TimerLib
