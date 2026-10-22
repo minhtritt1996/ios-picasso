@@ -27,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 09:03:38.784705071 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 09:05:15.331075820 +0700
-@@ -151,6 +151,36 @@
+@@ -151,6 +151,35 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -45,7 +45,6 @@
 +#define GUSB3PIPECTL         0xc2c0
 +#define GUSB3PIPECTL_SUSPHY  (1u << 17)
 +#define GCC_USB_PHY_CFG_AHB2PHY_BCR 0x6a000
-+#define GCC_USB30_PRIM_GDSCR 0x0f004 /* PA 0x10f004, offset from GCC base */
 +#define GCC_QUSB2PHY_PRIM_BCR 0x12000
 +#define HSPHY_PA             0x088e3000
 +#define HSPHY_SIZE           0x1000
@@ -64,7 +63,7 @@
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -273,7 +303,7 @@
+@@ -273,7 +302,7 @@
  	dwc_wr(DEPCMDPAR1(ep), p1);
  	dwc_wr(DEPCMDPAR2(ep), p2);
  	dwc_wr(DEPCMD(ep), cmd | DEPCMD_CMDACT);
@@ -73,7 +72,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +313,10 @@
+@@ -283,9 +312,10 @@
  			}
  			return 0;
  		}
@@ -86,7 +85,7 @@
  	return -1;
  }
  
-@@ -715,10 +746,12 @@
+@@ -715,10 +745,12 @@
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -103,7 +102,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -866,7 +899,138 @@
+@@ -866,7 +898,138 @@
  	ud.dma_pa = ptoa_64(pn);
  	ud_if_create();
  
@@ -243,7 +242,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,47 +1042,80 @@
+@@ -878,6 +1041,39 @@
  		return;
  	}
  
@@ -256,11 +255,11 @@
 +	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
 +
 +	/*
-+	 * 6. Route the UTMI clock to the controller. On a high-speed-only port
-+	 *    without a SuperSpeed PHY, dwc3-msm does this in its POST_RESET
-+	 *    event: assert PIPE_UTMI_CLK_DIS, then select the UTMI pipe clock
-+	 *    and force PHYSTATUS, then release PIPE_UTMI_CLK_DIS. Without it the
-+	 *    endpoint commands never complete (ep0 SETEPCONFIG timeout).
++	 * 6. Route the UTMI clock to the controller. A high-speed-only port has
++	 *    no SuperSpeed PHY, so dwc3-msm does this in its POST_RESET event:
++	 *    assert PIPE_UTMI_CLK_DIS, select the UTMI pipe clock and force
++	 *    PHYSTATUS, then release PIPE_UTMI_CLK_DIS. Without it the endpoint
++	 *    commands never complete (ep0 SETEPCONFIG timeout).
 +	 */
 +	if (qs != 0) {
 +		uint32_t gen = usb_rd(qs, QSCRATCH_GENERAL_CFG);
@@ -283,39 +282,25 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
- 	dwc_wr(GEVNTCOUNT, dwc_rd(GEVNTCOUNT) & 0xffff);
- 	ud.evt_pos = 0;
- 
--	/* High speed, address 0 */
-+	/* High speed (480 Mbps) mode on picasso (physical USB 2.0 port), address 0 */
- 	uint32_t dcfg = dwc_rd(DCFG) & ~(7u | (0x7fu << 3));
- 	dwc_wr(DCFG, dcfg | 0);
+@@ -890,29 +1086,34 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
 -	/* Endpoint 0 OUT/IN: start config, control type, max packet 512 until connect done. */
--	/* Endpoint 0 OUT/IN: start config, control type, max packet 64 for HighSpeed until connect done. */
--	uint32_t ep0_mps = 64;
 -	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG, 0, 0, 0) ||
 -	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
--	    ud_epcmd(0, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (0u << 25), 0) ||
 -	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
 -	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
--	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (ep0_mps << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
 -	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
 -		printf("SWEET USB: endpoint 0 setup failed\n");
--		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
--		return;
--	}
--	dwc_wr(DALEPENA, 0x3);
-+	/* Endpoint 0 OUT/IN: control type, max packet 64 for HighSpeed. */
++	/*
++	 * Endpoint 0 OUT/IN: control type, max packet 64 at HighSpeed. The host
++	 * already resets the port every few seconds (xhci: "device descriptor
++	 * read/64, error -110"), so retry instead of failing the boot on the
++	 * first attempt, and log each attempt with the core's status.
++	 */
 +	uint32_t ep0_mps = 64;
 +	int ep0_ok = 0, attempt;
-+	/*
-+	 * The host already resets the port every few seconds (xhci logs
-+	 * "device descriptor read/64, error -110"), so retry instead of
-+	 * failing the boot on the first attempt and log each attempt.
-+	 */
 +	for (attempt = 0; attempt < 20 && !ep0_ok; attempt++) {
 +		if (attempt) {
 +			delay(250000);	/* 250 ms */
@@ -332,11 +317,11 @@
 +	}
 +	if (!ep0_ok) {
 +		printf("SWEET USB: endpoint 0 setup failed (speed 0 ep0_mps %u)\n", ep0_mps);
-+		return;
-+	}
-+	dwc_wr(DALEPENA, 0x3);
+ 		return;
+ 	}
+ 	dwc_wr(DALEPENA, 0x3);
  	ud_start_setup();
- 
+-
 -	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
 -	if (qs != 0) {
 -		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
@@ -348,10 +333,9 @@
 -		printf("SWEET USB: VBUS override on: HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 -		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
 -	}
--
+ 
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
  	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
- 		delay(1000);
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:38.783705078 +0700
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp	2026-10-22 09:03:55.684593567 +0700
 @@ -419,6 +419,7 @@
