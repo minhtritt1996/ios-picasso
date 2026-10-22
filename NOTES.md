@@ -1389,9 +1389,12 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
      - Removed the `PIPE_UTMI_CLK_DIS` clock-killing sequence while preserving VBUS session override (`HS_PHY_CTRL` / `SS_PHY_CTRL`), LPM clear (`SUSPHY` / `ENBLSLPM`), clock gating disable (`GCTL_DSBLCLKGTNG`), and 100ms `ud_epcmd` timeout.
 2. **Added Power Button Wake to `SweetHIDButtons::testFired`:**
    - In `SweetHID.cpp`: Added `self->key(kHIDUsage_Csmr_Power, press);` alongside Menu press so automatic wake events properly register on buttonless iPhone X (`D22AP`).
-3. **Committed & Pushed to picasso Remote:**
-   - Commit `d7d27e6`, pushed to `picasso/main`.
-   - GitHub Actions workflow run `39702767175` started building new kernel artifact.
+3. **Run 13 Built & Deployed (`payload-picasso-0108.bin`):**
+   - Packaged new kernel from CI run `39702769666` (commit `d7d27e6` with SM7250 DWC3 clock watchdog fix and Power button wake).
+   - Set `sweetusb=2`, `sweetusblog=0`, `sweethidtest=5`, `sweetfb_keepon=1`, `debug=0x14e`.
+   - Built `shim/out/shim-boot.img` (36,352,000 bytes, MD5 `fadf98898c198c6846f10216c369d0f8`).
+   - Flashed directly to `/dev/block/bootdevice/by-name/boot` (`/dev/block/sde55`) via recovery ADB, readback MD5 verified 100%.
+   - Ready to reboot and monitor USB gadget CDC-ECM network interface (`ue0` @ `192.168.7.2`).
 
 
 
