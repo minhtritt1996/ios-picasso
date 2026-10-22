@@ -27,7 +27,7 @@
  				fFB->fPowerOff = off;
 --- a/bsd/dev/sweet_usb.c	2026-10-22 01:40:47.137752414 +0700
 +++ b/bsd/dev/sweet_usb.c	2026-10-22 01:52:00.287526950 +0700
-@@ -151,6 +151,10 @@
+@@ -151,6 +151,12 @@
  #define GEVNTADRHI      0xc404
  #define GEVNTSIZ        0xc408
  #define GEVNTCOUNT      0xc40c
@@ -35,16 +35,22 @@
 +#define GUSB2PHYCFG     0xc200
 +#define GUSB2PHYCFG_SUSPHY   (1u << 6)
 +#define GUSB2PHYCFG_ENBLSLPM (1u << 8)
++#define GUSB3PIPECTL    0xc2c0
++#define GUSB3PIPECTL_SUSPHY (1u << 17)
  #define DCFG            0xc700
  #define DCTL            0xc704
  #define DEVTEN          0xc708
-@@ -269,11 +273,15 @@
+@@ -269,11 +275,19 @@
  static int
  ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
  {
 +	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
 +	if (phycfg & (GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM)) {
 +		dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	}
++	uint32_t pipecfg = dwc_rd(GUSB3PIPECTL);
++	if (pipecfg & GUSB3PIPECTL_SUSPHY) {
++		dwc_wr(GUSB3PIPECTL, pipecfg & ~GUSB3PIPECTL_SUSPHY);
 +	}
  	dwc_wr(DEPCMDPAR0(ep), p0);
  	dwc_wr(DEPCMDPAR1(ep), p1);
@@ -55,7 +61,7 @@
  		uint32_t v = dwc_rd(DEPCMD(ep));
  		if (!(v & DEPCMD_CMDACT)) {
  			uint32_t status = (v >> 12) & 0xf;
-@@ -283,9 +291,10 @@
+@@ -283,9 +297,10 @@
  			}
  			return 0;
  		}
@@ -63,12 +69,12 @@
 +	delay(10);
  	}
 -	printf("SWEET USB: ep%u cmd 0x%x timeout\n", ep, cmd & 0xf);
-+	printf("SWEET USB: ep%u cmd 0x%x timeout (DEPCMD 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x)\n",
-+	    ep, cmd & 0xf, dwc_rd(DEPCMD(ep)), dwc_rd(GCTL), dwc_rd(GUSB2PHYCFG));
++	printf("SWEET USB: ep%u cmd 0x%x timeout (DEPCMD 0x%08x GCTL 0x%08x GUSB2PHYCFG 0x%08x GUSB3PIPECTL 0x%08x)\n",
++	    ep, cmd & 0xf, dwc_rd(DEPCMD(ep)), dwc_rd(GCTL), dwc_rd(GUSB2PHYCFG), dwc_rd(GUSB3PIPECTL));
  	return -1;
  }
  
-@@ -867,6 +876,25 @@
+@@ -867,6 +882,28 @@
  	ud_if_create();
  
  	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
@@ -83,32 +89,35 @@
 +		    usb_rd(qs, QSCRATCH_HS_PHY_CTRL), usb_rd(qs, QSCRATCH_SS_PHY_CTRL));
 +	}
 +
-+	/* Clear SUSPHY and ENBLSLPM, disable clock gating before soft reset */
++	/* Clear SUSPHY and ENBLSLPM on USB2 & USB3 PHYs, disable clock gating before soft reset */
 +	uint32_t phycfg = dwc_rd(GUSB2PHYCFG);
 +	dwc_wr(GUSB2PHYCFG, phycfg & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	uint32_t pipecfg = dwc_rd(GUSB3PIPECTL);
++	dwc_wr(GUSB3PIPECTL, pipecfg & ~GUSB3PIPECTL_SUSPHY);
 +	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
 +	delay(10000);	/* 10 ms */
-+	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x GCTL 0x%08x\n",
-+	    phycfg, dwc_rd(GUSB2PHYCFG), dwc_rd(GCTL));
++	printf("SWEET USB: GUSB2PHYCFG 0x%08x -> 0x%08x GUSB3PIPECTL 0x%08x -> 0x%08x GCTL 0x%08x\n",
++	    phycfg, dwc_rd(GUSB2PHYCFG), pipecfg, dwc_rd(GUSB3PIPECTL), dwc_rd(GCTL));
 +
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +906,13 @@
+@@ -878,6 +915,14 @@
  		return;
  	}
  
 +	/* Post-reset settle delay for DWC3 3.30a clock domain re-sync */
 +	delay(100000);	/* 100 ms */
 +
-+	/* Re-apply GUSB2PHYCFG and GCTL after soft reset */
++	/* Re-apply GUSB2PHYCFG, GUSB3PIPECTL and GCTL after soft reset */
 +	dwc_wr(GUSB2PHYCFG, dwc_rd(GUSB2PHYCFG) & ~(GUSB2PHYCFG_SUSPHY | GUSB2PHYCFG_ENBLSLPM));
++	dwc_wr(GUSB3PIPECTL, dwc_rd(GUSB3PIPECTL) & ~GUSB3PIPECTL_SUSPHY);
 +	dwc_wr(GCTL, dwc_rd(GCTL) | GCTL_DSBLCLKGTNG);
 +
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -902,7 +937,6 @@
+@@ -902,7 +947,6 @@
  	dwc_wr(DALEPENA, 0x3);
  	ud_start_setup();
  
