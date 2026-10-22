@@ -73,6 +73,23 @@ SMMU wall, the UEFI/USB route is a real project, not a quick experiment.
 Machine state after D1: flash the normal image with `sweetusb=1` so the phone
 boots iOS without touching USB.
 
+
+### D2 progress: Mu-Silicium tree ready, build driver needs Python 3.11
+
+- Cloned `Mu-Silicium` to `/home/tritm/mu-silicium` (3.3 GB with submodules).
+  No lito package; closest is `KodiakPkg` (SM7325).
+- Its `build_uefi.py` needs `tomllib` (Python 3.11+); this host defaults to
+  3.10. A venv with `python3.11 -m venv .venv` plus `pip install -r
+  pip-requirements.txt` works; use `.venv/bin/python build_uefi.py -d <device>`.
+- Platform anatomy (from `lisa`): `Platforms/<Vendor>/<dev>Pkg/{dev.dsc, dev.fdf,
+  DeviceBuild.py, Library/MemoryMapLib, Library/ConfigurationMapLib}`,
+  `Resources/Configs/<dev>.toml` (`[uefi_fd] base/size`), and
+  `Binaries/<dev>/` for the DXE image set. lisa's FD is `0x9FD00000`+`0x200000`
+  inside the same reserved window picasso has (`0x9F400000`+`0xC00000`).
+- Open, reusable USB stack: `Silicon/Samsung/SamsungPkg/Drivers/UsbfnDwc3Dxe`
+  (2.4k lines) expects a board `PlatformUsbfnLib`; that library is where our
+  PMIC-rail/GDSC/AHB2PHY/Femto-PHY/QSCRATCH sequence goes.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<

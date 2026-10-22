@@ -93,6 +93,13 @@ while [ $# -gt 0 ]; do
 		cflags="$cflags $2"
 		shift
 		;;
+	--small)
+		# A shim-only image small enough for "fastboot boot" (which the
+		# bootloader limits to 256 KB): no payload, no embedded DTB, parts
+		# packed near the kernel so the file stays tiny.
+		arg_small=1
+		;;
+	
 	--extra=*)
 		extra="${1#--extra=}"
 		;;
@@ -107,6 +114,11 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [ -n "$extra" ] && cmdline="$cmdline $extra"
+if [ "${arg_small:-0}" = 1 ]; then
+	ramdisk_offset=0x40000
+	dtb_offset=0x100000
+	dtb=/nonexistent-dtb
+fi
 
 # Where the bootloader will put the ramdisk, and how big it is. The loader
 # needs it: the tree this phone carries has no initrd properties, and the
