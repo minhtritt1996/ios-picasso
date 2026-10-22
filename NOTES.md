@@ -1,6 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 15:35, latest)
+## Agent handoff / active work (2026-10-22 16:00, latest)
+
+### >>> UPDATE 2026-10-22 (bisect: sweetusbstep=0 stays at the Apple logo; crash is after ep0 config) <<<
+
+1. **Run 31 (commit `1fa8a01`) adds `sweetusbstep=N`**: 0 = return right after ep0
+   is configured, 1 = also `DALEPENA` + `ud_start_setup()`, 2 = also
+   `RUN_STOP`, default 99 = everything. The step comes from the payload
+   cmdline, so bisecting costs a payload rebuild, not a kernel build:
+   `tools/picasso-boot.sh xnu/out-0088-run31/kernel.development.sweet "sweetusbstep=0"`.
+2. **`sweetusbstep=0` result:** image MD5 `8bfc93d3…` flashed and verified; the
+   phone **shows the Apple logo and stays there** (user-reported), no reboot.
+   So ep0 configuration itself is fine and the crash is later: either
+   `DALEPENA`/`ud_start_setup()` (step 1) or `RUN_STOP`/threads (step 2).
+3. **Next:** flash `sweetusbstep=1`; if it still reaches the logo, the fault is
+   in `RUN_STOP`/`ud_thread`; if it reboots, it is `ud_start_setup()`
+   (`ud_start_trb` + `DEPCMD_STARTTRANSFER`).
+4. Reminder: the `darwin` ring stays stale for these boots because the early
+   `sweet_log_flush()` does not reach the partition at ~3 s and the periodic
+   flush is 10 s away; the step gates are the reliable signal for now.
+
+## Agent handoff (2026-10-22 15:35)
 
 ### >>> UPDATE 2026-10-22 (Run 29: ep0 SETEPCONFIG now works; phone reboots right after — Run 30 adds log flush) <<<
 
