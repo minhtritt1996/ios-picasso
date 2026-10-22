@@ -1,6 +1,32 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 15:20, latest)
+## Agent handoff / active work (2026-10-22 15:35, latest)
+
+### >>> UPDATE 2026-10-22 (Run 29: ep0 SETEPCONFIG now works; phone reboots right after — Run 30 adds log flush) <<<
+
+1. **Run 29 (commit `8b7ae57`, image MD5 `d4f89030…`) — the UTMI clock routing was
+   the missing piece.** Console (photo of the screen):
+   ```
+   SWEET USB: GENERAL_CFG pre: 0x00000004
+   SWEET USB: GENERAL_CFG post: 0x0000000d
+   SWEET USB: ep0 attempt 0 ok (GINTSTS 0x40204000 GSTS 0x7e000000 DSTS 0x00d20001)
+   ```
+   `SETEPCONFIG` completes on the first try. Every earlier timeout was the
+   missing `PIPE_UTMI_CLK_DIS` -> `PIPE_UTMI_CLK_SEL|PIPE3_PHYSTATUS_SW` ->
+   clear handshake from `dwc3-msm`'s POST_RESET event.
+2. **But the phone reboots right after that line** and the `darwin` ring still
+   holds Run 26's content (MD5 `b4d9cb53…`). Cause: `sweet_log_thread` sleeps
+   `SWEET_LOG_SECS` = 10 s between writes, so a panic within that window is
+   lost. The crash is between `ep0 ok` and the first flush.
+3. **Run 30 (commit `e4fb042`, CI `39747239877`):** `sweet_log_flush()` (wakeup
+   on the log channel) added to `sweet_ufs.c`; `sweet_usb.c` flushes right after
+   ep0 is configured and again after `ud_start_setup()` (new line
+   `ep0 started, running`), each with a 20 ms settle. Validated against the real
+   build tree (both files byte-exact).
+4. **Next:** flash Run 30, let it reboot, pull `darwin`; the log will show how
+   far it got after `ep0 started, running` (panic text included).
+
+## Agent handoff (2026-10-22 15:20)
 
 ### >>> UPDATE 2026-10-22 (patch 0088 had been silently skipped; regenerated — Run 29) <<<
 
