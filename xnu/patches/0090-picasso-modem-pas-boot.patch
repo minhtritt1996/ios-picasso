@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,866 @@
+@@ -0,0 +1,867 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -608,8 +608,9 @@
 +		LOG("modem SMP2P item %u already exists: the modem is not cold, not touching it", ITEM_SMP2P_IN);
 +		return false;
 +	}
-+	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0) {
-+		LOG("no \"modem\" partition");
++	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0 &&
++	    sweet_ufs_part("modem_a", &part_lba, &part_blocks) != 0) {
++		LOG("no \"modem\" or \"modem_a\" partition");
 +		return false;
 +	}
 +	LOG("modem partition: block 0x%llx, %llu MiB", part_lba, part_blocks * 4096 >> 20);
