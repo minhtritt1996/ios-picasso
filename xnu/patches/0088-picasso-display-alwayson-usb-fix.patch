@@ -136,7 +136,7 @@
  			printf("SWEET USB: connected, speed %u\n", speed);
  		} else if (type == 0) {
  			printf("SWEET USB: disconnect\n");
-@@ -864,9 +910,166 @@
+@@ -864,9 +910,186 @@
  		return;
  	}
  	ud.dma_pa = ptoa_64(pn);
@@ -227,6 +227,26 @@
 +			printf("SWEET USB: SMMU IDR0 0x%08x CR0 0x%08x GBPA 0x%08x S2CR(e0) 0x%08x CBAR(0) 0x%08x\n",
 +			    usb_rd(smmu, 0x0000), usb_rd(smmu, 0x0020), usb_rd(smmu, 0x0044),
 +			    usb_rd(smmu, 0x8000 + (0xe0 << 3)), usb_rd(smmu, 0x6000));
++			/*
++			 * sweetusbsmmu=2: put the USB stream into BYPASS so the
++			 * controller's DMA uses physical addresses. S2CR.TYPE is
++			 * bits[3:0] of the word (0 fault, 1 bypass, 2 translate);
++			 * GBPA bit0 UPDATE lets a bypass take effect unless bit1
++			 * ABORT is set.
++			 */
++			if (smmu_probe >= 2) {
++				uint32_t s2off = 0x8000 + (0xe0 << 3);
++				uint32_t s2 = usb_rd(smmu, s2off);
++				uint32_t gbpa = usb_rd(smmu, 0x0044);
++				*(volatile uint32_t *)(smmu + s2off) = (s2 & ~0x3fu) | 1u;
++				__asm__ volatile ("dsb sy" ::: "memory");
++				if (gbpa & 2u) {	/* ABORT: allow bypass again */
++					*(volatile uint32_t *)(smmu + 0x0044) = gbpa & ~2u;
++					__asm__ volatile ("dsb sy" ::: "memory");
++				}
++				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
++				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
++			}
 +		}
 +	}
 +
@@ -304,7 +324,7 @@
  	dwc_wr(DCTL, DCTL_CSFTRST);
  	int i;
  	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
-@@ -878,6 +1081,39 @@
+@@ -878,6 +1101,39 @@
  		return;
  	}
  
@@ -344,7 +364,7 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
-@@ -890,28 +1126,46 @@
+@@ -890,28 +1146,46 @@
  	/* Events: disconnect, USB reset, connect done */
  	dwc_wr(DEVTEN, 0x7);
  
@@ -409,7 +429,7 @@
  	}
  
  	dwc_wr(DCTL, dwc_rd(DCTL) | DCTL_RUN_STOP);
-@@ -919,6 +1173,10 @@
+@@ -919,6 +1193,10 @@
  		delay(1000);
  	}
  	printf("SWEET USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
