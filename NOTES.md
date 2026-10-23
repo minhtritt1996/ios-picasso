@@ -527,6 +527,26 @@ Now instrumented behind boot args (one kernel):
 - `tools/pdm-dump.py` asks a working pd-mapper for its domain list (qrtr-lookup finds the
   port); run it on Droidian to copy the vendor database exactly.
 
+### Service-id bugs fixed (2026-10-24, kernel 250c412, payload shim a4832e0e)
+Two announced QRTR triples were wrong, both proven against the reference servers:
+- tftp: linux-msm/tqftpserv does `qrtr_publish(fd, 4096, 1, 0)`; the port announced
+  version 5. The modem's WLAN PIL loader fetches
+  /readonly/firmware/image/wlanmdsp.mbn over tftp (strings in modem.b22:
+  "/readonly/firmware/image/wlanmdsp.mbn", "/readonly/vendor/firmware_mnt/image/..."),
+  so a version mismatch means the loader never finds a server and wlan_pd never starts.
+- rmtfs: linux-msm/rmtfs publishes (14, 1, 0); the port announced 0x15 (21), which is the
+  modem-side "modem EFS" service id. qrtr-lookup on the working install shows
+  14 ver 1 inst 0 "Remote file system service" (node 1) and 21 on node 0.
+Also fixed: qrtr_new_server packs `instance << 8 | version`; the port masked the instance
+to 8 bits.
+Payload ready: shim/out/shim-boot.img md5 a4832e0e2378236452a4b9bc2a29e0ed, cmdline
+modem=1 modem_watch=3 modem_glink_ms=60000 modem_recovery=1 modem_wlan_power=1
+modem_wlansmmu=1 modem_recovery_after=90000.
+Expected if the theory holds: `tftp RRQ /readonly/firmware/image/wlanmdsp.mbn`, then
+qrtr NEW_SERVER 0x45 (WLFW) and a `msm/modem/wlan_pd` indication.
+Phone was unreachable at 2026-10-24 00:40 (no adb on either host, Droidian ssh timeout),
+so this kernel is built but not yet flashed.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
