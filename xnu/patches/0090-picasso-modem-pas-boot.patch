@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3185 @@
+@@ -0,0 +1,3253 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2306,6 +2306,8 @@
 +#define VMID_HLOS           3
 +#define VMID_MSS_MSA        15
 +#define VMID_NAV            0x2B
++#define VMID_WLAN           24
++#define VMID_WLAN_CE        25
 +#define PERM_RW             6
 +
 +static const struct { const char *path, *part; } rmtfs_parts[] = {
@@ -2333,6 +2335,56 @@
 +		return sweet_ufs_pwrite(lun, first, blocks, off, buf, len);
 +	}
 +	return sweet_ufs_pread(lun, first, blocks, off, buf, len);
++}
++
++/* Generalised SCM hyp_assign_phys: hand [addr, addr+size) to HLOS plus the
++ * listed VMIDs with the given permissions, exactly the record layout
++ * rmtfs_mem/icnss_assign_msa_perm build. */
++static uint64_t
++hyp_assign(uint64_t addr, uint64_t size, const uint32_t *vmids, uint32_t nelems)
++{
++	vm_offset_t va = 0;
++	uint64_t pa, args[8];
++	uint64_t *p;
++	uint32_t *src, *dst;
++
++	if (kmem_alloc_contig(kernel_map, &va, 0x1000, PAGE_MASK, 0, 0,
++	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
++		return ~0ull;
++	}
++	pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++	p = (uint64_t *)va;
++	p[0] = addr;
++	p[1] = size;
++	src = (uint32_t *)(p + 8);
++	src[0] = VMID_HLOS;
++	dst = (uint32_t *)(p + 16);
++	for (unsigned i = 0; i < nelems; i++) {
++		dst[6 * i] = vmids[i];
++		dst[6 * i + 1] = PERM_RW;
++	}
++	p[32] = 4;
++	p[33] = pa + 0x80;
++	p[34] = nelems * 24;
++	p[35] = 0;
++	mb();
++	args[0] = SCM_FN(0x0C, 0x16);
++	args[1] = 7 | (1 << 4) | (1 << 8) | (1 << 12);
++	args[2] = pa;
++	args[3] = 16;
++	args[4] = pa + 0x40;
++	args[5] = pa + 0x100;
++	args[6] = 0;
++	args[7] = 0;
++	smc_call(args);
++	for (unsigned n = 0; args[0] == 1 && n < 100000; n++) {
++		uint64_t again[8] = { 1, args[1], args[2], args[3], args[4], args[5], args[6], 0 };
++		memcpy(args, again, sizeof(args));
++		smc_call(args);
++	}
++	LOG("hyp_assign %llx+%llx: ret=%llx res=%llx", addr, size, args[0], args[1]);
++	kmem_free(kernel_map, va, 0x1000);
++	return args[0] != 0 ? args[0] : args[1];
 +}
 +
 +static uint64_t
@@ -3113,7 +3165,23 @@
 +			}
 +		}
 +	}
-+	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
++	{
++		/* icnss hands the WLAN firmware MSA region to the modem's WLAN
++		 * VMs before telling the FW about it; doing it earlier is the
++		 * only way to test whether the modem needs write access for the
++		 * wlanmdsp.mbn it fetches over tftp. modem_msa_assign=1 gives it
++		 * to MSS_MSA+WLAN, 2 adds WLAN_CE. */
++		uint32_t msa_assign = 0;
++		PE_parse_boot_argn("modem_msa_assign", &msa_assign, sizeof(msa_assign));
++		if (msa_assign) {
++			uint32_t vm[3] = { VMID_MSS_MSA, VMID_WLAN, VMID_WLAN_CE };
++			uint64_t r = hyp_assign(WLAN_MSA_PA, WLAN_MSA_SIZE, vm,
++			    msa_assign >= 2 ? 3 : 2);
++			LOG("wlan MSA assign rc %lld", r);
++		}
++	}
++static uint64_t
++rmtfs_assign(uint64_t addr, uint64_t size)
 +	{
 +		/* Does the bootloader leave the WLAN firmware in its MSA region? */
 +		IOMemoryMap *msa = map_phys(WLAN_MSA_PA, WLAN_MSA_SIZE, false);
