@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3486 @@
+@@ -0,0 +1,3462 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2524,101 +2524,73 @@
 +	return sweet_ufs_pread(lun, first, blocks, off, buf, len);
 +}
 +
-+/* Generalised SCM hyp_assign_phys: hand [addr, addr+size) to HLOS plus the
-+ * listed VMIDs with the given permissions, exactly the record layout
-+ * rmtfs_mem/icnss_assign_msa_perm build. */
++/*
++ * SCM memory protection assign, exactly as qcom_scm_assign_mem() builds it:
++ *   x2 = qcom_scm_mem_map_info {mem_addr, mem_size}   (args[0], 16 bytes)
++ *   x4 = source VMID array (u32 each, HLOS only)      (args[2])
++ *   dest = qcom_scm_current_perm_info {vmid, perm, ctx, ctx_size} (16 B each)
++ * and because the call has 7 arguments the SCM convention puts args[3..6]
++ * (src_sz, dest_phys, dest_sz, 0) in a buffer whose address goes in x5.
++ * (__qcom_scm_assign_mem -> SVC_MP/0x16.)
++ */
 +static uint64_t
 +hyp_assign(uint64_t addr, uint64_t size, const uint32_t *vmids, uint32_t nelems)
 +{
 +	vm_offset_t va = 0;
-+	uint64_t pa, args[8];
-+	uint64_t *p;
-+	uint32_t *src, *dst;
++	uint64_t pa, in[8], args[8];
++	uint8_t *base;
++	uint32_t *src, *dest;
++	uint64_t *mm, *ext;
++	unsigned i, n;
 +
++	if (nelems == 0 || nelems > 4) {
++		return ~0ull;
++	}
 +	if (kmem_alloc_contig(kernel_map, &va, 0x1000, PAGE_MASK, 0, 0,
 +	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
 +		return ~0ull;
 +	}
 +	pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
-+	p = (uint64_t *)va;
-+	p[0] = addr;
-+	p[1] = size;
-+	src = (uint32_t *)(p + 8);
++	base = (uint8_t *)va;
++	src = (uint32_t *)base;                     /* offset 0 */
 +	src[0] = VMID_HLOS;
-+	dst = (uint32_t *)(p + 16);
-+	for (unsigned i = 0; i < nelems; i++) {
-+		dst[6 * i] = vmids[i];
-+		dst[6 * i + 1] = PERM_RW;
++	mm = (uint64_t *)(base + 64);               /* ALIGN(4,64) */
++	mm[0] = addr;
++	mm[1] = size;
++	dest = (uint32_t *)(base + 128);            /* ALIGN(16,64)+ALIGN(4,64) */
++	dest[0] = VMID_HLOS;
++	dest[1] = PERM_RW;
++	dest[2] = 0;
++	dest[3] = 0;
++	for (i = 0; i < nelems; i++) {
++		dest[4 + 4 * i + 0] = vmids[i];
++		dest[4 + 4 * i + 1] = PERM_RW;
++		dest[4 + 4 * i + 2] = 0;
++		dest[4 + 4 * i + 3] = 0;
 +	}
-+	p[32] = 4;
-+	p[33] = pa + 0x80;
-+	p[34] = nelems * 24;
-+	p[35] = 0;
++	ext = (uint64_t *)(base + 0x300);           /* args[3..6] */
++	ext[0] = 4;
++	ext[1] = pa + 128;
++	ext[2] = (uint64_t)(nelems + 1) * 16;
++	ext[3] = 0;
 +	mb();
-+	args[0] = SCM_FN(0x0C, 0x16);
-+	args[1] = 7 | (1 << 4) | (1 << 8) | (1 << 12);
-+	args[2] = pa;
-+	args[3] = 16;
-+	args[4] = pa + 0x40;
-+	args[5] = pa + 0x100;
-+	args[6] = 0;
-+	args[7] = 0;
-+	smc_call(args);
-+	for (unsigned n = 0; args[0] == 1 && n < 100000; n++) {
-+		uint64_t again[8] = { 1, args[1], args[2], args[3], args[4], args[5], args[6], 0 };
-+		memcpy(args, again, sizeof(args));
++	in[0] = SCM_FN(0x0C, 0x16);
++	in[1] = 7 | (1u << 4) | (1u << 8) | (1u << 12);
++	in[2] = pa + 64;                            /* mem_to_map */
++	in[3] = 16;
++	in[4] = pa;                                 /* src */
++	in[5] = pa + 0x300;                         /* extended args */
++	in[6] = 0;
++	in[7] = 0;
++	for (n = 0; n < 100000; n++) {
++		memcpy(args, in, sizeof(args));
 +		smc_call(args);
++		if (args[0] != 1) {                 /* 1 = INTERRUPTED, retry */
++			break;
++		}
 +	}
-+	LOG("hyp_assign %llx+%llx: ret=%llx res=%llx", addr, size, args[0], args[1]);
-+	kmem_free(kernel_map, va, 0x1000);
-+	return args[0] != 0 ? args[0] : args[1];
-+}
-+
-+static uint64_t
-+rmtfs_assign(uint64_t addr, uint64_t size)
-+{
-+	static const uint32_t vmids[] = { VMID_HLOS, VMID_MSS_MSA, VMID_NAV };
-+	vm_offset_t va = 0;
-+	uint64_t pa, args[8];
-+	uint64_t *p;
-+	uint32_t *src, *dst;
-+	unsigned n;
-+
-+	if (kmem_alloc_contig(kernel_map, &va, 0x1000, PAGE_MASK, 0, 0,
-+	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
-+		return ~0ull;
-+	}
-+	pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
-+	p = (uint64_t *)va;
-+	p[0] = addr;
-+	p[1] = size;
-+	src = (uint32_t *)(p + 8);
-+	src[0] = VMID_HLOS;
-+	dst = (uint32_t *)(p + 16);
-+	for (unsigned i = 0; i < 3; i++) {
-+		dst[6 * i] = vmids[i];
-+		dst[6 * i + 1] = PERM_RW;
-+	}
-+	p[32] = 4;
-+	p[33] = pa + 0x80;
-+	p[34] = 3 * 24;
-+	p[35] = 0;
-+	mb();
-+	args[0] = SCM_FN(0x0C, 0x16);
-+	args[1] = 7 | (1 << 4) | (1 << 8) | (1 << 12);
-+	args[2] = pa;
-+	args[3] = 16;
-+	args[4] = pa + 0x40;
-+	args[5] = pa + 0x100;
-+	args[6] = 0;
-+	args[7] = 0;
-+	smc_call(args);
-+	for (n = 0; args[0] == 1 && n < 100000; n++) {
-+		uint64_t again[8] = { 1, args[1], args[2], args[3], args[4], args[5], args[6], 0 };
-+		memcpy(args, again, sizeof(args));
-+		smc_call(args);
-+	}
-+	LOG("rmtfs: SCM assign %llx+%llx to modem: ret=%llx res=%llx", addr, size, args[0], args[1]);
++	LOG("scm assign %llx+%llx vmid %x: ret=%lld res=%lld", addr, size, vmids[0],
++	    (long long)args[0], (long long)args[1]);
 +	kmem_free(kernel_map, va, 0x1000);
 +	return args[0] != 0 ? args[0] : args[1];
 +}
@@ -2642,7 +2614,11 @@
 +	}
 +	rmtfs_va = (uint8_t *)va;
 +	rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
-+	r = rmtfs_assign(rmtfs_pa, RMTFS_BUF_SIZE);
++	{
++		static const uint32_t vm[1] = { VMID_MSS_MSA };
++
++		r = hyp_assign(rmtfs_pa, RMTFS_BUF_SIZE, vm, 1);
++	}
 +	LOG("rmtfs: shared buffer %llx+%llx assign %llx", rmtfs_pa,
 +	    (uint64_t)RMTFS_BUF_SIZE, r);
 +}
