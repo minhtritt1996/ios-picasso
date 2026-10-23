@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,905 @@
+@@ -0,0 +1,917 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -635,6 +635,14 @@
 +		return false;
 +	}
 +
++	/* Sanity check that SMC reaches the secure monitor at all: SCM_SVC_INFO
++	 * (0x06) cmd 0x01 is the version query every qcom_scm probe does. */
++	{
++		uint64_t r = 0, r2 = 0;
++		uint64_t s = scm(SCM_FN(0x06, 0x01), 1, 0, 0, 0, &r);
++		uint64_t s2 = scm(SCM_FN(0x06, 0x02), 1, 0, 0, 0, &r2);
++		LOG("SCM info: is_call_avail ret=%llx res=%llx, get_version ret=%llx res=%llx", s, r, s2, r2);
++	}
 +	/* The device tree says qcom,pas-id = 4, but TrustZone is the authority:
 +	 * probe the ids and use the first one it accepts as the modem. */
 +	{
@@ -651,13 +659,17 @@
 +			}
 +		}
 +		if (id_supported == ~0u) {
-+			LOG("no PAS id is supported (PAS disabled for apps?)");
-+			goto out_fat;
++			/* Android boots this modem with the very same service, so do
++			 * not trust the gate: try the device-tree id anyway. */
++			LOG("no PAS id reported supported; trying id %u regardless", PAS_ID_MODEM);
++			pas_id = PAS_ID_MODEM;
++			goto after_probe;
 +		}
 +		pas_id = id_supported;
 +		st = scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, pas_id, 0, 0, &res);
 +		LOG("using PAS id %u (ret=%llx res=%llx)", pas_id, st, res);
 +	}
++after_probe:
 +
 +	/* The .mdt is small: read it whole, it holds the ELF header and phdrs. */
 +	{
