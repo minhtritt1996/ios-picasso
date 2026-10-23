@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2371 @@
+@@ -0,0 +1,2492 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -723,9 +723,12 @@
 +static uint32_t q_ver = 1, q_modem_node = QRTR_NODE_BCAST;
 +static bool q_hello_sent, q_hello_rx, q_lookup_sent, q_announced;
 +
-+/* host services (pd-mapper, tftp), defined further down */
++/* host services (pd-mapper, tftp) and the PDR client, defined further down */
 +static bool svc_rx(uint32_t src_node, uint32_t src_port, uint32_t dst_port, const uint8_t *data, uint32_t len);
 +static void svc_announce(void);
++static void pdr_register(void);
++static uint32_t pdr_node, pdr_port;
++static bool pdr_sent;
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
 +static unsigned g_ms;                           /* watch time, for the log */
@@ -1000,6 +1003,10 @@
 +			q_srv[q_srv_count].port = c->d;
 +			q_srv_count++;
 +		}
++		if (c->a == 0x42 && c->d != 0) {
++			pdr_node = c->c;
++			pdr_port = c->d;
++		}
 +		if (c->a == QMI_SVC_WLFW) {
 +			LOG("t=%u ms: *** WLFW service 0x45 up: inst %x node %u port %x ***", g_ms, c->b, c->c, c->d);
 +		}
@@ -1231,6 +1238,9 @@
 +	if (chan_up() && q_hello_rx && !q_announced) {
 +		svc_announce();
 +		q_announced = true;
++	}
++	if (chan_up() && q_hello_rx && pdr_port != 0 && !pdr_sent) {
++		pdr_register();
 +	}
 +	if (chan_up() && !q_hello_sent) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_HELLO, 0, 0, 0, 0 };
@@ -1779,6 +1789,111 @@
 +	return true;
 +}
 +
++/* ---------------------------------------------------------------- PDR client */
++
++/*
++ * The vendor icnss is a PDR client: it registers interest in the WLAN PD
++ * (service path "wlan/fw") with servreg-notif (0x42) on the modem. That
++ * registration is what makes the modem start the wlan PD, load its ELF via
++ * the elf_loader service (tftp to us) and finally register WLFW.
++ */
++#define PORT_PDR            0x4200
++#define SERVREG_REGISTER_LISTENER 0x20
++#define SERVREG_STATE_UPDATED_IND 0x22
++
++static uint16_t pdr_txn = 1;
++
++static void
++qm_init_req(struct qmsg *m, uint16_t txn, uint16_t msg)
++{
++	m->b = (uint8_t *)IOMalloc(8192);
++	m->n = 9;
++	if (m->b != NULL) {
++		bzero(m->b, 8192);
++		m->b[0] = QMI_REQ;
++		memcpy(m->b + 1, &txn, 2);
++		memcpy(m->b + 3, &msg, 2);
++	}
++}
++
++static void
++pdr_register(void)
++{
++	static const char path[] = "wlan/fw";
++	struct qmsg m;
++	uint8_t enable = 1;
++
++	qm_init_req(&m, pdr_txn++, SERVREG_REGISTER_LISTENER);
++	if (m.b == NULL) {
++		return;
++	}
++	qm_tlv(&m, 0x01, &enable, 1);
++	qm_tlv(&m, 0x02, path, (uint16_t)strlen(path));
++	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
++	pdr_sent = true;
++	LOG("t=%u ms: PDR register listener \"wlan/fw\" -> node %u port %x", g_ms, pdr_node, pdr_port);
++}
++
++/* responses and state indications arrive on PORT_PDR */
++static bool
++pdr_rx(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
++{
++	if (d[0] != QMI_RESP) {
++		return true;
++	}
++	uint16_t txn, msg;
++	memcpy(&txn, d + 1, 2);
++	memcpy(&msg, d + 3, 2);
++	if (msg == SERVREG_REGISTER_LISTENER) {
++		uint16_t result = 0xffff, error = 0;
++		uint8_t state = 0xff;
++		uint32_t i = 7;
++		while (i + 3 <= len) {
++			uint8_t t = d[i];
++			uint16_t l;
++			memcpy(&l, d + i + 1, 2);
++			if (i + 3 + l > len) {
++				break;
++			}
++			if (t == 0x02 && l >= 4) {
++				memcpy(&result, d + i + 3, 2);
++				memcpy(&error, d + i + 5, 2);
++			} else if (t == 0x10 && l >= 1) {
++				state = d[i + 3];
++			}
++			i += 3 + l;
++		}
++		LOG("t=%u ms: PDR register listener resp: result %u error %u state 0x%x",
++		    g_ms, result, error, state);
++		return true;
++	}
++	if (msg == SERVREG_STATE_UPDATED_IND) {
++		uint32_t i = 7, state = 0xffffffff;
++		char name[64];
++		name[0] = 0;
++		while (i + 3 <= len) {
++			uint8_t t = d[i];
++			uint16_t l;
++			memcpy(&l, d + i + 1, 2);
++			if (i + 3 + l > len) {
++				break;
++			}
++			if (t == 0x01 && l >= 4) {
++				memcpy(&state, d + i + 3, 4);
++			} else if (t == 0x02 && l >= 1) {
++				uint32_t n = MIN(l, (uint16_t)63);
++				memcpy(name, d + i + 3, n);
++				name[n] = 0;
++			}
++			i += 3 + l;
++		}
++		LOG("t=%u ms: PDR state %s = %u", g_ms, name[0] ? name : "?", state);
++		return true;
++	}
++	LOG("t=%u ms: PDR msg %x (%u bytes)", g_ms, msg, len);
++	return true;
++}
++
 +/* ---------------------------------------------------------------- service dispatch */
 +
 +static bool
@@ -1799,6 +1914,12 @@
 +			if (op == OP_RRQ || op == OP_WRQ) {
 +				tftp_request(src_node, src_port, data, len);
 +			}
++		}
++		return true;
++	}
++	if (dst_port == PORT_PDR) {
++		if (len >= 7) {
++			pdr_rx(src_node, src_port, data, len);
 +		}
 +		return true;
 +	}
