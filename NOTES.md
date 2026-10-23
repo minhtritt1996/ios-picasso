@@ -398,6 +398,19 @@ are implemented and verified, and can be resumed when the PDR detail is known.
 Next track: GPU (Adreno 620) with ios-sailfish's KGSL-lite + Mesa as the reference; the
 device already has a620_zap.mdt/b00/b01/b02 in /vendor/firmware.
 
+### rmtfs is part of the modem's boot (2026-10-23)
+The modem issues rmtfs QMI at t=2 ms: `OPEN "boot/modem_fs1"` (no leading slash).
+With the service announced and the path matched, OPEN answers success (caller id in TLV
+0x10) — but **nothing follows**: no ALLOC_BUFF, no IOVEC, and still no WLFW/tftp.
+Implementation in PicassoModem.cpp now covers OPEN/CLOSE/RW_IOVEC/ALLOC_BUFF against
+modemst1/modemst2/fsc/fsg with a 3 MiB contiguous buffer assigned through SCM
+hyp_assign_phys (0x0c/0x16, HLOS+MSS_MSA(15)+NAV(0x2b)); writes are not persisted.
+Also fixed: `qmi_result` is one 4-byte TLV 0x02 ({u16 result, u16 error}), not the
+generic split 0x02/0x03 pair — though the modem's behaviour did not change.
+Next suspects for the dead end after OPEN: the exact OPEN response bytes (dump them),
+whether the modem expects the four files opened in a specific order, or that it needs the
+`svc`/`sysfs` variants of the rmtfs service instance (announced instance 1 here).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
