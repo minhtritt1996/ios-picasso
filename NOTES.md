@@ -225,6 +225,30 @@ Test loop: build payload with `--cmdline "modem=1 modem_watch=25 <base>"`, dd to
 `tools/picasso-modem-log.sh`. Artifacts: `tools/gh-artifact.sh RUN xnu-kernel OUT.zip`
 (8 ranged connections, ~35 s for 60 MB).
 
+### >>> MILESTONE 2026-10-23: modem DSP boots under XNU (PAS works) <<<
+Live run 9 (`modem=1`, kernel cd3214b):
+```
+phdrs=35 hash=1 region 8c000000..9b800000 relocate=1
+metadata: ehdr 1172 + hash 8248 = 9420 (mdt 9420, hash off 1000)  -> packed
+metadata: kmem_alloc_contig kr=0 ... pa=144364000
+init_image:    ret=0 res=0 resumes=2
+mem_setup:     ret=0 res=0
+segments loaded
+auth_and_reset: ret=0 res=0 resumes=35
+t=32 ms: modem SMP2P item 435 up (v1, 1 entries)
+t=58 ms: slave-kernel 00000006 READY HANDOVER
+```
+So TrustZone's PAS does work for the AP: `is_supported` answers 0 for every id and
+`SCM_SVC_INFO get_version` answers -1, but `init_image`/`mem_setup`/`auth_and_reset`
+all succeed with the device-tree id 4. The metadata must be exactly what Linux's
+`qcom_mdt_read_metadata()` builds (header 1172 bytes + packed hash 8248), and the
+carveout is 0x8C000000 + 0xF800000.
+
+Next (Wi-Fi step 2): GLINK/QRTR to the modem, host services (pd-mapper, tftp, rmtfs),
+WLFW (WLAN firmware out of reset), then WMI/HTC/HTT and the Apple80211 shim.
+Reference: ios-topaz patches 0118, 0121, 0122 (0113-0117 are now superseded by
+PicassoModem.cpp for the boot).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
