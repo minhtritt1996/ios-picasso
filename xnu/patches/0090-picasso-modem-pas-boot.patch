@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2892 @@
+@@ -0,0 +1,2920 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2773,6 +2773,34 @@
 +	}
 +	LOG("watch done: slave-kernel %08x, %s", last, ready ? "READY" : "NOT ready");
 +	return ready;
++}
++
++/*
++ * Next boot goes to recovery: write the Android BCB command "boot-recovery"
++ * into the misc partition and reset through PSCI. Without it every test would
++ * need the Power+VolumeDown dance.
++ */
++static void
++reboot_to_recovery(void)
++{
++	static const char bcb[32] = { 'b', 'o', 'o', 't', '-', 'r', 'e', 'c', 'o', 'v', 'e', 'r', 'y' };
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	int err;
++	uint64_t a[8] = { 0x84000009ULL, 0, 0, 0, 0, 0, 0, 0 };
++
++	err = sweet_ufs_part("misc", &first, &blocks, &lun);
++	if (err == 0) {
++		err = sweet_ufs_pwrite(lun, first, blocks, 0, bcb, sizeof(bcb));
++	}
++	LOG("recovery: misc LUN %u block 0x%llx, BCB write %d", lun, first, err);
++	if (err != 0) {
++		return;                         /* leave the phone alone if unsure */
++	}
++	IOSleep(200);
++	LOG("recovery: PSCI SYSTEM_RESET");
++	smc_call(a);
++	LOG("recovery: PSCI reset returned");
 +}
 +
 +/* Independent of the modem/GLINK path: after modem_recovery_after ms, write the
