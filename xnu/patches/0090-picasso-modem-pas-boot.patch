@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1696 @@
+@@ -0,0 +1,1731 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -46,6 +46,7 @@
 +extern "C" ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 +extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun);
 +extern "C" int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
++extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, const void *src, uint32_t len);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
 +
@@ -1639,6 +1640,34 @@
 +	LOG("SMEM %s: %u items", what, n);
 +}
 +
++/*
++ * Next boot goes to recovery: write the Android bootloader control block
++ * ("boot-recovery" in the misc partition's command field) and reset through
++ * PSCI. This removes the manual Power+VolumeDown step after every test.
++ */
++static void
++reboot_to_recovery(void)
++{
++	static const char bcb[32] = { 'b', 'o', 'o', 't', '-', 'r', 'e', 'c', 'o', 'v', 'e', 'r', 'y' };
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	int err;
++	uint64_t a[8] = { 0x84000009ULL, 0, 0, 0, 0, 0, 0, 0 };
++
++	err = sweet_ufs_part("misc", &first, &blocks, &lun);
++	if (err == 0) {
++		err = sweet_ufs_pwrite(lun, first, blocks, 0, bcb, sizeof(bcb));
++	}
++	LOG("recovery: misc LUN %u block 0x%llx, BCB write %d", lun, first, err);
++	if (err != 0) {
++		return;                         /* leave the phone alone if unsure */
++	}
++	IOSleep(200);
++	LOG("recovery: PSCI SYSTEM_RESET");
++	smc_call(a);
++	LOG("recovery: PSCI reset returned");
++}
++
 +static void
 +modem_thread(void *arg __unused, wait_result_t wr __unused)
 +{
@@ -1679,6 +1708,12 @@
 +	/* keep the mapping: the modem uses SMEM from now on */
 +done:
 +	LOG("done");
++	{
++		uint32_t rec = 1;
++		if (PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) && rec) {
++			reboot_to_recovery();
++		}
++	}
 +	thread_terminate(current_thread());
 +}
 +

@@ -8,7 +8,30 @@
  extern void sweet_sample_start(void);
  extern void sweet_keys_init(void);
  extern void sweet_touch_init(void);
-@@ -300,15 +301,19 @@
+@@ -292,6 +293,22 @@
+ 	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
+ }
+ 
++/* WRITE(10) of count device blocks from the bounce buffer, any partition. */
++static int
++ufs_write_blocks_at(uint64_t lba, uint32_t count)
++{
++	if (count == 0 || count > BOUNCE_SIZE / UFS_BLOCK || lba > UINT32_MAX ||
++	    lba + count - 1 > UINT32_MAX) {
++		return EINVAL;
++	}
++	uint8_t cdb[10] = {
++		0x2a, 0,
++		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
++		0, (uint8_t)(count >> 8), (uint8_t)count, 0
++	};
++	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++}
++
+ static int
+ ufs_sync_cache(void)
+ {
+@@ -300,15 +317,19 @@
  }
  
  static int
@@ -31,7 +54,7 @@
  		return ENXIO;
  	}
  	uint64_t entry_lba;
-@@ -317,11 +322,12 @@
+@@ -317,11 +338,12 @@
  	memcpy(&nent, b + 80, 4);
  	memcpy(&esz, b + 84, 4);
  	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
@@ -45,7 +68,7 @@
  		return error;
  	}
  	for (uint32_t i = 0; i < nent; i++) {
-@@ -343,16 +349,112 @@
+@@ -343,17 +365,170 @@
  		memcpy(&first, e + 32, 8);
  		memcpy(&last, e + 40, 8);
  		if (last < first) {
@@ -61,10 +84,10 @@
  	}
 -	printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
 +	su.lun = saved;
-+	return ENOENT;
-+}
-+
-+static int
+ 	return ENOENT;
+ }
+ 
+ static int
 +ufs_gpt_entry(const char *want, uint64_t *first_out, uint64_t *last_out)
 +{
 +	return ufs_gpt_entry_lun(su.lun, want, first_out, last_out);
@@ -94,6 +117,8 @@
 +int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun);
 +int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst,
 +    uint32_t len);
++int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off,
++    const void *src, uint32_t len);
 +
 +/*
 + * Find a GPT partition on any UFS LUN: on picasso "userdata" is on LUN 0
@@ -119,9 +144,64 @@
 +			return 0;
 +		}
 +	}
- 	return ENOENT;
- }
- 
++	return ENOENT;
++}
++
++/*
++ * SWEET: write into a GPT partition other than the root one (the modem
++ * driver writes the Android BCB into "misc" to make the next boot enter
++ * recovery). Needs the device opened read-write (boot-arg ufsrw=1).
++ */
++int
++sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off,
++    const void *src, uint32_t len)
++{
++	char *b = (char *)(su.dma + DMA_BOUNCE);
++	uint8_t saved;
++	int error = 0;
++
++	if (!su.ready) {
++		return ENXIO;
++	}
++	if (!su.writable) {
++		return EROFS;
++	}
++	if (nblocks == 0 || off / UFS_BLOCK >= nblocks || len > nblocks * UFS_BLOCK - off) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	saved = su.lun;
++	su.lun = (uint8_t)lun;
++	while (len && !error) {
++		uint64_t lba = off / UFS_BLOCK;
++		uint32_t skip = (uint32_t)(off % UFS_BLOCK);
++		uint32_t want = MIN(len, BOUNCE_SIZE - skip);
++		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++
++		if (skip) {
++			/* read-modify-write the partial first block */
++			error = ufs_read_blocks(first + lba, blocks);
++			if (error) {
++				break;
++			}
++		}
++		memcpy(b + skip, src, want);
++		error = ufs_write_blocks_at(first + lba, blocks);
++		if (error) {
++			break;
++		}
++		src = (const char *)src + want;
++		off += want;
++		len -= want;
++	}
++	if (!error) {
++		error = ufs_sync_cache();
++	}
++	su.lun = saved;
++	lck_mtx_unlock(&sweet_ufs_lock);
++	return error;
++}
++
 +int
 +sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst,
 +    uint32_t len)
@@ -158,10 +238,11 @@
 +	return error;
 +}
 +
- static int
++static int
  ufs_take_over_host(void)
  {
-@@ -660,6 +762,8 @@
+ 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
+@@ -660,6 +835,8 @@
  	sweet_keys_init();
  	sweet_touch_init();
  	sweet_usb_probe();
