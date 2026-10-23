@@ -283,6 +283,28 @@ WLFW QMI service 0x45, channel "IPCRTR", lcid 1, our intents 0x4400 x 8.
   tftp (QRTR service 4096, serves /readonly/firmware/image/... from the modem partition)
   and rmtfs (QMI 14, EFS read-only). That is the next port, ~2k lines.
 
+### >>> UPDATE 2026-10-23 (host services live; modem queries pd-mapper) <<<
+GLINK/QRTR is solid. The modem talks to our services:
+- It asks pd-mapper (service 0x40) **within 2 ms** of our announcement. Requests use a
+  7-byte QMI header (type, txn, msg, msg_len) and a raw NUL-free service-name TLV
+  (`01 0f 00 "tms/pdr_enabled"`); responses must use the same header.
+- Answered so far: `tms/pdr_enabled` -> msm/modem/root_pd (1 domain), `tms/pddump_disabled`
+  -> 0 domains. No `wlan/fw` query yet, and **no tftp request at all**.
+- WLFW (0x45) still never registers, with rails voted at the vendor icnss voltages
+  (752/1800/1304/3312/3312 mV, all rc=0).
+- Vendor data checked: no pd-mapper JSON in /vendor, no wlan PIL node in the live DT,
+  icnss never calls request_firmware/PAS. `image/wlanmdsp.mbn` (3.87 MB, segments at
+  0xB0000000..0xB07B1198) exists on the modem partition for something else to load, most
+  likely the modem after it gets MSA access.
+Next ideas, in order of cost:
+1. Poll 60 s (maybe WLAN boot is slow) and log every QRTR packet.
+2. Assign the MSA region (0x8BA00000 + 0x200000) to HLOS/MSS_MSA(15)/WLAN(24) with SCM
+   hyp_assign_phys (0x0C/0x16) and copy wlanmdsp.mbn there, then see if WLFW appears.
+3. Query ssctl (0x2b, registered) for the wlan subsystem state.
+Host services implemented in PicassoModem.cpp: pd-mapper (0x40) and tftp (service 4096,
+serving /readonly/firmware/image/<name> from image/<name> via the FAT reader, cached in
+RAM); rmtfs is not implemented yet and nothing has asked for it.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
