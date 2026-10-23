@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3252 @@
+@@ -0,0 +1,3253 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1695,9 +1695,10 @@
 +		fw_dir = dir_clus;
 +	}
 +	uint32_t clus = 0, size = 0;
-+	if (fat_lookup_in(g_fat, fw_dir, name, &clus, &size) != 0 || size == 0 || size > 0x800000) {
++	if (fat_lookup_in(g_fat, fw_dir, name, &clus, &size) != 0 || size == 0 || size > 0x2000000) {
 +		return NULL;
 +	}
++	LOG("fw cache: %s %u bytes", name, size);
 +	uint8_t *data = (uint8_t *)IOMalloc(size);
 +	if (data == NULL) {
 +		return NULL;
