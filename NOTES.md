@@ -176,6 +176,24 @@ First coding step (patch 0089 in this tree):
    read the console for `PicassoModem:` lines (vfat geometry, phdrs region,
    init_image/auth_and_reset returns, slave-kernel bits), then pull the ring.
 
+### >>> UPDATE 2026-10-23 (picasso: modem driver runs; partitions live on different UFS LUNs) <<<
+1. First live run (kernel 61cd192+, `sweetusb=2`): no `PicassoModem:` lines at all, and the
+   known USB first-DMA reset rebooted the phone before anything else could be seen. With
+   `sweetusb=0` the phone boots to iOS normally, so tests now use `sweetusb=0 modem=1`.
+2. Diagnostic run (boot-args printed by the driver): the kernel receives all 323 bytes and
+   `modem=1` parses (value=1), SMEM maps and reports version 12. So the earlier silence was
+   the USB reset, not argument parsing.
+3. Real blocker found: `no "modem" partition`. Android's `by-name/modem` resolves to
+   **sde48 = UFS LUN 4** (`PARTNAME=modem`), while userdata/darwin are on LUN 0 (`sda`).
+   Each LUN has its own GPT, and sweet_ufs only read LUN 0.
+4. Fix (commit 5086cc1, patches 0089/0090): `sweet_ufs_part()` probes LUNs 0-7 and returns the
+   LUN, `sweet_ufs_pread()` takes the LUN (restoring su.lun under the lock), and the driver
+   logs `modem partition: LUN %u block 0x%llx`. Next boot should reach the FAT mount, the
+   .mdt parse (`phdrs= hash= region=`) and the PAS calls.
+5. Test recipe: build payload with `--cmdline "modem=1 modem_watch=25 <base with sweetusb=0>"`,
+   `adb dd` to `boot`, reboot, wait for iOS, hold Power+VolDown 12 s, then
+   `tools/picasso-modem-log.sh`. Note shim/build.sh needs an *absolute* payload path.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
