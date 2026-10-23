@@ -1,0 +1,97 @@
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -225,7 +225,8 @@
+ }
+ 
+ static int
+-rh_send(uint32_t address, unsigned mv)
++rh_send_cmds(uint32_t address, const uint32_t *offsets, const uint32_t *values,
++    unsigned n, const char *what)
+ {
+ 	int chosen = -1;
+ 	for (unsigned t = 0; t < RH_ACTIVE_N; ++t) {
+@@ -272,11 +273,8 @@
+ 	}
+ 	/* From here an uncertain write/timeout quarantines our slot for this boot. */
+ 	rh_poisoned = true;
+-	/* HPM (raw 7) is supported by this PMIC5 LDO; enable comes last. */
+-	const uint32_t offsets[3] = {0, 8, 4};
+-	const uint32_t values[3] = {mv, 7, 1};
+-	printf("SWEET RPMH: TCS%u ACTIVE %u mV mode=7 enable=1 irq-enable=%#x\n", t, mv, irq_en);
+-	for (unsigned c = 0; c < 3; ++c) {
++	printf("SWEET RPMH: TCS%u ACTIVE %s=%u irq-enable=%#x\n", t, what, values[0], irq_en);
++	for (unsigned c = 0; c < n; ++c) {
+ 		uint32_t cmd = b + c * RH_CMD_STRIDE;
+ 		if (!rh_sync(cmd + RH_MSGID, RH_WRITE_ACK) ||
+ 		    !rh_sync(cmd + RH_ADDR, address + offsets[c]) ||
+@@ -284,7 +282,8 @@
+ 			return EIO;
+ 		}
+ 	}
+-	if (!rh_sync(b + RH_WAIT, 7) || !rh_sync(b + RH_ENABLE, 7) ||
++	uint32_t bits = (1u << n) - 1u;
++	if (!rh_sync(b + RH_WAIT, bits) || !rh_sync(b + RH_ENABLE, bits) ||
+ 	    !rh_sync(b + RH_CONTROL, 0) || !rh_sync(b + RH_CONTROL, RH_AMC_EN)) {
+ 		return EIO;
+ 	}
+@@ -326,7 +325,7 @@
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: ACTIVE vote complete at %u mV (rail voltage requires hardware verification)\n", mv);
++	printf("SWEET RPMH: ACTIVE vote complete for %s=%u (requires hardware verification)\n", what, values[0]);
+ 	return 0;
+ }
+ 
+@@ -346,6 +345,51 @@
+ 	{ "ldoc10", 3000, 3312 },	/* wlan vdd-3.3-ch0 (pm8150a l10) */
+ };
+ 
++static int
++rh_send(uint32_t address, unsigned mv)
++{
++	/* PMIC5 LDO: HPM (raw mode 7), enable last. */
++	static const uint32_t offsets[3] = { 0, 8, 4 };
++	const uint32_t values[3] = { mv, 7, 1 };
++
++	return rh_send_cmds(address, offsets, values, 3, "mV");
++}
++
++/*
++ * RPMh ARC resources ("cx.lvl", "mss.lvl") take a *level* at address + 0.
++ * The vendor PIL votes them before auth_and_reset; without them the modem runs
++ * at whatever corner the bootloader left, which may be too low for its WLAN.
++ */
++int
++sweet_rpmh_arc_level(const char *res, unsigned level)
++{
++	uint32_t address = 0;
++	static const uint32_t offsets[1] = { 0 };
++	const uint32_t values[1] = { level };
++	int error = EIO;
++
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	if (rh_poisoned) {
++		printf("SWEET RPMH: previous uncertain transaction; refusing further access\n");
++		goto out;
++	}
++	error = rh_map();
++	if (!error) {
++		error = rh_lookup(res, &address);
++	}
++	if (!error) {
++		error = rh_send_cmds(address, offsets, values, 1, res);
++	}
++out:
++	if (error) {
++		printf("SWEET RPMH: arc %s level %u failed errno=%d\n", res, level, error);
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
++
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {

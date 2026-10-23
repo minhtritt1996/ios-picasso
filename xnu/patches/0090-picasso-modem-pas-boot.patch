@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3072 @@
+@@ -0,0 +1,3079 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -48,6 +48,7 @@
 +extern "C" int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, const void *src, uint32_t len);
 +extern "C" int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++extern "C" int sweet_rpmh_arc_level(const char *res, unsigned level);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
 +
@@ -2998,6 +2999,12 @@
 +			int r5 = sweet_rpmh_vreg_enable("ldoc11", 3312);
 +			LOG("wlan rails rc: ldoa1 %d, ldoa14 %d, ldoc2 %d, ldoc10 %d, ldoc11 %d",
 +			    r1, r2, r3, r4, r5);
++			/* The vendor PIL votes the modem's own corners (RPMh ARC
++			 * levels) before auth_and_reset; the device tree asks for
++			 * level 0x180 on both. */
++			int c1 = sweet_rpmh_arc_level("cx.lvl", 0x180);
++			int c2 = sweet_rpmh_arc_level("mss.lvl", 0x180);
++			LOG("modem corners: cx.lvl rc %d, mss.lvl rc %d", c1, c2);
 +		}
 +	}
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
