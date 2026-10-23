@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3079 @@
+@@ -0,0 +1,3112 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -3005,6 +3005,39 @@
 +			int c1 = sweet_rpmh_arc_level("cx.lvl", 0x180);
 +			int c2 = sweet_rpmh_arc_level("mss.lvl", 0x180);
 +			LOG("modem corners: cx.lvl rc %d, mss.lvl rc %d", c1, c2);
++		}
++	}
++	{
++		/* The WLAN MAC at 0x18800000 is a master on the apps SMMU with
++		 * stream id 0xc0 (DT iommus = <&apps_smmu 0xc0 0x1>). Linux's icnss
++		 * attaches that device to the iommu at probe, long before the modem
++		 * boots; if the stream is left faulting the WLAN core cannot DMA
++		 * and its firmware never registers wlan_pd. modem_wlansmmu=1 only
++		 * reports, 2 sets the stream to bypass. */
++		uint32_t wlansmmu = 0;
++		PE_parse_boot_argn("modem_wlansmmu", &wlansmmu, sizeof(wlansmmu));
++		if (wlansmmu) {
++			vm_offset_t smmu = ml_io_map(0x15000000, 0x10000);
++			if (smmu != 0) {
++				volatile uint32_t *r = (volatile uint32_t *)smmu;
++				uint32_t s2off = 0x8000 + (0xc0 << 3);
++				uint32_t s2 = r[s2off >> 2], cb = r[(0x6000 + (0xc0 << 2)) >> 2];
++				uint32_t gbpa = r[0x44 >> 2];
++				LOG("wlan smmu: IDR0 %08x CR0 %08x GBPA %08x S2CR(c0) %08x CBAR(c0) %08x",
++				    r[0], r[0x20 >> 2], gbpa, s2, cb);
++				if (wlansmmu >= 2 && (s2 & 0x3u) != 1u) {
++					r[s2off >> 2] = (s2 & ~0x3fu) | 1u;
++					__asm__ volatile ("dsb sy" ::: "memory");
++					if (gbpa & 2u) {
++						r[0x44 >> 2] = gbpa & ~2u;
++						__asm__ volatile ("dsb sy" ::: "memory");
++					}
++					LOG("wlan smmu: S2CR(c0) %08x -> %08x GBPA -> %08x",
++					    s2, r[s2off >> 2], r[0x44 >> 2]);
++				}
++			} else {
++				LOG("wlan smmu: cannot map 0x15000000");
++			}
 +		}
 +	}
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
