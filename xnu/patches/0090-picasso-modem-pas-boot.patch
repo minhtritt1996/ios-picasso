@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2925 @@
+@@ -0,0 +1,2931 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2205,9 +2205,15 @@
 +		if (!qm_string_qmi(d, len, 0x01, path, sizeof(path))) {
 +			(void)qm_string(d, len, 0x01, path, sizeof(path));    /* raw fallback */
 +		}
-+		for (i = 0; i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]); i++) {
-+			if (strcmp(path, rmtfs_parts[i].path) == 0) {
-+				break;
++		{
++			/* the modem sends "boot/modem_fs1"; the table has the leading '/' */
++			const char *want = path[0] == '/' ? path + 1 : path;
++			for (i = 0; i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]); i++) {
++				const char *have = rmtfs_parts[i].path[0] == '/' ?
++				    rmtfs_parts[i].path + 1 : rmtfs_parts[i].path;
++				if (strcmp(want, have) == 0) {
++					break;
++				}
 +			}
 +		}
 +		ok = i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]);
