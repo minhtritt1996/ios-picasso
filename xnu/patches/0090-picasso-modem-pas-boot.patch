@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1738 @@
+@@ -0,0 +1,1755 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -47,6 +47,7 @@
 +extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun);
 +extern "C" int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, const void *src, uint32_t len);
++extern "C" int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
 +
@@ -1675,6 +1676,22 @@
 +	unsigned watch = 60;
 +
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
++	/* The WLAN chip hangs off the mss, and icnss powers it before waiting for
++	 * the WLFW server: vdd-cx-mx (ldoa1), vdd-1.8-xo (ldoa14),
++	 * vdd-1.3-rfa (ldoc2), vdd-3.3-ch0/ch1 (ldoc10/11). Voltages are the
++	 * vendor device-tree init values. */
++	{
++		uint32_t power = 1;
++		if (PE_parse_boot_argn("modem_wlan_power", &power, sizeof(power)) && power) {
++			int r1 = sweet_rpmh_vreg_enable("ldoa1", 352);
++			int r2 = sweet_rpmh_vreg_enable("ldoa14", 1616);
++			int r3 = sweet_rpmh_vreg_enable("ldoc2", 1144);
++			int r4 = sweet_rpmh_vreg_enable("ldoc10", 3000);
++			int r5 = sweet_rpmh_vreg_enable("ldoc11", 3200);
++			LOG("wlan rails rc: ldoa1 %d, ldoa14 %d, ldoc2 %d, ldoc10 %d, ldoc11 %d",
++			    r1, r2, r3, r4, r5);
++		}
++	}
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
 +	smem_map = map_phys(SMEM_PA, SMEM_SIZE, true);
 +	if (smem_map == NULL) {
