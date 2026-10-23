@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3253 @@
+@@ -0,0 +1,3293 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -740,6 +740,7 @@
 +static uint32_t pdr_restart_want;
 +static bool pdr_restarted;
 +static void pdr_restart_pd(const char *path);
++static void wlfw_send_probe(void);
 +static void pdr_register(void);
 +static void reboot_to_recovery(void);
 +static void ns_rx(uint32_t src_node, uint32_t src_port, const uint8_t *p, uint32_t len);
@@ -747,6 +748,8 @@
 +static void pdr_query(void);
 +static void pdr_register_nolen(const char *path);
 +static uint32_t pdr_node, pdr_port;
++static uint32_t wlfw_node, wlfw_port;
++static bool wlfw_probe, wlfw_probed;
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
 +static uint32_t pdr_instance;
@@ -1047,6 +1050,9 @@
 +		}
 +		if (c->a == QMI_SVC_WLFW) {
 +			LOG("t=%u ms: *** WLFW service 0x45 up: inst %x node %u port %x ***", g_ms, c->b, c->c, c->d);
++			wlfw_node = c->c;
++			wlfw_port = c->d;
++			wlfw_probe = true;
 +		}
 +		break;
 +	case QRTR_TYPE_DATA:
@@ -1304,6 +1310,10 @@
 +			pdr_query();
 +		}
 +	}
++	if (wlfw_probe && !wlfw_probed) {
++		wlfw_probed = true;
++		wlfw_send_probe();
++	}
 +	if (chan_up() && !q_hello_sent) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_HELLO, 0, 0, 0, 0 };
 +		qrtr_send(QRTR_TYPE_HELLO, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
@@ -1439,6 +1449,7 @@
 +#define PORT_TFTP           0x4002
 +#define PORT_SESS           0x4100
 +#define PORT_RMTFS          0x4003
++#define PORT_WLFW           0x4004
 +#define QMI_REQ             0
 +#define QMI_RESP            2
 +
@@ -2043,6 +2054,21 @@
 +	}
 +}
 +
++/* A WLFW server only appears once the modem's WLAN PD runs; ask it for its
++ * QMI version right away so the log proves the FW answers. */
++static void
++wlfw_send_probe(void)
++{
++	struct qmsg m;
++
++	qm_init_req(&m, svc_txn++, 0x0000);          /* QMI GET_VERSION_INFO */
++	if (m.b == NULL) {
++		return;
++	}
++	qm_send(&m, PORT_WLFW, wlfw_node, wlfw_port);
++	LOG("t=%u ms: WLFW version-info request -> node %u port %x", g_ms, wlfw_node, wlfw_port);
++}
++
 +/* variant sweep for the register-listener string encoding of "wlan/fw":
 + * 0 = QMI string (u8 len + chars), 1 = with NUL, 2 = raw NUL-terminated */
 +/* (service name, instance) pairs: the instance comes from the locator in
@@ -2630,6 +2656,20 @@
 +			pdr_rx(src_node, src_port, data, len);
 +		}
 +		return true;
++	}
++	if (dst_port == PORT_WLFW) {
++		uint16_t txn = 0, msg = 0, mlen = 0;
++
++		if (len >= 7) {
++			memcpy(&txn, d + 1, 2);
++			memcpy(&msg, d + 3, 2);
++			memcpy(&mlen, d + 5, 2);
++		}
++		LOG("t=%u ms: WLFW reply msg %x txn %u len %u: %02x %02x %02x %02x %02x %02x",
++		    g_ms, msg, txn, mlen, len > 0 ? d[0] : 0, len > 1 ? d[1] : 0,
++		    len > 2 ? d[2] : 0, len > 3 ? d[3] : 0, len > 4 ? d[4] : 0,
++		    len > 5 ? d[5] : 0);
++		return;
 +	}
 +	if (dst_port >= PORT_SESS && dst_port < PORT_SESS + 8) {
 +		return tftp_session(dst_port, data, len);
