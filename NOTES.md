@@ -655,6 +655,25 @@ a size belongs, hence res=56. hyp_assign() now builds exactly the vendor layout.
 Still open: whether the modem accepts our runtime buffer address in the ALLOC_BUFF
 reply or insists on the DT qcom,rmtfs-mem carveout (its IOVEC used 0x41f58000).
 
+### rmtfs: TZ refuses ordinary RAM; write where the modem points (2026-10-24 06:36, 1f4e355)
+Console of the rebuilt SCM call: `scm assign 145ed8000+300000 vmid f: ret=-2 res=-536870925`.
+The call shape is now the vendor's (a wrong shape gave ret=-1 res=56), so TZ
+understands it and still refuses: this SoC does not let the AP hand ordinary
+kernel RAM (kmem_alloc_contig) to the modem VMs.
+Reference behaviour (linux-msm/rmtfs sharedmem.c): rmtfs_mem_ptr() returns
+`rmem->base + phys_address - rmem->address`, i.e. the IOVEC phys_offset is an
+absolute physical address inside the memory device - so the modem names the
+buffer it wants, and nothing forces it to be the AP's buffer.
+There is **no rmtfs carveout** in the picasso DT (reserved-memory has smem@80900000,
+removed@80b00000 304 MiB, pil_wlan_fw@8ba00000 2 MiB, modem_wlan@8c000000 248 MiB,
+linux,cma without reg).
+New approach (1f4e355): the IOVEC read path maps the address from the entry
+(4 GiB.., <=8 MiB per entry) cache-inhibited and reads the EFS sectors straight
+into it in 256 KiB chunks; the shared buffer is only used for ALLOC_BUFF replies
+and is now allocated below 4 GiB because the modem's request carries a 32-bit
+address. Observed modem addresses: 0x41f58000 (plausible DDR) and 0x3ed82000
+(below DDR, rejected by the range check).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
