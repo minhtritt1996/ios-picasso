@@ -1,6 +1,49 @@
 --- a/bsd/dev/sweet_rpmh.c
 +++ b/bsd/dev/sweet_rpmh.c
-@@ -225,7 +225,8 @@
+@@ -165,7 +165,7 @@
+ }
+ 
+ static int
+-rh_lookup(const char *res, uint32_t *address)
++rh_lookup_entry(const char *res, unsigned want_type, uint32_t *address, unsigned *type_out)
+ {
+ 	uint32_t key[2] = {0, 0};
+ 	for (unsigned i = 0; i < 8 && res[i]; ++i) {
+@@ -192,12 +192,17 @@
+ 				continue;
+ 			}
+ 			uint32_t addr = rh_read(rh_db, e + 16);
+-			if (slave != RH_VRM || (addr >> 16) != RH_VRM || (addr & 15u) ||
+-			    !rh_range(aux + rh_db16(e + 22), rh_db16(e + 20))) {
+-				printf("SWEET RPMH: invalid VRM entry for %s\n", res);
++			unsigned hw = addr >> 16;
++			/* HW type: 2 = ARC (levels), 3/4 = VRM (voltage). */
++			if ((want_type && hw != want_type) || (hw != 2 && hw != 3 && hw != 4) ||
++			    (addr & 15u) || !rh_range(aux + rh_db16(e + 22), rh_db16(e + 20))) {
++				printf("SWEET RPMH: invalid entry for %s (type %u)\n", res, hw);
+ 				return EINVAL;
+ 			}
+ 			*address = addr;
++			if (type_out != NULL) {
++				*type_out = hw;
++			}
+ 			++matches;
+ 			printf("SWEET RPMH: %s addr=%#x slave=%u aux-version=%#x priority=%#x:%#x\n",
+ 			    res, addr, slave, rh_db16(h + 8),
+@@ -211,6 +216,12 @@
+ 	return 0;
+ }
+ 
++static int
++rh_lookup(const char *res, uint32_t *address)
++{
++	return rh_lookup_entry(res, RH_VRM, address, NULL);
++}
++
+ static bool
+ rh_free(unsigned t)
+ {
+@@ -225,7 +236,8 @@
  }
  
  static int
@@ -10,7 +53,7 @@
  {
  	int chosen = -1;
  	for (unsigned t = 0; t < RH_ACTIVE_N; ++t) {
-@@ -272,11 +273,8 @@
+@@ -272,11 +284,8 @@
  	}
  	/* From here an uncertain write/timeout quarantines our slot for this boot. */
  	rh_poisoned = true;
@@ -24,7 +67,7 @@
  		uint32_t cmd = b + c * RH_CMD_STRIDE;
  		if (!rh_sync(cmd + RH_MSGID, RH_WRITE_ACK) ||
  		    !rh_sync(cmd + RH_ADDR, address + offsets[c]) ||
-@@ -284,7 +282,8 @@
+@@ -284,7 +293,8 @@
  			return EIO;
  		}
  	}
@@ -34,7 +77,7 @@
  	    !rh_sync(b + RH_CONTROL, 0) || !rh_sync(b + RH_CONTROL, RH_AMC_EN)) {
  		return EIO;
  	}
-@@ -326,7 +325,7 @@
+@@ -326,7 +336,7 @@
  		return EIO;
  	}
  	rh_poisoned = false;
@@ -43,7 +86,7 @@
  	return 0;
  }
  
-@@ -346,6 +345,51 @@
+@@ -346,6 +356,53 @@
  	{ "ldoc10", 3000, 3312 },	/* wlan vdd-3.3-ch0 (pm8150a l10) */
  };
  
@@ -66,6 +109,7 @@
 +sweet_rpmh_arc_level(const char *res, unsigned level)
 +{
 +	uint32_t address = 0;
++	unsigned hwtype = 0;
 +	static const uint32_t offsets[1] = { 0 };
 +	const uint32_t values[1] = { level };
 +	int error = EIO;
@@ -79,7 +123,8 @@
 +	}
 +	error = rh_map();
 +	if (!error) {
-+		error = rh_lookup(res, &address);
++		error = rh_lookup_entry(res, 0, &address, &hwtype);
++		printf("SWEET RPMH: arc %s hw type %u addr=%#x\n", res, hwtype, address);
 +	}
 +	if (!error) {
 +		error = rh_send_cmds(address, offsets, values, 1, res);
