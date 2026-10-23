@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2939 @@
+@@ -0,0 +1,2940 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2369,10 +2369,11 @@
 +svc_announce(void)
 +{
 +	static const struct { uint32_t svc, inst, port; } list[] = {
-+		/* servreg_loc.qmi: SERVREG_QMI_VERSION 0x101, SERVREG_QMI_INSTANCE 0 */
-+		{ 0x40, 0x0, PORT_PDM },                /* servreg-locator */
-+		{ 0x1000, 0x0, PORT_TFTP },             /* tftp (QRTR service 4096) */
-+		{ 0x0e, 0x0, PORT_RMTFS },              /* rmtfs (RMTFS_QMI_INSTANCE 0) */
++		/* The modem matches on this field: with instance 0 it ignored all
++		 * three services, with 0x101/1 it queries pd-mapper and rmtfs. */
++		{ 0x40, 0x101, PORT_PDM },
++		{ 0x1000, 0x1, PORT_TFTP },
++		{ 0x0e, 0x1, PORT_RMTFS },
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc, list[i].inst, QRTR_NODE_APPS, list[i].port };
