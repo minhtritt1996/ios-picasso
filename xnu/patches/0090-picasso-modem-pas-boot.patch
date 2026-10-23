@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3151 @@
+@@ -0,0 +1,3185 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -737,6 +737,9 @@
 +/* host services (pd-mapper, tftp) and the PDR client, defined further down */
 +static bool svc_rx(uint32_t src_node, uint32_t src_port, uint32_t dst_port, const uint8_t *data, uint32_t len);
 +static void svc_announce(void);
++static uint32_t pdr_restart_want;
++static bool pdr_restarted;
++static void pdr_restart_pd(const char *path);
 +static void pdr_register(void);
 +static void reboot_to_recovery(void);
 +static void ns_rx(uint32_t src_node, uint32_t src_port, const uint8_t *p, uint32_t len);
@@ -1294,6 +1297,9 @@
 +		} else if (pdr_restart_next < 5) {
 +			pdr_restart(pdr_tries[pdr_restart_next].name);
 +			pdr_restart_next++;
++		} else if (pdr_restart_want && !pdr_restarted) {
++			pdr_restarted = true;
++			pdr_restart_pd("msm/modem/wlan_pd");
 +		} else {
 +			pdr_query();
 +		}
@@ -2081,6 +2087,29 @@
 +	if (pdr_next >= sizeof(pdr_tries) / sizeof(pdr_tries[0])) {
 +		pdr_sent = true;
 +	}
++}
++
++/* servreg-notif 0x24: ask the notifier to restart a PD. An AP-initiated
++ * restart is the only way to make the modem start wlan_pd when its own
++ * bring-up did not happen (service_notif_pd_restart() on the vendor side). */
++static void
++pdr_restart_pd(const char *path)
++{
++	struct qmsg m;
++	uint8_t str[64], n = (uint8_t)strlen(path);
++
++	if (n > 60) {
++		return;
++	}
++	qm_init_req(&m, pdr_txn++, 0x24);
++	if (m.b == NULL) {
++		return;
++	}
++	str[0] = n;
++	memcpy(str + 1, path, n);
++	qm_tlv(&m, 0x01, str, (uint16_t)(n + 1));
++	LOG("t=%u ms: PDR restart_pd \"%s\"", g_ms, path);
++	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
 +}
 +
 +/* Some Qualcomm servers still speak the old 5-byte QMI header (no msg_len
@@ -3023,6 +3052,11 @@
 +
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
 +	(void)PE_parse_boot_argn("modem_pdm", &pd_full, sizeof(pd_full));
++	{
++		uint32_t restart = 0;
++		PE_parse_boot_argn("modem_pdr_restart", &restart, sizeof(restart));
++		pdr_restart_want = restart;
++	}
 +	/* The WLAN chip hangs off the mss, and icnss powers it before waiting for
 +	 * the WLFW server: vdd-cx-mx (ldoa1), vdd-1.8-xo (ldoa14),
 +	 * vdd-1.3-rfa (ldoc2), vdd-3.3-ch0/ch1 (ldoc10/11), at the voltages
