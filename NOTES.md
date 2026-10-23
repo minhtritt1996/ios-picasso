@@ -457,6 +457,20 @@ Earlier announcements put a single number in the instance half.
 With the wrong packing the modem answered register_listener with error 9
 INVALID_HANDLE (it had never seen a matching lookup from us).
 
+### PDR retry result (2026-10-23, kernel d36da25)
+Register_listener for `msm/modem/wlan_pd` was retried every 500 ms for 31 s: every answer
+is `result 1 error 9` (INVALID_HANDLE); `wlan/fw` gives 45 (INVALID_DATA_FORMAT). So it is
+not a timing/readiness issue. With the corrected record packing our NEW_SERVER parse now
+matches qrtr-lookup exactly (`svc 42 v1 i180 node 0 port 2`).
+Working hypotheses left, cheapest first:
+1. QRTR name server: Android runs `/vendor/bin/qrtr-ns -f` on the AP. Our XNU has none, so
+   our NEW_LOOKUP (0x42, v1, i180) is not forwarded/relayed the way qrtr_ns does it, and
+   the modem's servreg may never create a client handle (hence INVALID_HANDLE).
+2. Capture the vendor kernel's exact register_listener bytes on Droidian (kprobe on the
+   QRTR send path) and diff them against ours.
+3. Modem environment: Android's PIL votes vdd_mss/vdd_cx and icnss has the WLAN SMMU group;
+   either could gate the modem's own wlan_pd start (which it does ~2.5 s after PIL).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
