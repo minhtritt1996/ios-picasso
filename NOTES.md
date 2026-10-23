@@ -508,6 +508,25 @@ Next idea: capture the **full** vendor dmesg window 15.5-19 s (boot Droidian, pl
 to see every AP action between auth_and_reset and the wlan_pd indication; the AP may send a
 QMI/SSR message we do not.
 
+### WLAN PD hunt (2026-10-24, dda31c2 + tools/pdm-dump.py)
+Measured on the working Droidian install, in this order:
+- 15.20 s `insmod qca_cld3_wlan.ko` fails; the driver is built in (`wlan` module, "Live (CO)").
+- 15.56 s PIL modem; 17.62 s the modem itself raises `msm/modem/wlan_pd`
+  (1 ms BEFORE icnss logs `QMI Server Connected`), 23.64 s `icnss: WLAN FW is ready`,
+  50.81 s the host driver initialises, `wlan0` associates.
+- No PIL entry exists for `wlan`; icnss never writes WLAN registers in the normal path
+  (the only reg_write is debugfs). So the modem boots its WLAN PD on its own.
+Conclusions: the XNU port's missing link is before WLFW: the modem must raise
+`msm/modem/wlan_pd` and register WLFW 0x45, and our modem does neither.
+Now instrumented behind boot args (one kernel):
+- `modem_pdm=2` serves every PD name found in modem.b22 (root_pd, wlan_pd, test_pd,
+  audio_pd, gps) for `tms/pdr_enabled`, and the PD paths resolve through the locator
+  (register_listener answered 9 INVALID_HANDLE with the single-entry table).
+- `modem_pdr_restart=1` sends servreg-notif 0x24 (restart PD) for msm/modem/wlan_pd.
+- `modem_wlansmmu=1|2` reports (2 also bypasses) the apps SMMU stream 0xc0 of the WLAN MAC.
+- `tools/pdm-dump.py` asks a working pd-mapper for its domain list (qrtr-lookup finds the
+  port); run it on Droidian to copy the vendor database exactly.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
