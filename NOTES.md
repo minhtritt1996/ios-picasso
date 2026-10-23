@@ -621,6 +621,24 @@ Variants prepared in shim/out (each has its md5 above the run):
 tools/bisect-modem.sh runs h,i,j in order and only believes a result when adb drops after
 the reboot and the ring's own boot-args line matches the variant.
 
+### rmtfs is now reached; EFS reads failed because the buffer was not there yet (2026-10-24 05:55)
+Bisect with tools/bisect-modem.sh (each result checked against the ring's own boot-args):
+  h (20505dc, old cmdline)  -> booted
+  i (20505dc, new cmdline)  -> booted        (so the cmdline was never the problem)
+  j (9dc9018, old cmdline)  -> the phone went to the console and did not come back on its own
+The console photo of j/the new kernel shows what actually changed:
+  announced pd-mapper 0x40 v1 i1, tftp 0x1000 v1 i0, rmtfs 14 v1 i0
+  rmtfs open "boot/modem_fs1" -> modemst1     (first time the modem ever asks)
+  rmtfs open "boot/modem_fs2" -> modemst2
+  rmtfs iovec caller 1 read FAILED            <- rmtfs_pa is still 0: the buffer is only
+                                                 created on ALLOC_BUFF (msg 4), which the
+                                                 modem sends later than its first reads
+  exec packpowermanagerd / launchd ...        (iOS userspace does start)
+Fix de02582: create and hyp_assign the 3 MiB rmtfs buffer at init (rmtfs_init_buf) instead
+of inside the GLINK receive path; payload shim/out/variant-k.img (kernel de02582,
+md5 aa3fc7c1607177f71fd6406dc9b755dc) is ready. The phone powered off right after the
+console photo and needs charging before the next cycle.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
