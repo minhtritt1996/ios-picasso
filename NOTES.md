@@ -382,6 +382,22 @@ REGISTER_LISTENER classification by name shape:
 - with an extra TLV 0x03 instance (any value tried) -> 58, a service-level error
 Still no WLFW and no tftp request, i.e. the wlan PD never starts.
 
+### PDR line closed for now (2026-10-23)
+Exhausted, all measured:
+- 7-byte header + enable(1B) + name = 45 INVALID_DATA_FORMAT for every service-style name,
+  9 INVALID_HANDLE for every domain-style name;
+- 5-byte header = 2 MALFORMED_MESSAGE (header must be 7 bytes);
+- instance TLV (0/1/180) = 58; enable 4B = 1; no enable = 17;
+- QUERY_STATE returns 0 for *any* string, so it proves nothing.
+Conclusion: the modem's servreg-notif refuses to register a listener for the WLAN service
+from a bare AP client, and without that the wlan PD never starts, so WLFW never appears.
+What would unblock it: a real Android PDR trace (logcat/dmesg from a working boot) or the
+vendor pd-mapper DB, neither of which this device exposes any more.
+Decision: park WLAN here; all lower layers (PAS boot, GLINK/QRTR, pd-mapper, tftp, rails)
+are implemented and verified, and can be resumed when the PDR detail is known.
+Next track: GPU (Adreno 620) with ios-sailfish's KGSL-lite + Mesa as the reference; the
+device already has a620_zap.mdt/b00/b01/b02 in /vendor/firmware.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
