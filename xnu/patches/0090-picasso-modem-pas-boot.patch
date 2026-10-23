@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2582 @@
+@@ -0,0 +1,2575 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1826,10 +1826,12 @@
 +
 +/* variant sweep for the register-listener string encoding of "wlan/fw":
 + * 0 = QMI string (u8 len + chars), 1 = with NUL, 2 = raw NUL-terminated */
-+static const char * const pdr_paths[] = {
-+	"wlan/fw", "wlan/fw", "wlan/fw",
++/* (service name, instance) pairs: the instance comes from the locator in
++ * Android, so sweep the plausible ones (topaz hardcoded 180). */
++static const struct { const char *name; uint32_t inst; } pdr_tries[] = {
++	{ "wlan/fw", 0 }, { "wlan/fw", 180 }, { "wlan/fw", 1 },
++	{ "msm/modem/wlan_pd", 180 }, { "msm/modem/wlan_pd", 0 },
 +};
-+#define PDR_VARIANT_COUNT 3
 +static const char * const pdr_queries[] = { "wlan/fw", "msm/modem/wlan_pd" };
 +static unsigned pdr_qnext;
 +static unsigned pdr_next;
@@ -1842,39 +1844,30 @@
 +	struct qmsg m;
 +	uint8_t enable = 1;
 +
-+	if (pdr_next >= sizeof(pdr_paths) / sizeof(pdr_paths[0])) {
++	if (pdr_next >= sizeof(pdr_tries) / sizeof(pdr_tries[0])) {
 +		return;
 +	}
-+	const char *path = pdr_paths[pdr_next++];
++	const char *path = pdr_tries[pdr_next].name;
++	uint32_t want_inst = pdr_tries[pdr_next].inst;
++	pdr_next++;
 +	qm_init_req(&m, pdr_txn++, SERVREG_REGISTER_LISTENER);
 +	if (m.b == NULL) {
 +		return;
 +	}
 +	{
 +		uint8_t str[64];
-+		static unsigned sent_so_far;
-+		unsigned variant = sent_so_far++;
 +		uint8_t n = (uint8_t)strlen(path);
 +
 +		str[0] = n;
 +		memcpy(str + 1, path, n);
-+		if (variant == 1) {
-+			/* order swap: name first, then enable */
-+			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
-+			qm_tlv(&m, 0x01, &enable, 1);
-+		} else {
-+			qm_tlv(&m, 0x01, &enable, 1);
-+			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
-+		}
-+		if (variant == 2) {
-+			uint32_t inst = 0;
-+			qm_tlv(&m, 0x03, &inst, 4);     /* service instance 0 */
-+		}
-+		LOG("t=%u ms: PDR variant %u", g_ms, variant);
++		qm_tlv(&m, 0x01, &enable, 1);
++		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		qm_tlv(&m, 0x03, &want_inst, 4);
++		LOG("t=%u ms: PDR try \"%s\" instance %u", g_ms, path, want_inst);
 +	}
-+	LOG("t=%u ms: PDR register listener \"%s\" -> node %u port %x", g_ms, path, pdr_node, pdr_port);
++	LOG("t=%u ms: PDR register listener -> node %u port %x", g_ms, pdr_node, pdr_port);
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
-+	if (pdr_next >= sizeof(pdr_paths) / sizeof(pdr_paths[0])) {
++	if (pdr_next >= sizeof(pdr_tries) / sizeof(pdr_tries[0])) {
 +		pdr_sent = true;
 +	}
 +}
