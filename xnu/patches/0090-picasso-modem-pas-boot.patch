@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3293 @@
+@@ -0,0 +1,3425 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -740,7 +740,10 @@
 +static uint32_t pdr_restart_want;
 +static bool pdr_restarted;
 +static void pdr_restart_pd(const char *path);
-+static void wlfw_send_probe(void);
++static void wlfw_start(void);
++static void wlfw_step(void);
++static bool wlfw_rx(const uint8_t *d, uint32_t len);
++static uint64_t hyp_assign(uint64_t addr, uint64_t size, const uint32_t *vmids, uint32_t nelems);
 +static void pdr_register(void);
 +static void reboot_to_recovery(void);
 +static void ns_rx(uint32_t src_node, uint32_t src_port, const uint8_t *p, uint32_t len);
@@ -749,7 +752,8 @@
 +static void pdr_register_nolen(const char *path);
 +static uint32_t pdr_node, pdr_port;
 +static uint32_t wlfw_node, wlfw_port;
-+static bool wlfw_probe, wlfw_probed;
++static bool wlfw_probe, wlfw_probed, wlfw_assigned;
++static unsigned wlfw_state, wlfw_tries, wlfw_last;
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
 +static uint32_t pdr_instance;
@@ -1312,7 +1316,12 @@
 +	}
 +	if (wlfw_probe && !wlfw_probed) {
 +		wlfw_probed = true;
-+		wlfw_send_probe();
++		wlfw_start();
++	} else if (wlfw_state >= 1 && wlfw_state <= 5 && wlfw_tries < 3 &&
++	    (ms - wlfw_last) >= 1000) {
++		wlfw_tries++;
++		wlfw_last = ms;
++		wlfw_step();
 +	}
 +	if (chan_up() && !q_hello_sent) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_HELLO, 0, 0, 0, 0 };
@@ -2054,19 +2063,153 @@
 +	}
 +}
 +
-+/* A WLFW server only appears once the modem's WLAN PD runs; ask it for its
-+ * QMI version right away so the log proves the FW answers. */
++/* ---------------------------------------------------------------- WLFW client */
++
++/*
++ * The WLAN firmware lives behind the modem: once its PD runs it registers the
++ * WLFW QMI service (QRTR 0x45) and the AP must drive the attach sequence the
++ * vendor icnss runs (icnss.c:1060): ind_register -> msa_info -> hyp_assign the
++ * MSA to the WLAN VMs -> msa_ready -> cap -> host_cap.  Message ids and TLVs
++ * are from wlan_firmware_service_v01.{h,c} (icnss generation).
++ */
++#define WLFW_IND_REGISTER   0x0020
++#define WLFW_CAP            0x0024
++#define WLFW_MSA_INFO       0x002D
++#define WLFW_MSA_READY      0x002E
++#define WLFW_HOST_CAP       0x0034
++#define WLFW_CLIENT_ID      0x4b4e454cu
++
 +static void
-+wlfw_send_probe(void)
++wlfw_start(void)
++{
++	wlfw_state = 1;
++	wlfw_tries = 0;
++	wlfw_last = 0;
++	wlfw_step();
++}
++
++static void
++wlfw_step(void)
 +{
 +	struct qmsg m;
++	uint8_t one = 1, zero = 0;
++	uint32_t v32;
++	uint16_t msg;
 +
-+	qm_init_req(&m, svc_txn++, 0x0000);          /* QMI GET_VERSION_INFO */
-+	if (m.b == NULL) {
++	if (wlfw_state < 1 || wlfw_state > 5 || wlfw_node == 0 || wlfw_port == 0) {
 +		return;
 +	}
++	switch (wlfw_state) {
++	case 1:
++		msg = WLFW_IND_REGISTER;
++		qm_init_req(&m, svc_txn++, msg);
++		if (m.b == NULL) {
++			return;
++		}
++		qm_tlv(&m, 0x10, &one, 1);              /* fw_ready_enable */
++		qm_tlv(&m, 0x13, &one, 1);              /* msa_ready_enable */
++		qm_tlv(&m, 0x14, &one, 1);              /* pin_connect_result_enable */
++		v32 = WLFW_CLIENT_ID;
++		qm_tlv(&m, 0x15, &v32, 4);              /* client_id */
++		break;
++	case 2:
++		msg = WLFW_MSA_INFO;
++		qm_init_req(&m, svc_txn++, msg);
++		if (m.b == NULL) {
++			return;
++		}
++		{
++			uint64_t base = WLAN_MSA_PA;
++
++			qm_tlv(&m, 0x01, &base, 8);         /* msa_addr */
++		}
++		v32 = WLAN_MSA_SIZE;
++		qm_tlv(&m, 0x02, &v32, 4);              /* size */
++		break;
++	case 3:
++		/* The FW may only touch the MSA once the modem's WLAN VMs own it
++		 * (icnss_assign_msa_perm_all right before msa_ready). */
++		{
++			static const uint32_t vm[2] = { 15, 24 };   /* MSS_MSA, WLAN */
++
++			if (!wlfw_assigned) {
++				wlfw_assigned = true;
++				(void)hyp_assign(WLAN_MSA_PA, WLAN_MSA_SIZE, vm, 2);
++			}
++		}
++		msg = WLFW_MSA_READY;
++		qm_init_req(&m, svc_txn++, msg);
++		if (m.b == NULL) {
++			return;
++		}
++		break;
++	case 4:
++		msg = WLFW_CAP;
++		qm_init_req(&m, svc_txn++, msg);
++		if (m.b == NULL) {
++			return;
++		}
++		break;
++	default:
++		msg = WLFW_HOST_CAP;
++		qm_init_req(&m, svc_txn++, msg);
++		if (m.b == NULL) {
++			return;
++		}
++		qm_tlv(&m, 0x10, &zero, 1);             /* daemon_support */
++		break;
++	}
 +	qm_send(&m, PORT_WLFW, wlfw_node, wlfw_port);
-+	LOG("t=%u ms: WLFW version-info request -> node %u port %x", g_ms, wlfw_node, wlfw_port);
++	LOG("t=%u ms: WLFW req %x (step %u) -> node %u port %x", g_ms, msg,
++	    wlfw_state, wlfw_node, wlfw_port);
++}
++
++/* Reply (type 2) or indication (type 4) from the FW. */
++static bool
++wlfw_rx(const uint8_t *d, uint32_t len)
++{
++	uint16_t txn = 0, msg = 0, mlen = 0;
++	const uint8_t *val;
++	uint32_t vlen;
++
++	if (len < 7) {
++		return true;
++	}
++	memcpy(&txn, d + 1, 2);
++	memcpy(&msg, d + 3, 2);
++	memcpy(&mlen, d + 5, 2);
++	if (d[0] == 4) {
++		LOG("t=%u ms: WLFW indication %x len %u", g_ms, msg, mlen);
++		return true;
++	}
++	if (d[0] != 2) {
++		return true;
++	}
++	if (qm_tlv_find(d, len, 0x02, &val, &vlen) && vlen >= 4) {
++		uint16_t result, error;
++
++		memcpy(&result, val, 2);
++		memcpy(&error, val + 2, 2);
++		LOG("t=%u ms: WLFW resp %x result %u error %u", g_ms, msg, result, error);
++		if (result != 0) {
++			LOG("t=%u ms: WLFW step %u refused; stopping", g_ms, wlfw_state);
++			wlfw_state = 0;
++			return true;
++		}
++	} else {
++		LOG("t=%u ms: WLFW resp %x (no result TLV)", g_ms, msg);
++	}
++	if (wlfw_state >= 1 && wlfw_state <= 5) {
++		wlfw_state++;
++		wlfw_tries = 0;
++		if (wlfw_state > 5) {
++			LOG("t=%u ms: WLFW attach sequence complete", g_ms);
++			wlfw_state = 0;
++		} else {
++			wlfw_step();
++		}
++	}
++	return true;
 +}
 +
 +/* variant sweep for the register-listener string encoding of "wlan/fw":
@@ -2658,18 +2801,7 @@
 +		return true;
 +	}
 +	if (dst_port == PORT_WLFW) {
-+		uint16_t txn = 0, msg = 0, mlen = 0;
-+
-+		if (len >= 7) {
-+			memcpy(&txn, data + 1, 2);
-+			memcpy(&msg, data + 3, 2);
-+			memcpy(&mlen, data + 5, 2);
-+		}
-+		LOG("t=%u ms: WLFW reply msg %x txn %u len %u: %02x %02x %02x %02x %02x %02x",
-+		    g_ms, msg, txn, mlen, len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
-+		    len > 2 ? data[2] : 0, len > 3 ? data[3] : 0, len > 4 ? data[4] : 0,
-+		    len > 5 ? data[5] : 0);
-+		return true;
++		return wlfw_rx(data, len);
 +	}
 +	if (dst_port >= PORT_SESS && dst_port < PORT_SESS + 8) {
 +		return tftp_session(dst_port, data, len);
