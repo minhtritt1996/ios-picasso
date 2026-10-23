@@ -2226,7 +2226,7 @@
 +		qm_result(&m, true);
 +		break;
 +	case 3: {                               /* RW_IOVEC */
-+			uint16_t l2 = 0;
++			uint32_t l2 = 0;
 +			const uint8_t *dir = NULL, *iov = NULL;
 +			uint32_t iovlen = 0;
 +			bool write;
