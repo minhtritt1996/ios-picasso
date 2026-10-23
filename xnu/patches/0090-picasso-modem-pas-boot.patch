@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2523 @@
+@@ -0,0 +1,2532 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2419,6 +2419,24 @@
 +}
 +
 +static void
++recovery_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	uint32_t rec = 1, delay = 45000;
++
++	if (!PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) || !rec) {
++		thread_terminate(current_thread());
++		return;
++	}
++	(void)PE_parse_boot_argn("modem_recovery_after", &delay, sizeof(delay));
++	if (delay < 2000) {
++		delay = 2000;
++	}
++	IOSleep(delay);
++	reboot_to_recovery();
++	thread_terminate(current_thread());
++}
++
++static void
 +modem_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	IOMemoryMap *smem_map;
@@ -2493,19 +2511,7 @@
 +	/* keep the mapping: the modem uses SMEM from now on */
 +done:
 +	LOG("done");
-+	{
-+		uint32_t rec = 1, delay = 11000;
-+		(void)PE_parse_boot_argn("modem_recovery_delay", &delay, sizeof(delay));
-+		if (PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) && rec) {
-+			/* the console ring is flushed every ufslogsecs (10 s): let the
-+			 * summary reach the partition before the reset drops the RAM ring */
-+			if (delay < 1000) {
-+				delay = 1000;
-+			}
-+			IOSleep(delay);
-+			reboot_to_recovery();
-+		}
-+	}
++
 +	thread_terminate(current_thread());
 +}
 +
@@ -2527,6 +2533,9 @@
 +	}
 +	started = true;
 +	if (kernel_thread_start(modem_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++	if (kernel_thread_start(recovery_thread, NULL, &thread) == KERN_SUCCESS) {
 +		thread_deallocate(thread);
 +	}
 +}
