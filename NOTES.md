@@ -352,6 +352,25 @@ C. Load `image/wlanmdsp.mbn` ourselves: the image links at IOVA 0xB0000000..0xB0
   (the 0x10 TLV in responses is a 4-byte value that looks like a modem-side address or
   an uninitialised state; QUERY_STATE returns 0x7fffffff there)
 
+### PDR register-listener: what the modem accepts (measured 2026-10-23)
+| request | answer |
+| --- | --- |
+| QUERY_STATE "wlan/fw" | result 0, error 0 (state TLV 0x7fffffff) |
+| QUERY_STATE "msm/modem/wlan_pd" | result 0, error 0 |
+| REGISTER, enable 1 byte + QMI string "wlan/fw" | error 45 INVALID_DATA_FORMAT |
+| REGISTER, same with NUL / raw NUL-terminated | error 45 |
+| REGISTER, enable 4 bytes | error 1 INTERNAL |
+| REGISTER, no enable TLV | error 17 MISSING_ARGUMENT |
+| REGISTER with "wlan", "wlan_pd", "msm/wlan/wlan_pd" | error 45 |
+| REGISTER with "msm/modem/wlan_pd", "msm/modem/wlan", "msm/modem/wlan/fw" | error 9 INVALID_HANDLE |
+So: enable must be 1 byte (missing -> 17), the service name is known to the modem (query
+succeeds), yet registration is rejected as invalid data. Unexplored knobs:
+- TLV order (0x02 before 0x01), extra TLV 0x03 (instance) or the locator's service_data,
+- the address: we send to the QRTR port from NEW_SERVER (service 0x42 inst 0xb401, port 2),
+  while qmi_helpers would qmi_add_lookup(0x42, version, instance) first,
+- maybe the AP must register as the *server* of "wlan/fw" and let the modem ask for it.
+Until this is resolved the wlan PD never starts, so WLFW never appears.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
