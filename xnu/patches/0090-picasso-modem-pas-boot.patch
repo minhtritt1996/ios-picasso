@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3503 @@
+@@ -0,0 +1,3496 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2633,13 +2633,9 @@
 +	if (rmtfs_pa != 0) {
 +		return;
 +	}
-+	/* Low memory only: the modem addresses this buffer with 32-bit
-+	 * physical addresses in its IOVEC requests. */
-+	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0,
-+	    0xFFFFFFFFull, (kma_flags_t)(KMA_DATA | KMA_ZERO),
-+	    VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
-+		LOG("rmtfs: cannot allocate %u bytes below 4 GiB",
-+		    (uint32_t)RMTFS_BUF_SIZE);
++	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
++		LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
 +		return;
 +	}
 +	rmtfs_va = (uint8_t *)va;
@@ -2716,12 +2712,9 @@
 +			uint8_t probe[16];
 +			ok = part_io(rmtfs_parts[i].part, 0, probe, sizeof(probe), false) == 0;
 +		}
-+		if (ok && rmtfs_pa == 0) {
-+			rmtfs_init_buf();       /* the first IOVEC follows within ms */
-+			ok = rmtfs_pa != 0;
-+		}
 +		if (ok) {
-+			rmtfs_load_efs();
++			rmtfs_load_efs();       /* the first IOVEC follows within ms */
++			rmtfs_init_buf();       /* best effort: ALLOC replies with it */
 +		}
 +		LOG("t=%u ms: rmtfs open \"%s\" -> %s", g_ms, path, ok ? rmtfs_parts[i].part : "FAILED");
 +		qm_result(&m, ok);
