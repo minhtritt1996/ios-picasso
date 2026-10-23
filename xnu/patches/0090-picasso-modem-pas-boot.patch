@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1038 @@
+@@ -0,0 +1,1061 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -803,7 +803,7 @@
 +			relocate = true;
 +		}
 +		min_a = MIN(min_a, ph[i].p_paddr);
-+		max_a = MAX(max_a, ph[i].p_paddr + ph[i].p_memsz);
++		max_a = MAX(max_a, (ph[i].p_paddr + ph[i].p_memsz + 0xfff) & ~0xfffu);
 +	}
 +	LOG("phdrs=%u hash=%u region %08x..%08x relocate=%u", eh->e_phnum, hash, min_a, max_a, relocate);
 +	if (hash == ~0u || min_a < MODEM_CARVEOUT || max_a > MODEM_CARVEOUT + MODEM_CARVEOUT_SIZE) {
@@ -812,25 +812,31 @@
 +		goto out_fat;
 +	}
 +
-+	/* Metadata = ELF header + phdrs + hash segment, contiguous and flushed. */
++	/*
++	 * Metadata for init_image: the ELF header + phdrs (phdrs[0].p_filesz
++	 * bytes) directly followed by the hash segment, as Linux
++	 * qcom_mdt_read_metadata() builds it. The stock modem.mdt is "split":
++	 * its size already equals header + hash, with the hash packed right
++	 * after the phdrs, so no modem.b01 read is needed here.
++	 */
 +	{
-+		uint64_t hdr = eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf32_phdr);
-+		uint64_t meta_size = hdr + ph[hash].p_filesz;
-+
++		uint64_t ehdr_size = ph[0].p_filesz;
++		uint64_t hash_size = ph[hash].p_filesz;
++		uint64_t meta_size = ehdr_size + hash_size;
 +		vm_offset_t meta_va = 0;
 +		ppnum_t meta_page = 0;
 +		kern_return_t kr;
 +
-+		if (ph[hash].p_offset + ph[hash].p_filesz > (uint64_t)mdt_size) {
-+			LOG("metadata: hash segment is outside modem.mdt");
++		LOG("metadata: ehdr %llu + hash %llu = %llu (mdt %lld, hash off %x)",
++		    ehdr_size, hash_size, meta_size, mdt_size, ph[hash].p_offset);
++		if (ehdr_size > (uint64_t)mdt_size || ehdr_size + hash_size < hash_size) {
++			LOG("metadata: header larger than modem.mdt");
 +			IOFree(mdt, (vm_size_t)mdt_size);
 +			goto out_fat;
 +		}
-+		/* Contiguous physical memory the secure monitor can read: three
-+		 * strategies, logging each, because the first one failed live. */
 +		kr = kmem_alloc_contig(kernel_map, &meta_va, (vm_size_t)meta_size, PAGE_MASK, 0, 0,
 +		    (kma_flags_t)(KMA_DATA | KMA_ZERO | KMA_PERMANENT), VM_KERN_MEMORY_IOKIT);
-+		LOG("metadata: kmem_alloc_contig(permanent) kr=%d va=%llx", kr, (uint64_t)meta_va);
++		LOG("metadata: kmem_alloc_contig kr=%d va=%llx", kr, (uint64_t)meta_va);
 +		if (kr != KERN_SUCCESS || meta_va == 0) {
 +			meta_va = 0;
 +			kr = kmem_alloc_contig(kernel_map, &meta_va, (vm_size_t)meta_size, PAGE_MASK, 0, 0,
@@ -844,24 +850,41 @@
 +			if (v != NULL) {
 +				meta = (uint8_t *)v;
 +				meta_pa = pa;
-+				goto have_meta;
++			} else {
++				LOG("metadata: every allocation failed (%llu bytes)", meta_size);
++				IOFree(mdt, (vm_size_t)mdt_size);
++				goto out_fat;
 +			}
-+			LOG("metadata: every allocation failed (%llu bytes)", meta_size);
-+			IOFree(mdt, (vm_size_t)mdt_size);
-+			goto out_fat;
++		} else {
++			meta_page = pmap_find_phys(kernel_pmap, (addr64_t)meta_va);
++			meta = (uint8_t *)meta_va;
++			meta_pa = ptoa_64(meta_page);
++			LOG("metadata: va=%llx page=%u pa=%llx", (uint64_t)meta_va, (unsigned)meta_page,
++			    meta_pa);
++			if (meta_page == 0) {
++				IOFree(mdt, (vm_size_t)mdt_size);
++				goto out_fat;
++			}
 +		}
-+		meta_page = pmap_find_phys(kernel_pmap, (addr64_t)meta_va);
-+		LOG("metadata: va=%llx page=%u pa=%llx", (uint64_t)meta_va, (unsigned)meta_page,
-+		    (uint64_t)ptoa_64(meta_page));
-+		if (meta_page == 0) {
-+			IOFree(mdt, (vm_size_t)mdt_size);
-+			goto out_fat;
++		memcpy(meta, mdt, (size_t)ehdr_size);
++		if (meta_size == (uint64_t)mdt_size) {
++			/* Split firmware: the hash is packed after the header. */
++			memcpy(meta + ehdr_size, mdt + ehdr_size, (size_t)hash_size);
++			LOG("metadata: hash packed after the header at %llu", ehdr_size);
++		} else if (ph[hash].p_offset + hash_size <= (uint64_t)mdt_size) {
++			memcpy(meta + ehdr_size, mdt + ph[hash].p_offset, (size_t)hash_size);
++			LOG("metadata: hash from modem.mdt offset %x", ph[hash].p_offset);
++		} else {
++			char name[16];
++			int64_t got;
++			snprintf(name, sizeof(name), "modem.b%02u", hash);
++			got = fw_read(&v, name, meta + ehdr_size, hash_size);
++			LOG("metadata: hash from %s: %lld of %llu", name, got, hash_size);
++			if (got != (int64_t)hash_size) {
++				IOFree(mdt, (vm_size_t)mdt_size);
++				goto out_fat;
++			}
 +		}
-+		meta = (uint8_t *)meta_va;
-+		meta_pa = ptoa_64(meta_page);
-+have_meta:
-+		memcpy(meta, mdt, hdr);
-+		memcpy(meta + hdr, mdt + ph[hash].p_offset, ph[hash].p_filesz);
 +		mb();
 +		flush_dcache64(meta_pa, (unsigned int)meta_size, TRUE);
 +
