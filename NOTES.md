@@ -265,6 +265,24 @@ Reference implementation to port: ios-topaz 0118 (GLINK/QRTR, 590 lines),
 0121 (pd-mapper/tftp/rmtfs, 2174), 0122 (WLFW, 533); QRTR node apps=1,
 WLFW QMI service 0x45, channel "IPCRTR", lcid 1, our intents 0x4400 x 8.
 
+### Wi-Fi step 2 progress 2026-10-23 (GLINK up; WLFW missing; host services next)
+- GLINK/QRTR works with the modem: VERSION/ACK, OPEN glink_ssr+IPCRTR+SSM_RTR_MODEM_APPS,
+  HELLO both ways, modem announces ssctl (0x2b) and servreg-notif (0x42). WLFW (0x45)
+  never appears, even after (a) acking every channel, (b) polling 20 s, (c) voting the
+  WLAN rails successfully.
+- WLAN rails and their *correct* voltages come from the vendor driver, not the DT init
+  values: vdd-cx-mx 752 mV, vdd-1.8-xo 1800, vdd-1.3-rfa 1304, vdd-3.3-ch0/ch1 3312
+  (icnss.c icnss_vreg_info[]). The RPMh whitelist patch 0091 had to learn ldoa1/ldoa14/
+  ldoc2/ldoc10.
+- `/vendor`/modem partition has **image/wlanmdsp.mbn** (3.87 MB, ELF, segments at
+  0xB0000000..0xB07B1198) and bdwlan.*; the *vendor icnss never loads firmware* (no
+  request_firmware, no PAS): icnss only does QMI WLFW with the modem, so the modem owns
+  the WLAN core and gets files from the AP.
+- Therefore the missing piece is likely the **host services** the modem expects from the
+  AP, exactly what ios-topaz implemented in 0121: pd-mapper (QMI servreg-locator 0x40),
+  tftp (QRTR service 4096, serves /readonly/firmware/image/... from the modem partition)
+  and rmtfs (QMI 14, EFS read-only). That is the next port, ~2k lines.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
