@@ -547,6 +547,20 @@ qrtr NEW_SERVER 0x45 (WLFW) and a `msm/modem/wlan_pd` indication.
 Phone was unreachable at 2026-10-24 00:40 (no adb on either host, Droidian ssh timeout),
 so this kernel is built but not yet flashed.
 
+### Roadmap after WLFW appears (from vendor icnss.c, 2026-10-24)
+Once the modem registers WLFW (QRTR 0x45) the AP must run this sequence before
+the host driver can attach (icnss_fw_boot, icnss.c:1060):
+1. wlfw_ind_register            (subscribe to FW indications)
+2. wlfw_msa_mem_info            (tell the FW the MSA base/size)
+3. hyp_assign the MSA (pil_wlan_fw_region 0x8ba00000, 2 MiB) to
+   VMID_MSS_MSA(15) + VMID_WLAN(24) [+ VMID_WLAN_CE(25)], perms RW
+4. wlfw_msa_ready
+5. wlfw_cap                     (host capability)
+6. wlfw_dynamic_feature_mask
+Then WMI/HTC/HTT over the WLAN QMI channels.
+The WLFW QMI message ids/TLV tables are inside /vendor/lib/modules/qca_cld3_wlan.ko
+(and the built-in icnss); extract them there when the phone is next reachable.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
