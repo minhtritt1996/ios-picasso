@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1757 @@
+@@ -0,0 +1,1766 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -679,6 +679,7 @@
 +#define QRTR_TYPE_DEL_SERVER 5
 +#define QRTR_TYPE_DEL_CLIENT 6
 +#define QRTR_TYPE_RESUME_TX 7
++#define QRTR_TYPE_NEW_LOOKUP 10
 +#define QMI_SVC_WLFW        0x45
 +
 +struct glink_msg { uint16_t cmd, p1; uint32_t p2; } __attribute__((packed));
@@ -713,7 +714,7 @@
 +static uint8_t g_asm[OUR_INTENT_SIZE];
 +static uint32_t g_asm_len;
 +static uint32_t q_ver = 1, q_modem_node = QRTR_NODE_BCAST;
-+static bool q_hello_sent, q_hello_rx;
++static bool q_hello_sent, q_hello_rx, q_lookup_sent;
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
 +static unsigned g_ms;                           /* watch time, for the log */
@@ -1202,6 +1203,14 @@
 +		advertise_intents(OUR_INTENTS, OUR_INTENT_SIZE);
 +		g_intents_sent = true;
 +		LOG("t=%u ms: IPCRTR open both ways, %u intents sent", ms, OUR_INTENTS);
++	}
++	/* the vendor icnss registers a service lookup rather than trusting the
++	 * broadcast: ask the modem's name server for WLFW (service 0x45) too */
++	if (chan_up() && q_hello_rx && !q_lookup_sent) {
++		struct qrtr_ctrl l = { QRTR_TYPE_NEW_LOOKUP, QMI_SVC_WLFW, 0, 0xFFFFFFFFu, 0 };
++		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l, sizeof(l));
++		q_lookup_sent = true;
++		LOG("t=%u ms: sent qrtr NEW_LOOKUP service %x", ms, QMI_SVC_WLFW);
 +	}
 +	if (chan_up() && !q_hello_sent) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_HELLO, 0, 0, 0, 0 };
