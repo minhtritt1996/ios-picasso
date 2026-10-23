@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1061 @@
+@@ -0,0 +1,1095 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1019,6 +1019,36 @@
 +	LOG("watch done: slave-kernel %08x, %s", last, ready ? "READY" : "NOT ready");
 +}
 +
++/* Log every private SMEM item: id, size and its first word/16 bytes. */
++static void
++smem_dump(struct smem_part_hdr *p, const char *what)
++{
++	uint8_t *e, *end;
++	unsigned n = 0;
++
++	if (p == NULL) {
++		LOG("SMEM %s: no partition", what);
++		return;
++	}
++	LOG("SMEM %s: size %u used %u cached %u", what, p->size, p->free_uncached, p->free_cached);
++	e = (uint8_t *)p + sizeof(*p);
++	end = (uint8_t *)p + p->free_uncached;
++	while (e + sizeof(struct smem_priv_entry) <= end && n < 60) {
++		struct smem_priv_entry *h = (struct smem_priv_entry *)e;
++		const uint8_t *d = e + sizeof(*h) + h->pad_hdr;
++		if (h->canary != 0xA5A5) {
++			LOG("SMEM %s: broken entry at +0x%x (canary %04x)", what,
++			    (unsigned)(e - (uint8_t *)p), h->canary);
++			break;
++		}
++		LOG("SMEM %s: item %u size %u data %02x%02x%02x%02x %02x%02x%02x%02x",
++		    what, h->item, h->size - h->pad_data, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
++		e += sizeof(*h) + h->pad_hdr + h->size;
++		n++;
++	}
++	LOG("SMEM %s: %u items", what, n);
++}
++
 +static void
 +modem_thread(void *arg __unused, wait_result_t wr __unused)
 +{
@@ -1040,6 +1070,10 @@
 +	LOG("SMEM version %u", *(volatile uint32_t *)(smem + 64 + 7 * 4) >> 16);
 +	if (modem_boot()) {
 +		modem_watch(watch);
++		/* Wi-Fi step 2 needs to know which SMEM items this modem's GLINK
++		 * uses: list the apps<->modem partition and the global one. */
++		smem_dump(smem_partition(0, 1), "apps-modem");
++		smem_dump(smem_partition(0xfffe, 0xfffe), "global");
 +	}
 +	/* keep the mapping: the modem uses SMEM from now on */
 +done:
