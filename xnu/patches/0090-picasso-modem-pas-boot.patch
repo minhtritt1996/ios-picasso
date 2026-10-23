@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2623 @@
+@@ -0,0 +1,2624 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -728,6 +728,7 @@
 +static void svc_announce(void);
 +static void pdr_register(void);
 +static void pdr_query(void);
++static void pdr_register_nolen(const char *path);
 +static uint32_t pdr_node, pdr_port;
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
