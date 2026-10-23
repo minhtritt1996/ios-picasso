@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2333 @@
+@@ -0,0 +1,2349 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1276,12 +1276,13 @@
 +qm_init(struct qmsg *m, uint16_t txn, uint16_t msg)
 +{
 +	m->b = (uint8_t *)IOMalloc(8192);
-+	m->n = 7;
++	m->n = 9;
 +	if (m->b != NULL) {
 +		bzero(m->b, 8192);
 +		m->b[0] = QMI_RESP;
 +		memcpy(m->b + 1, &txn, 2);
 +		memcpy(m->b + 3, &msg, 2);
++		/* m->b[5..6]: payload length, filled in by qm_send */
 +	}
 +}
 +
@@ -1308,11 +1309,12 @@
 +	qm_tlv(m, 0x03, &e, 2);
 +}
 +
-+/* TLV 0x01 is a length-prefixed string (u8 length, then UTF-8, no NUL) */
++/* TLVs start after the 7-byte QMI header; this stack sends the service
++ * name as a plain NUL-padded string, not a length-prefixed one. */
 +static bool
 +qm_string(const uint8_t *d, uint32_t len, uint8_t type, char *out, size_t max)
 +{
-+	uint32_t i = 0;
++	uint32_t i = 7;
 +
 +	out[0] = 0;
 +	while (i + 3 <= len) {
@@ -1323,9 +1325,11 @@
 +			return false;
 +		}
 +		if (t == type && l >= 1) {
-+			uint32_t n = MIN((uint32_t)d[i + 3], l - 1);
-+			n = MIN(n, (uint32_t)max - 1);
-+			memcpy(out, d + i + 4, n);
++			uint32_t n = 0;
++			while (n < l && n + 1 < max && d[i + 3 + n] != 0) {
++				out[n] = (char)d[i + 3 + n];
++				n++;
++			}
 +			out[n] = 0;
 +			return true;
 +		}
@@ -1338,6 +1342,8 @@
 +qm_send(struct qmsg *m, uint32_t src_port, uint32_t node, uint32_t port)
 +{
 +	if (m->b != NULL) {
++		uint16_t len = (uint16_t)(m->n - 7);
++		memcpy(m->b + 5, &len, 2);
 +		qrtr_send(QRTR_TYPE_DATA, src_port, node, port, m->b, m->n);
 +		IOFree(m->b, 8192);
 +		m->b = NULL;
@@ -1376,10 +1382,20 @@
 +	if (!qm_string(d, len, 0x01, name, sizeof(name))) {
 +		name[0] = 0;
 +	}
-+	LOG("t=%u ms: pd-mapper raw: msg %x len %u %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-+	    g_ms, msg, len, len > 0 ? d[0] : 0, len > 1 ? d[1] : 0, len > 2 ? d[2] : 0, len > 3 ? d[3] : 0,
-+	    len > 4 ? d[4] : 0, len > 5 ? d[5] : 0, len > 6 ? d[6] : 0, len > 7 ? d[7] : 0,
-+	    len > 8 ? d[8] : 0, len > 9 ? d[9] : 0, len > 10 ? d[10] : 0, len > 11 ? d[11] : 0);
++	{
++		char hex[3 * 40 + 1], asc[41];
++		uint32_t n = MIN(len, 40u), k = 0;
++		for (uint32_t i = 0; i < n; i++) {
++			static const char hx[] = "0123456789abcdef";
++			hex[k++] = hx[d[i] >> 4];
++			hex[k++] = hx[d[i] & 15];
++			hex[k++] = ' ';
++			asc[i] = (d[i] >= 32 && d[i] < 127) ? (char)d[i] : '.';
++		}
++		hex[k] = 0;
++		asc[n] = 0;
++		LOG("t=%u ms: pd-mapper msg %x len %u: %s |%s|", g_ms, msg, len, hex, asc);
++	}
 +	for (unsigned i = 0; i < sizeof(pd_map) / sizeof(pd_map[0]); i++) {
 +		if (strcmp(pd_map[i].svc, name) != 0) {
 +			continue;
