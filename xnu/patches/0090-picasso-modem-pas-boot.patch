@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1694 @@
+@@ -0,0 +1,1696 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1041,10 +1041,12 @@
 +		rx_peek(8, name, MIN(m.p2, 32u));
 +		rx_advance(n);
 +		LOG("t=%u ms: glink modem OPEN \"%s\" rcid %u", g_ms, name, m.p1);
++		/* Ack every channel the modem opens, not just IPCRTR: the modem
++		 * waits for the peer before it announces more services. */
++		send_cmd(CMD_OPEN_ACK, m.p1, 0);
 +		if (strcmp(name, CHAN_NAME) == 0) {
 +			g_rcid = m.p1;
 +			g_remote_open = true;
-+			send_cmd(CMD_OPEN_ACK, (uint16_t)g_rcid, 0);
 +			if (!g_open_sent) {
 +				send_open();
 +			}
@@ -1661,7 +1663,7 @@
 +
 +		if (modem_watch(watch) && part != NULL) {
 +			/* Wi-Fi step 2: GLINK over SMEM, then QRTR over IPCRTR. */
-+			unsigned glink_ms = 10000;
++			unsigned glink_ms = 20000;
 +
 +			(void)PE_parse_boot_argn("modem_glink_ms", &glink_ms, sizeof(glink_ms));
 +			ipcc = (volatile uint8_t *)ml_io_map(IPCC_BASE, 0x1000);
