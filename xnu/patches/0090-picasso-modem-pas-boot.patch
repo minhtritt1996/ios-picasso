@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,877 @@
+@@ -0,0 +1,883 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -875,8 +875,14 @@
 +	static bool started;
 +	uint32_t on = 0;
 +	thread_t thread;
++	char *ba = PE_boot_args();
++	int got = PE_parse_boot_argn("modem", &on, sizeof(on));
 +
-+	if (started || !PE_parse_boot_argn("modem", &on, sizeof(on)) || on == 0) {
++	/* Boot-arg transport diagnostics: what the kernel really received. */
++	LOG("init: boot-args %u bytes: %s", ba != NULL ? (unsigned)strlen(ba) : 0, ba != NULL ? ba : "(none)");
++	LOG("init: modem=%d value=%u", got, on);
++	if (started || got == 0 || on == 0) {
++		LOG("init: not starting (started=%d)", started);
 +		return;
 +	}
 +	started = true;
