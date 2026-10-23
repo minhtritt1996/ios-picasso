@@ -1289,7 +1289,7 @@
 +qm_init(struct qmsg *m, uint16_t txn, uint16_t msg)
 +{
 +	m->b = (uint8_t *)IOMalloc(8192);
-+	m->n = 9;
++	m->n = 7;
 +	if (m->b != NULL) {
 +		bzero(m->b, 8192);
 +		m->b[0] = QMI_RESP;
@@ -1807,7 +1807,7 @@
 +qm_init_req(struct qmsg *m, uint16_t txn, uint16_t msg)
 +{
 +	m->b = (uint8_t *)IOMalloc(8192);
-+	m->n = 9;
++	m->n = 7;
 +	if (m->b != NULL) {
 +		bzero(m->b, 8192);
 +		m->b[0] = QMI_REQ;
