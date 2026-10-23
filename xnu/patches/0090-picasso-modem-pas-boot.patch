@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2935 @@
+@@ -0,0 +1,2939 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2359,6 +2359,9 @@
 +	if (dst_port >= PORT_SESS && dst_port < PORT_SESS + 8) {
 +		return tftp_session(dst_port, data, len);
 +	}
++	LOG("t=%u ms: qrtr DATA to unknown port %x from node %u port %x, %u bytes: %02x %02x %02x %02x",
++	    g_ms, dst_port, src_node, src_port, len, len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
++	    len > 2 ? data[2] : 0, len > 3 ? data[3] : 0);
 +	return false;
 +}
 +
@@ -2366,9 +2369,10 @@
 +svc_announce(void)
 +{
 +	static const struct { uint32_t svc, inst, port; } list[] = {
-+		{ 0x40, 0x101, PORT_PDM },              /* servreg-locator v0x101 */
-+		{ 0x1000, 0x1, PORT_TFTP },             /* tftp (QRTR service 4096) */
-+		{ 0x0e, 0x1, PORT_RMTFS },              /* rmtfs: the modem's EFS */
++		/* servreg_loc.qmi: SERVREG_QMI_VERSION 0x101, SERVREG_QMI_INSTANCE 0 */
++		{ 0x40, 0x0, PORT_PDM },                /* servreg-locator */
++		{ 0x1000, 0x0, PORT_TFTP },             /* tftp (QRTR service 4096) */
++		{ 0x0e, 0x0, PORT_RMTFS },              /* rmtfs (RMTFS_QMI_INSTANCE 0) */
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc, list[i].inst, QRTR_NODE_APPS, list[i].port };
