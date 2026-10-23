@@ -194,6 +194,12 @@ First coding step (patch 0089 in this tree):
    `adb dd` to `boot`, reboot, wait for iOS, hold Power+VolDown 12 s, then
    `tools/picasso-modem-log.sh`. Note shim/build.sh needs an *absolute* payload path.
 
+### Risk 2026-10-23: macOS-14 CI runners deprecated 2026-11-02
+`369099105XDai/hackios-picasso-build` documents that the macos-14 image (Xcode 15.0.1,
+the toolchain this xnu-8796 needs for the IORPC ABI) becomes unsupported on 2026-11-02,
+and macos-15 has no Xcode 15. Plan: keep using macos-14 until then; afterwards a
+self-hosted macOS VM (KVM is available on this host) or an Xcode-16 IORPC port.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
