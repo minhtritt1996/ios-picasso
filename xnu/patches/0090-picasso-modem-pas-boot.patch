@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2651 @@
+@@ -0,0 +1,2661 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -721,6 +721,15 @@
 +static uint8_t g_asm[OUR_INTENT_SIZE];
 +static uint32_t g_asm_len;
 +static uint32_t q_ver = 1, q_modem_node = QRTR_NODE_BCAST;
++/* PDR names to try (full domain/service paths first) */
++static const struct { const char *name; uint32_t inst; } pdr_tries[] = {
++	{ "msm/modem/wlan_pd/wlan/fw", 0 },
++	{ "msm/modem/wlan_pd/wlan", 0 },
++	{ "msm/modem/root_pd/tms/servreg", 0 },
++	{ "msm/modem/wlan_pd/wlfw", 0 },
++	{ "wlan/fw", 180 },
++};
++
 +static bool q_hello_sent, q_hello_rx, q_lookup_sent, q_announced;
 +
 +/* host services (pd-mapper, tftp) and the PDR client, defined further down */
@@ -1296,6 +1305,7 @@
 +#define PORT_PDM            0x4001
 +#define PORT_TFTP           0x4002
 +#define PORT_SESS           0x4100
++#define PORT_RMTFS          0x4003
 +#define QMI_REQ             0
 +#define QMI_RESP            2
 +
@@ -1839,14 +1849,6 @@
 + * 0 = QMI string (u8 len + chars), 1 = with NUL, 2 = raw NUL-terminated */
 +/* (service name, instance) pairs: the instance comes from the locator in
 + * Android, so sweep the plausible ones (topaz hardcoded 180). */
-+/* full domain/service paths, as the PDR model uses them */
-+static const struct { const char *name; uint32_t inst; } pdr_tries[] = {
-+	{ "msm/modem/wlan_pd/wlan/fw", 0 },
-+	{ "msm/modem/wlan_pd/wlan", 0 },
-+	{ "msm/modem/root_pd/tms/servreg", 0 },
-+	{ "msm/modem/wlan_pd/wlfw", 0 },
-+	{ "wlan/fw", 180 },
-+};
 +static const char * const pdr_queries[] = {
 +	"wlan/fw", "msm/modem/wlan_pd", "msm/modem/wlan_pd/wlan/fw",
 +	"msm/modem/wlan_pd/wlan", "msm/modem/root_pd/tms/servreg",
@@ -2067,6 +2069,13 @@
 +		}
 +		return true;
 +	}
++	if (dst_port == PORT_RMTFS) {
++		LOG("t=%u ms: rmtfs request, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
++		    g_ms, len, len > 0 ? data[0] : 0, len > 1 ? data[1] : 0, len > 2 ? data[2] : 0,
++		    len > 3 ? data[3] : 0, len > 4 ? data[4] : 0, len > 5 ? data[5] : 0,
++		    len > 6 ? data[6] : 0, len > 7 ? data[7] : 0);
++		return true;
++	}
 +	if (dst_port == PORT_PDR) {
 +		if (len >= 7) {
 +			pdr_rx(src_node, src_port, data, len);
@@ -2085,6 +2094,7 @@
 +	static const struct { uint32_t svc, inst, port; } list[] = {
 +		{ 0x40, 0x101, PORT_PDM },              /* servreg-locator v0x101 */
 +		{ 0x1000, 0x1, PORT_TFTP },             /* tftp (QRTR service 4096) */
++		{ 0x0e, 0x1, PORT_RMTFS },              /* rmtfs: the modem's EFS */
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
 +		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc, list[i].inst, QRTR_NODE_APPS, list[i].port };
