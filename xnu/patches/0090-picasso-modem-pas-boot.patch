@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2581 @@
+@@ -0,0 +1,2575 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1848,28 +1848,22 @@
 +	if (m.b == NULL) {
 +		return;
 +	}
-+	qm_tlv(&m, 0x01, &enable, 1);
 +	{
 +		uint8_t str[64];
-+		uint8_t n = (uint8_t)strlen(path);
-+		unsigned variant = 0;
 +		static unsigned sent_so_far;
-+		variant = sent_so_far++;
-+		if (variant == 0) {
-+			str[0] = n;
-+			memcpy(str + 1, path, n);
-+			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
-+		} else if (variant == 1) {
-+			str[0] = (uint8_t)(n + 1);
-+			memcpy(str + 1, path, n);
-+			str[n + 1] = 0;
-+			qm_tlv(&m, 0x02, str, (uint16_t)(n + 2));
-+		} else {
-+			memcpy(str, path, n);
-+			str[n] = 0;
-+			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		unsigned evariant = sent_so_far++;
++		if (evariant == 0) {
++			qm_tlv(&m, 0x01, &enable, 1);
++		} else if (evariant == 1) {
++			uint32_t en32 = 1;
++			qm_tlv(&m, 0x01, &en32, 4);
 +		}
-+		LOG("t=%u ms: PDR encoding variant %u", g_ms, variant);
++		uint8_t n = (uint8_t)strlen(path);
++		/* always the QMI string form now; the enable TLV is what varies */
++		str[0] = n;
++		memcpy(str + 1, path, n);
++		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		LOG("t=%u ms: PDR enable variant %u", g_ms, evariant);
 +	}
 +	LOG("t=%u ms: PDR register listener \"%s\" -> node %u port %x", g_ms, path, pdr_node, pdr_port);
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
