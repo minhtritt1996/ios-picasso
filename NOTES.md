@@ -371,6 +371,17 @@ succeeds), yet registration is rejected as invalid data. Unexplored knobs:
 - maybe the AP must register as the *server* of "wlan/fw" and let the modem ask for it.
 Until this is resolved the wlan PD never starts, so WLFW never appears.
 
+### PDR: query is not a validity test (2026-10-23)
+QUERY_STATE returns result 0 for *every* string, including made-up ones
+("msm/modem/wlan_pd/wlan", "msm/modem/root_pd/tms/servreg"), with state 0x7fffffff.
+So earlier conclusions from query must be dropped.
+REGISTER_LISTENER classification by name shape:
+- names with one slash ("wlan/fw", "wlan", "wlan_pd") -> 45 INVALID_DATA_FORMAT
+- names with two or more ("msm/modem/wlan_pd", "msm/modem/wlan_pd/wlan/fw",
+  "msm/modem/wlan_pd/wlfw", "msm/modem/root_pd/tms/servreg") -> 9 INVALID_HANDLE
+- with an extra TLV 0x03 instance (any value tried) -> 58, a service-level error
+Still no WLFW and no tftp request, i.e. the wlan PD never starts.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
