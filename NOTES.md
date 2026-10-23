@@ -441,6 +441,22 @@ Next: finish the PDR experiment with the confirmed name (`msm/modem/wlan_pd`, in
 180 then 0) plus lookups for 0x42; if WLFW appears, continue with the topaz WLFW/WMI stack.
 Optional later: a Droidian kernel module (source: MiCode picasso-r-oss) to dump SMMU/DWC3.
 
+### QRTR record packing (measured 2026-10-23 with qrtr-lookup on Droidian)
+`qrtr-lookup` (installed from Debian) prints for the working system:
+```
+66  1  180  0  2   Service registry notification service      <- 0x42 the modem notifier
+69  1    0  0  98   ATH10k WLAN firmware service              <- 0x45 WLFW
+64  1    1  1  16458 Service registry locator service         <- 0x40 pd-mapper, on the AP
+4096 5   0  1  16469 TFTP
+47  1    0  0  57   Data Port Mapper service
+21  1    0  0  21   Modem embedded file system service (rmtfs = 0x15!)
+```
+The NEW_SERVER/NEW_LOOKUP payload is {service u32, version u8, instance u8, pad u16,
+node u32, port u32}: the modem advertises `0xB401`, which is version 1 / instance 180.
+Earlier announcements put a single number in the instance half.
+With the wrong packing the modem answered register_listener with error 9
+INVALID_HANDLE (it had never seen a matching lookup from us).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
