@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2349 @@
+@@ -0,0 +1,2370 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -75,6 +75,9 @@
 +
 +/* picasso device tree: smem_region@80900000 (2 MiB), mss memory-region
 + * modem_wlan_region@8c000000 (248 MiB). */
++#define WLAN_MSA_PA         0x8BA00000ull            /* qcom,wlan-msa-fixed-region */
++#define WLAN_MSA_SIZE       0x00200000u
++
 +#define SMEM_PA             0x80900000ull
 +#define SMEM_SIZE           0x00200000u
 +#define MODEM_CARVEOUT      0x8C000000ull
@@ -2287,6 +2290,24 @@
 +		}
 +	}
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
++	{
++		/* Does the bootloader leave the WLAN firmware in its MSA region? */
++		IOMemoryMap *msa = map_phys(WLAN_MSA_PA, WLAN_MSA_SIZE, false);
++		if (msa != NULL) {
++			const uint8_t *b = (const uint8_t *)msa->getVirtualAddress();
++			uint32_t nz = 0;
++			for (uint32_t i = 0; i < WLAN_MSA_SIZE; i += 0x1000) {
++				if (b[i] != 0 || b[i + 1] != 0 || b[i + 2] != 0 || b[i + 3] != 0) {
++					nz++;
++				}
++			}
++			LOG("wlan MSA @%llx: %02x%02x%02x%02x %02x%02x%02x%02x, non-zero pages %u",
++			    WLAN_MSA_PA, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], nz);
++			msa->release();
++		} else {
++			LOG("wlan MSA: cannot map");
++		}
++	}
 +	smem_map = map_phys(SMEM_PA, SMEM_SIZE, true);
 +	if (smem_map == NULL) {
 +		LOG("cannot map SMEM at 0x%llx", SMEM_PA);
