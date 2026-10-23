@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2575 @@
+@@ -0,0 +1,2582 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1232,9 +1232,11 @@
 +	 * broadcast: ask the modem's name server for WLFW (service 0x45) too */
 +	if (chan_up() && q_hello_rx && !q_lookup_sent) {
 +		struct qrtr_ctrl l = { QRTR_TYPE_NEW_LOOKUP, QMI_SVC_WLFW, 0, 0xFFFFFFFFu, 0 };
++		struct qrtr_ctrl l2 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 0, 0xFFFFFFFFu, 0 };
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l, sizeof(l));
++		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l2, sizeof(l2));
 +		q_lookup_sent = true;
-+		LOG("t=%u ms: sent qrtr NEW_LOOKUP service %x", ms, QMI_SVC_WLFW);
++		LOG("t=%u ms: sent qrtr NEW_LOOKUP services 45 and 42", ms);
 +	}
 +	if (chan_up() && q_hello_rx && !q_announced) {
 +		svc_announce();
@@ -1851,19 +1853,24 @@
 +	{
 +		uint8_t str[64];
 +		static unsigned sent_so_far;
-+		unsigned evariant = sent_so_far++;
-+		if (evariant == 0) {
-+			qm_tlv(&m, 0x01, &enable, 1);
-+		} else if (evariant == 1) {
-+			uint32_t en32 = 1;
-+			qm_tlv(&m, 0x01, &en32, 4);
-+		}
++		unsigned variant = sent_so_far++;
 +		uint8_t n = (uint8_t)strlen(path);
-+		/* always the QMI string form now; the enable TLV is what varies */
++
 +		str[0] = n;
 +		memcpy(str + 1, path, n);
-+		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
-+		LOG("t=%u ms: PDR enable variant %u", g_ms, evariant);
++		if (variant == 1) {
++			/* order swap: name first, then enable */
++			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++			qm_tlv(&m, 0x01, &enable, 1);
++		} else {
++			qm_tlv(&m, 0x01, &enable, 1);
++			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		}
++		if (variant == 2) {
++			uint32_t inst = 0;
++			qm_tlv(&m, 0x03, &inst, 4);     /* service instance 0 */
++		}
++		LOG("t=%u ms: PDR variant %u", g_ms, variant);
 +	}
 +	LOG("t=%u ms: PDR register listener \"%s\" -> node %u port %x", g_ms, path, pdr_node, pdr_port);
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
