@@ -324,6 +324,19 @@ C. Load `image/wlanmdsp.mbn` ourselves: the image links at IOVA 0xB0000000..0xB0
    (inside `qcom,iommu-dma-addr-pool`), 3.87 MB, split MDT-style; would need the WLAN
    SMMU + copy engines, which is where the qcacld host driver comes in.
 
+### >>> UPDATE 2026-10-23 (PDR client: modem rejects register-listener, error 45) <<<
+- The AP-side PDR client now sends SERVREG_REGISTER_LISTENER (0x20) to the modem's
+  servreg-notif (0x42, node 0 port 2) for the service path "wlan/fw". The modem answers
+  **result=1 (failure), error=45** both with a raw string TLV and with a QMI string
+  (u8 length + chars), so the encoding is probably not the problem.
+- Next run dumps the exact request and response bytes (kernel-pdrdump.sweet); after that
+  the error code and TLV order can be decoded instead of guessed.
+- The phone stopped enumerating on both hosts right after that flash (no 05c6 anywhere);
+  a power cycle / replug is needed before the next test.
+- Note: /tmp on this host is cleared periodically. Work now lives in ~/picasso-work
+  (PicassoModem.cpp reconstructed from the patch, kernels under kernel-*.sweet) and
+  artifacts are fetched with tools/gh-artifact.sh, which takes GH_TOKEN or /tmp/ghtoken.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
