@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2929 @@
+@@ -0,0 +1,2965 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -743,6 +743,9 @@
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
 +static uint32_t pdr_instance;
++static bool pdr_ok;
++static unsigned pdr_last_try, pdr_retries;
++static void pdr_retry(void);
 +static unsigned pdr_restart_next;
 +static void pdr_restart(const char *path);
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
@@ -1270,6 +1273,11 @@
 +	if (chan_up() && q_hello_rx && pdr_port != 0) {
 +		if (!pdr_sent) {
 +			pdr_register();
++		} else if (!pdr_ok && (ms - pdr_last_try) >= 500) {
++			/* Android's PDR client retries: the modem answers INVALID_HANDLE
++			 * while its service registry is still coming up. */
++			pdr_last_try = ms;
++			pdr_retry();
 +		} else if (!pdr_nolen_done) {
 +			pdr_nolen_done = true;
 +			pdr_register_nolen("wlan/fw");
@@ -2009,6 +2017,28 @@
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
 +}
 +
++/* keep asking for msm/modem/wlan_pd until the modem accepts the listener */
++static void
++pdr_retry(void)
++{
++	struct qmsg m;
++	uint8_t enable = 1;
++	static const char path[] = "msm/modem/wlan_pd";
++	uint8_t str[64];
++	uint8_t n = (uint8_t)strlen(path);
++
++	qm_init_req(&m, pdr_txn++, SERVREG_REGISTER_LISTENER);
++	if (m.b == NULL) {
++		return;
++	}
++	qm_tlv(&m, 0x01, &enable, 1);
++	str[0] = n;
++	memcpy(str + 1, path, n);
++	qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++	pdr_retries++;
++	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
++}
++
 +/* responses and state indications arrive on PORT_PDR */
 +static bool
 +pdr_rx(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
@@ -2052,12 +2082,18 @@
 +			}
 +			i += 3 + l;
 +		}
-+		LOG("t=%u ms: PDR %s resp txn %u: result %u error %u state 0x%x", g_ms,
-+		    msg == SERVREG_QUERY_STATE ? "query" : (msg == SERVREG_RESTART_PD ? "restart" : "register"),
-+		    txn, result, error, state);
++		if (msg == SERVREG_REGISTER_LISTENER && result == 0) {
++			pdr_ok = true;
++			LOG("t=%u ms: PDR listener ACCEPTED for the first try group (state 0x%x)", g_ms, state);
++		} else if (result != 0 && (pdr_retries < 3 || (pdr_retries % 20) == 0)) {
++			LOG("t=%u ms: PDR %s resp txn %u: result %u error %u state 0x%x", g_ms,
++			    msg == SERVREG_QUERY_STATE ? "query" : (msg == SERVREG_RESTART_PD ? "restart" : "register"),
++			    txn, result, error, state);
++		}
 +		return true;
 +	}
 +	if (msg == SERVREG_STATE_UPDATED_IND) {
++		pdr_ok = true;
 +		uint32_t i = 7, state = 0xffffffff;
 +		char name[64];
 +		name[0] = 0;
