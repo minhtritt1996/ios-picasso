@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3253 @@
+@@ -0,0 +1,3252 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -3180,8 +3180,7 @@
 +			LOG("wlan MSA assign rc %lld", r);
 +		}
 +	}
-+static uint64_t
-+rmtfs_assign(uint64_t addr, uint64_t size)
++	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
 +	{
 +		/* Does the bootloader leave the WLAN firmware in its MSA region? */
 +		IOMemoryMap *msa = map_phys(WLAN_MSA_PA, WLAN_MSA_SIZE, false);
