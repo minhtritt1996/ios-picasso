@@ -639,6 +639,22 @@ of inside the GLINK receive path; payload shim/out/variant-k.img (kernel de02582
 md5 aa3fc7c1607177f71fd6406dc9b755dc) is ready. The phone powered off right after the
 console photo and needs charging before the next cycle.
 
+### rmtfs: the SCM assign was structurally wrong (2026-10-24 06:25, commit e7e2c01)
+The console showed `rmtfs: SCM assign 145f48000+300000 to modem: ret=ffffffffffffffff res=56`
+and then `rmtfs iovec ... e1=41f58000` — the modem used an address that is not our buffer
+because TZ had rejected the assignment. Compared against the vendor sources
+(drivers/firmware/qcom_scm.c, qcom_scm-64.c, drivers/soc/qcom/rmtfs_mem.c):
+- qcom_scm_assign_mem() calls SVC_MP/0x16 with 7 arguments, so args[3..6]
+  {src_sz, dest_phys, dest_sz, 0} travel in a buffer passed in x5, not in registers;
+- x2 is a qcom_scm_mem_map_info {mem_addr, mem_size};
+- x4 is the source vmid array (u32), dest is qcom_scm_current_perm_info
+  {vmid, perm, ctx, ctx_size} (16 bytes each), perm RW = 4|2;
+- the vendor rmtfs_mem hands the region to HLOS + one vmid (qcom,vmid), not NAV.
+The old call put a hand-rolled layout in the registers and passed an address where
+a size belongs, hence res=56. hyp_assign() now builds exactly the vendor layout.
+Still open: whether the modem accepts our runtime buffer address in the ALLOC_BUFF
+reply or insists on the DT qcom,rmtfs-mem carveout (its IOVEC used 0x41f58000).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
