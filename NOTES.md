@@ -567,8 +567,10 @@ The WLFW QMI message ids/TLV tables are inside /vendor/lib/modules/qca_cld3_wlan
   compiler (it flags the version of the file that failed and passes the repair).
 - New knob modem_msa_assign=1|2 hands pil_wlan_fw_region (0x8ba00000, 2 MiB) to
   MSS_MSA+WLAN (2 also WLAN_CE) through SCM hyp_assign before the modem boots.
-- Payload rebuilt from kernel b3401e7 (md5 81b67ee4a4d8aee256730a7d599b8f80) with
+- Payload rebuilt from kernel 06fb0b3 (md5 c1c35ec7b9da2d6f687817f44fa9fe40, 36 491 264 B) with
   modem_wlansmmu=1; tools/picasso-modem-test.sh is waiting for the phone.
+  The tftp cache now accepts files up to 32 MiB and logs `fw cache: NAME SIZE`, so a
+  large wlanmdsp.mbn can no longer be silently reported as "file not found".
 
 ## Agent handoff (2026-10-22 17:45)
 
