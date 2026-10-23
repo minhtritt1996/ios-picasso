@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1755 @@
+@@ -0,0 +1,1757 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -977,6 +977,7 @@
 +		LOG("t=%u ms: qrtr v%u HELLO from node %u", g_ms, q_ver, src_node);
 +		break;
 +	case QRTR_TYPE_NEW_SERVER:
++		LOG("t=%u ms: qrtr NEW_SERVER %x:%x node %u port %x", g_ms, c->a, c->b, c->c, c->d);
 +		if (q_srv_count < sizeof(q_srv) / sizeof(q_srv[0])) {
 +			q_srv[q_srv_count].svc = c->a;
 +			q_srv[q_srv_count].inst = c->b;
@@ -1000,6 +1001,7 @@
 +		q_resumes++;
 +		break;
 +	default:
++		LOG("t=%u ms: qrtr type %u from node %u port %x (%u bytes)", g_ms, type, src_node, src_port, len);
 +		break;
 +	}
 +}
