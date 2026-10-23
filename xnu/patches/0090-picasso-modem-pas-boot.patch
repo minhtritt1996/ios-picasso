@@ -2661,15 +2661,15 @@
 +		uint16_t txn = 0, msg = 0, mlen = 0;
 +
 +		if (len >= 7) {
-+			memcpy(&txn, d + 1, 2);
-+			memcpy(&msg, d + 3, 2);
-+			memcpy(&mlen, d + 5, 2);
++			memcpy(&txn, data + 1, 2);
++			memcpy(&msg, data + 3, 2);
++			memcpy(&mlen, data + 5, 2);
 +		}
 +		LOG("t=%u ms: WLFW reply msg %x txn %u len %u: %02x %02x %02x %02x %02x %02x",
-+		    g_ms, msg, txn, mlen, len > 0 ? d[0] : 0, len > 1 ? d[1] : 0,
-+		    len > 2 ? d[2] : 0, len > 3 ? d[3] : 0, len > 4 ? d[4] : 0,
-+		    len > 5 ? d[5] : 0);
-+		return;
++		    g_ms, msg, txn, mlen, len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
++		    len > 2 ? data[2] : 0, len > 3 ? data[3] : 0, len > 4 ? data[4] : 0,
++		    len > 5 ? data[5] : 0);
++		return true;
 +	}
 +	if (dst_port >= PORT_SESS && dst_port < PORT_SESS + 8) {
 +		return tftp_session(dst_port, data, len);
