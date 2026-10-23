@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2624 @@
+@@ -0,0 +1,2651 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -732,6 +732,8 @@
 +static uint32_t pdr_node, pdr_port;
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
++static unsigned pdr_restart_next;
++static void pdr_restart(const char *path);
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
 +static unsigned g_ms;                           /* watch time, for the log */
@@ -1250,6 +1252,9 @@
 +		} else if (!pdr_nolen_done) {
 +			pdr_nolen_done = true;
 +			pdr_register_nolen("wlan/fw");
++		} else if (pdr_restart_next < 5) {
++			pdr_restart(pdr_tries[pdr_restart_next].name);
++			pdr_restart_next++;
 +		} else {
 +			pdr_query();
 +		}
@@ -1812,6 +1817,7 @@
 +#define PORT_PDR            0x4200
 +#define SERVREG_REGISTER_LISTENER 0x20
 +#define SERVREG_QUERY_STATE      0x21
++#define SERVREG_RESTART_PD       0x24
 +#define SERVREG_STATE_UPDATED_IND 0x22
 +
 +static uint16_t pdr_txn = 1;
@@ -1921,6 +1927,26 @@
 +	IOFree(b, 128);
 +}
 +
++/* Ask the notifier to restart the PD outright (some services allow this
++ * without a prior registration). */
++static void
++pdr_restart(const char *path)
++{
++	struct qmsg m;
++	uint8_t str[64];
++	uint8_t n = (uint8_t)strlen(path);
++
++	qm_init_req(&m, pdr_txn++, SERVREG_RESTART_PD);
++	if (m.b == NULL) {
++		return;
++	}
++	str[0] = n;
++	memcpy(str + 1, path, n);
++	qm_tlv(&m, 0x01, str, (uint16_t)(n + 1));
++	LOG("t=%u ms: PDR restart PD \"%s\"", g_ms, path);
++	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
++}
++
 +static void
 +pdr_query(void)
 +{
@@ -1967,7 +1993,7 @@
 +	uint16_t txn, msg;
 +	memcpy(&txn, d + 1, 2);
 +	memcpy(&msg, d + 3, 2);
-+	if (msg == SERVREG_REGISTER_LISTENER || msg == SERVREG_QUERY_STATE) {
++	if (msg == SERVREG_REGISTER_LISTENER || msg == SERVREG_QUERY_STATE || msg == SERVREG_RESTART_PD) {
 +		uint16_t result = 0xffff, error = 0;
 +		uint8_t state = 0xff;
 +		uint32_t i = 7;
@@ -1986,8 +2012,9 @@
 +			}
 +			i += 3 + l;
 +		}
-+		LOG("t=%u ms: PDR %s resp txn %u: result %u error %u state 0x%x",
-+		    g_ms, msg == SERVREG_QUERY_STATE ? "query" : "register", txn, result, error, state);
++		LOG("t=%u ms: PDR %s resp txn %u: result %u error %u state 0x%x", g_ms,
++		    msg == SERVREG_QUERY_STATE ? "query" : (msg == SERVREG_RESTART_PD ? "restart" : "register"),
++		    txn, result, error, state);
 +		return true;
 +	}
 +	if (msg == SERVREG_STATE_UPDATED_IND) {
