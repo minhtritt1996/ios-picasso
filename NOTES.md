@@ -572,6 +572,21 @@ The WLFW QMI message ids/TLV tables are inside /vendor/lib/modules/qca_cld3_wlan
   The tftp cache now accepts files up to 32 MiB and logs `fw cache: NAME SIZE`, so a
   large wlanmdsp.mbn can no longer be silently reported as "file not found".
 
+### WLFW (QRTR 0x45) QMI reference for stage 2 (ath10k qmi_wlfw_v01.h)
+Message ids used by the AP side, in the order icnss runs them:
+  0x0020 IND_REGISTER      u8 enables + u32 client_id (TLV per field)
+  0x0024 CAP               host capability
+  0x0034 HOST_CAP          host feature bitmap
+  0x002B MSA_READY (ind)   AP -> FW after msa_mem_info + hyp_assign
+  0x0022 WLAN_MODE         mode/bdf/cal flags (sent by the host driver)
+  0x0023 WLAN_CFG          mac/bdf/regdb paths, bdf type
+  0x0025 BDF_DOWNLOAD      board data (chunked)
+  0x0020 IND_REGISTER / 0x0035 REQUEST_MEM (ind from FW) / 0x0037 MEM_READY (ind)
+  0x0038 FW_INIT_DONE (ind) 0x0039 REJUVENATE (ind) 0x003B DYNAMIC_FEATURE_MASK
+  0x0031 ATHDIAG_WRITE 0x0033 MAC_ADDR 0x002F INI 0x003D XO_CAL
+The TLV (type,length) tables are in qmi_wlfw_v01.c; fetch from
+greearb/ath10k-ct (ath10k-5.4/qmi_wlfw_v01.{h,c}) when implementing.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
