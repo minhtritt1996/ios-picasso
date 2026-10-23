@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2370 @@
+@@ -0,0 +1,2371 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1357,6 +1357,7 @@
 +static const struct { const char *svc, *domain; } pd_map[] = {
 +	{ "tms/servreg",       "msm/modem/root_pd" },
 +	{ "tms/pdr_enabled",   "msm/modem/root_pd" },
++	{ "tms/pddump_disabled", "msm/modem/root_pd" },
 +	{ "gps/gps_service",   "msm/modem/root_pd" },
 +	{ "kernel/elf_loader", "msm/modem/wlan_pd" },
 +	{ "tms/servreg",       "msm/modem/wlan_pd" },
