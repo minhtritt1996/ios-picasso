@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2575 @@
+@@ -0,0 +1,2582 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1828,11 +1828,18 @@
 + * 0 = QMI string (u8 len + chars), 1 = with NUL, 2 = raw NUL-terminated */
 +/* (service name, instance) pairs: the instance comes from the locator in
 + * Android, so sweep the plausible ones (topaz hardcoded 180). */
++/* full domain/service paths, as the PDR model uses them */
 +static const struct { const char *name; uint32_t inst; } pdr_tries[] = {
-+	{ "wlan/fw", 0 }, { "wlan/fw", 180 }, { "wlan/fw", 1 },
-+	{ "msm/modem/wlan_pd", 180 }, { "msm/modem/wlan_pd", 0 },
++	{ "msm/modem/wlan_pd/wlan/fw", 0 },
++	{ "msm/modem/wlan_pd/wlan", 0 },
++	{ "msm/modem/root_pd/tms/servreg", 0 },
++	{ "msm/modem/wlan_pd/wlfw", 0 },
++	{ "wlan/fw", 180 },
 +};
-+static const char * const pdr_queries[] = { "wlan/fw", "msm/modem/wlan_pd" };
++static const char * const pdr_queries[] = {
++	"wlan/fw", "msm/modem/wlan_pd", "msm/modem/wlan_pd/wlan/fw",
++	"msm/modem/wlan_pd/wlan", "msm/modem/root_pd/tms/servreg",
++};
 +static unsigned pdr_qnext;
 +static unsigned pdr_next;
 +
@@ -1862,7 +1869,7 @@
 +		memcpy(str + 1, path, n);
 +		qm_tlv(&m, 0x01, &enable, 1);
 +		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
-+		qm_tlv(&m, 0x03, &want_inst, 4);
++		(void)want_inst;
 +		LOG("t=%u ms: PDR try \"%s\" instance %u", g_ms, path, want_inst);
 +	}
 +	LOG("t=%u ms: PDR register listener -> node %u port %x", g_ms, pdr_node, pdr_port);
