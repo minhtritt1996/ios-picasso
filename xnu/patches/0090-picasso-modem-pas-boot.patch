@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2965 @@
+@@ -0,0 +1,3066 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -737,6 +737,8 @@
 +static void svc_announce(void);
 +static void pdr_register(void);
 +static void reboot_to_recovery(void);
++static void ns_rx(uint32_t src_node, uint32_t src_port, const uint8_t *p, uint32_t len);
++static void ns_server_add(uint32_t svc, uint32_t ver, uint32_t inst, uint32_t node, uint32_t port);
 +static void pdr_query(void);
 +static void pdr_register_nolen(const char *path);
 +static uint32_t pdr_node, pdr_port;
@@ -1010,6 +1012,11 @@
 +	}
 +	const struct qrtr_ctrl *c = (const struct qrtr_ctrl *)(p + hlen);
 +
++	if (dst_port == QRTR_PORT_CTRL && (type == QRTR_TYPE_NEW_LOOKUP || type == QRTR_TYPE_DEL_LOOKUP)) {
++		ns_rx(src_node, src_port, p, len);
++		return;
++	}
++
 +	switch (type) {
 +	case QRTR_TYPE_HELLO:
 +		q_modem_node = src_node;
@@ -1027,6 +1034,7 @@
 +			q_srv[q_srv_count].port = c->d;
 +			q_srv_count++;
 +		}
++		ns_server_add(c->a, c->b & 0xff, (c->b >> 8) & 0xff, c->c, c->d);
 +		if (c->a == 0x42 && c->d != 0) {
 +			pdr_node = c->c;
 +			pdr_port = c->d;
@@ -1311,6 +1319,98 @@
 +		LOG("  service %x:%x node %u port %x %s", q_srv[i].svc, q_srv[i].inst, q_srv[i].node, q_srv[i].port, svc_name(q_srv[i].svc));
 +	}
 +}
++/* ---------------------------------------------------------------- QRTR name server */
++
++/*
++ * Android runs /vendor/bin/qrtr-ns on the AP: every node's name service answers
++ * NEW_LOOKUP with NEW_SERVER records and relays them. We are the AP's name
++ * server here, so answer the modem's lookups from our own server table instead
++ * of dropping them.
++ */
++struct qrtr_srv_entry { uint32_t svc, ver, inst, node, port; bool used; };
++static struct qrtr_srv_entry q_srv[16];
++
++static void
++ns_server_add(uint32_t svc, uint32_t ver, uint32_t inst, uint32_t node, uint32_t port)
++{
++	for (unsigned i = 0; i < 16; i++) {
++		if (q_srv[i].used && q_srv[i].svc == svc && q_srv[i].inst == inst &&
++		    q_srv[i].node == node) {
++			q_srv[i].port = port;
++			q_srv[i].ver = ver;
++			return;
++		}
++	}
++	for (unsigned i = 0; i < 16; i++) {
++		if (!q_srv[i].used) {
++			q_srv[i] = { svc, ver, inst, node, port, true };
++			return;
++		}
++	}
++}
++
++static void
++ns_server_del(uint32_t svc, uint32_t inst, uint32_t node)
++{
++	for (unsigned i = 0; i < 16; i++) {
++		if (q_srv[i].used && q_srv[i].svc == svc && q_srv[i].inst == inst &&
++		    q_srv[i].node == node) {
++			q_srv[i].used = false;
++		}
++	}
++}
++
++/* Answer one lookup (service, version, instance; instance 0 = any) at to_node/to_port. */
++static void
++ns_answer(uint32_t svc, uint32_t ver, uint32_t inst, uint32_t to_node, uint32_t to_port)
++{
++	for (unsigned i = 0; i < 16; i++) {
++		if (!q_srv[i].used || q_srv[i].svc != svc) {
++			continue;
++		}
++		if (inst != 0 && q_srv[i].inst != inst) {
++			continue;
++		}
++		if (ver != 0 && q_srv[i].ver != ver) {
++			continue;
++		}
++		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, q_srv[i].svc,
++		    (q_srv[i].ver & 0xffu) | ((q_srv[i].inst & 0xffu) << 8),
++		    q_srv[i].node, q_srv[i].port };
++		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, to_node, to_port, &c, sizeof(c));
++		LOG("t=%u ms: ns: answered lookup svc %x i%u with node %u port %x", g_ms, svc,
++		    q_srv[i].inst, q_srv[i].node, q_srv[i].port);
++	}
++}
++
++/* A control packet addressed to the name service (port 0xfffffffe). */
++static void
++ns_rx(uint32_t src_node, uint32_t src_port, const uint8_t *p, uint32_t len)
++{
++	if (len < 20) {
++		return;
++	}
++	const struct qrtr_ctrl *c = (const struct qrtr_ctrl *)p;
++	uint32_t ver = c->b & 0xff, inst = (c->b >> 8) & 0xff;
++
++	switch (c->cmd) {
++	case QRTR_TYPE_NEW_LOOKUP:
++		LOG("t=%u ms: ns: NEW_LOOKUP svc %x v%u i%u from node %u port %x", g_ms, c->a, ver,
++		    inst, src_node, src_port);
++		ns_answer(c->a, ver, inst, src_node, src_port);
++		break;
++	case QRTR_TYPE_NEW_SERVER:
++		ns_server_add(c->a, ver, inst, c->c, c->d);
++		break;
++	case QRTR_TYPE_DEL_SERVER:
++		ns_server_del(c->a, inst, c->c);
++		break;
++	default:
++		LOG("t=%u ms: ns: control type %u from node %u", g_ms, c->cmd, src_node);
++		break;
++	}
++}
++
 +/* ---------------------------------------------------------------- host services */
 +
 +/*
@@ -2430,6 +2530,7 @@
 +		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc,
 +		    (list[i].ver & 0xffu) | ((list[i].inst & 0xffu) << 8), QRTR_NODE_APPS, list[i].port };
 +		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
++		ns_server_add(list[i].svc, list[i].ver, list[i].inst, QRTR_NODE_APPS, list[i].port);
 +	}
 +	LOG("t=%u ms: announced pd-mapper 0x40 v1 i1, tftp 0x1000 v5 i0, rmtfs 0x15 v1 i0", g_ms);
 +}
