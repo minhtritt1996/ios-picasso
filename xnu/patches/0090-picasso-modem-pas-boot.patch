@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2527 @@
+@@ -0,0 +1,2523 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1816,43 +1816,40 @@
 +	}
 +}
 +
++static const char * const pdr_paths[] = {
++	"wlan/fw", "wlan", "msm/modem/wlan_pd", "wlan_pd",
++};
++static unsigned pdr_next;
++
++/* Register interest for every candidate service path; the modem answers each
++ * with its own result, which tells us the name it expects. */
 +static void
 +pdr_register(void)
 +{
-+	static const char path[] = "wlan/fw";
 +	struct qmsg m;
 +	uint8_t enable = 1;
 +
++	if (pdr_next >= sizeof(pdr_paths) / sizeof(pdr_paths[0])) {
++		return;
++	}
++	const char *path = pdr_paths[pdr_next++];
 +	qm_init_req(&m, pdr_txn++, SERVREG_REGISTER_LISTENER);
 +	if (m.b == NULL) {
 +		return;
 +	}
 +	qm_tlv(&m, 0x01, &enable, 1);
 +	{
-+		/* QMI_STRING: u8 length, then the characters (no NUL) */
 +		uint8_t str[64];
 +		uint8_t n = (uint8_t)strlen(path);
 +		str[0] = n;
 +		memcpy(str + 1, path, n);
 +		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
 +	}
-+	{
-+		char hex[3 * 24 + 1], asc[25];
-+		uint32_t n = MIN(m.n, 24u), k = 0;
-+		for (uint32_t i = 0; i < n; i++) {
-+			static const char hx[] = "0123456789abcdef";
-+			hex[k++] = hx[m.b[i] >> 4];
-+			hex[k++] = hx[m.b[i] & 15];
-+			hex[k++] = ' ';
-+			asc[i] = (m.b[i] >= 32 && m.b[i] < 127) ? (char)m.b[i] : '.';
-+		}
-+		hex[k] = 0;
-+		asc[n] = 0;
-+		LOG("t=%u ms: PDR request: %s |%s|", g_ms, hex, asc);
-+	}
++	LOG("t=%u ms: PDR register listener \"%s\" -> node %u port %x", g_ms, path, pdr_node, pdr_port);
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
-+	pdr_sent = true;
-+	LOG("t=%u ms: PDR register listener \"wlan/fw\" -> node %u port %x", g_ms, pdr_node, pdr_port);
++	if (pdr_next >= sizeof(pdr_paths) / sizeof(pdr_paths[0])) {
++		pdr_sent = true;
++	}
 +}
 +
 +/* responses and state indications arrive on PORT_PDR */
@@ -1898,8 +1895,7 @@
 +			}
 +			i += 3 + l;
 +		}
-+		LOG("t=%u ms: PDR register listener resp: result %u error %u state 0x%x",
-+		    g_ms, result, error, state);
++		LOG("t=%u ms: PDR resp txn %u: result %u error %u state 0x%x", g_ms, txn, result, error, state);
 +		return true;
 +	}
 +	if (msg == SERVREG_STATE_UPDATED_IND) {
