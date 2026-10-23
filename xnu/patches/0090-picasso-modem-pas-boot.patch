@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3448 @@
+@@ -0,0 +1,3481 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2491,6 +2491,21 @@
 +static uint8_t *rmtfs_va;
 +static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err;
 +
++/* Size of a GPT partition in bytes. */
++static int
++part_size(const char *name, uint64_t *bytes)
++{
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	int err = sweet_ufs_part(name, &first, &blocks, &lun);
++
++	if (err) {
++		return err;
++	}
++	*bytes = blocks * 512u;
++	return 0;
++}
++
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
 +part_io(const char *name, uint64_t off, void *buf, uint32_t len, bool write)
@@ -2694,6 +2709,10 @@
 +			uint8_t probe[16];
 +			ok = part_io(rmtfs_parts[i].part, 0, probe, sizeof(probe), false) == 0;
 +		}
++		if (ok && rmtfs_pa == 0) {
++			rmtfs_init_buf();       /* the first IOVEC follows within ms */
++			ok = rmtfs_pa != 0;
++		}
 +		LOG("t=%u ms: rmtfs open \"%s\" -> %s", g_ms, path, ok ? rmtfs_parts[i].part : "FAILED");
 +		qm_result(&m, ok);
 +		if (ok) {
@@ -2718,6 +2737,8 @@
 +				uint32_t e[3];
 +				uint64_t bytes;
 +				memcpy(e, iov + 1 + 12 * i, 12);
++				uint64_t psz = 0, done = 0, base = (uint64_t)e[0] * 512;
++
 +				bytes = (uint64_t)e[2] * 512;
 +				/* phys_offset is an offset from the shared buffer's base
 +				 * (rmtfs.c: phys_base = entries[i].phys_offset and the
@@ -2726,12 +2747,25 @@
 +					ok = false;
 +					break;
 +				}
++				if (part_size(rmtfs_parts[caller - 1].part, &psz) != 0 ||
++				    base + bytes > psz) {
++					ok = false;
++					break;
++				}
 +				if (write) {
 +					/* never write back to the phone's EFS */
 +					rmtfs_writes++;
 +				} else {
-+					ok = part_io(rmtfs_parts[caller - 1].part, (uint64_t)e[0] * 512,
-+					    rmtfs_va + e[1], (uint32_t)bytes, false) == 0;
++					/* bounded chunks: a multi-megabyte single UFS
++					 * read from the GLINK path is what the modem
++					 * asks for and what we have never done. */
++					while (ok && done < bytes) {
++						uint32_t n = (uint32_t)MIN(bytes - done, 0x40000ull);
++
++						ok = part_io(rmtfs_parts[caller - 1].part, base + done,
++						    rmtfs_va + e[1] + done, n, false) == 0;
++						done += n;
++					}
 +					rmtfs_reads++;
 +				}
 +			}
@@ -3375,7 +3409,6 @@
 +			LOG("wlan MSA assign rc %lld", r);
 +		}
 +	}
-+	rmtfs_init_buf();
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
 +	{
 +		/* Does the bootloader leave the WLAN firmware in its MSA region? */
