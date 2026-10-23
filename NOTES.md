@@ -600,6 +600,27 @@ HOST_CAP 0x0034: 0x10 daemon_support. DYNAMIC_FEATURE_MASK 0x003B.
 Source: os-vector/wire-os kernel/msm-4.9/drivers/soc/qcom/wlan_firmware_service_v01.{h,c}
 (also OnePlusOSS sm8150 icnss_qmi.c, same icnss generation as picasso).
 
+### Two boot failures with the new kernels (2026-10-24 05:35-05:45)
+- variant a (kernel 9dc9018 + modem_wlansmmu=1, glink 60 s, recovery 90 s): the phone did
+  boot (adb dropped), then rebooted by itself and hung at the MI logo; a forced
+  power+vol-down to fastboot/recovery was needed.
+- variant f (same kernel, **no** modem_wlansmmu, recovery 60 s): after 110 s there was no
+  adb and no USB device at all on k60.
+- The console ring was unchanged in both cases (its boot-args line still reads
+  modem_glink_ms=30000 / modem_recovery_after=45000, the run46 payload), so the failing
+  kernels never reached the 10 s log flush.
+- Control: rebuilding the run46 payload from kernel-arc3 (20505dc) gives a byte-identical
+  image (md5 8a76382e0d155dee69ae374ee1d006cc), so mkpayload/build.sh are deterministic and
+  the difference is in the kernel or its command line.
+Variants prepared in shim/out (each has its md5 above the run):
+  h = 20505dc kernel + old cmdline (8a76382e)  <- known good, control
+  i = 20505dc kernel + new cmdline (93d1dab4)  <- isolates the cmdline
+  j = 9dc9018 kernel + old cmdline (9ea802a2)  <- isolates the kernel
+  f = 9dc9018 kernel + new cmdline (ca14b1e7)  <- failed
+  g = f with sweetfb_noconsole=0 (2eae3416)    <- panic visible on screen
+tools/bisect-modem.sh runs h,i,j in order and only believes a result when adb drops after
+the reboot and the ring's own boot-args line matches the variant.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
