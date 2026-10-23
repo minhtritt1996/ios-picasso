@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3066 @@
+@@ -0,0 +1,3072 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -687,6 +687,7 @@
 +#define QRTR_TYPE_DEL_CLIENT 6
 +#define QRTR_TYPE_RESUME_TX 7
 +#define QRTR_TYPE_NEW_LOOKUP 10
++#define QRTR_TYPE_DEL_LOOKUP 11
 +#define QMI_SVC_WLFW        0x45
 +
 +struct glink_msg { uint16_t cmd, p1; uint32_t p2; } __attribute__((packed));
@@ -1343,7 +1344,12 @@
 +	}
 +	for (unsigned i = 0; i < 16; i++) {
 +		if (!q_srv[i].used) {
-+			q_srv[i] = { svc, ver, inst, node, port, true };
++			q_srv[i].svc = svc;
++			q_srv[i].ver = ver;
++			q_srv[i].inst = inst;
++			q_srv[i].node = node;
++			q_srv[i].port = port;
++			q_srv[i].used = true;
 +			return;
 +		}
 +	}
