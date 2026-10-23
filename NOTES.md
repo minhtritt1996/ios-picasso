@@ -471,6 +471,16 @@ Working hypotheses left, cheapest first:
 3. Modem environment: Android's PIL votes vdd_mss/vdd_cx and icnss has the WLAN SMMU group;
    either could gate the modem's own wlan_pd start (which it does ~2.5 s after PIL).
 
+### Name server did not change the modem's answer (2026-10-23, kernel dd7d1de)
+Added a minimal QRTR name service (port 0xfffffffe): a server table fed by our own
+announcements and the modem's NEW_SERVER records, answering NEW_LOOKUP with NEW_SERVER.
+Measured: the modem never sends a lookup to us (no ns: lines), so there was nothing to
+answer; register_listener for msm/modem/wlan_pd still returns error 9 for 40 s of retries.
+Conclusion: the modem's servreg does not need our name server for this, and INVALID_HANDLE
+comes from something else in the request or from the modem's PDR state.
+Next decisive step (needs Droidian): capture the exact register_listener bytes the vendor
+kernel sends, with a kprobe on the QRTR send path, then diff them against ours.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
