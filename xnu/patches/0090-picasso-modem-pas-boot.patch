@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3481 @@
+@@ -0,0 +1,3486 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1600,6 +1600,7 @@
 +	{ "gps/gps_service",    180 },
 +};
 +static unsigned pd_full;
++static uint32_t rmtfs_on = 1;
 +static unsigned pd_reqs;
 +
 +static void
@@ -2882,6 +2883,9 @@
 +		{ 14, 1, 0, PORT_RMTFS },
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
++		if (list[i].svc == 14 && !rmtfs_on) {
++			continue;               /* knob for bisecting the EFS path */
++		}
 +		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc,
 +		    (list[i].ver & 0xffu) | ((list[i].inst & 0xffffu) << 8), QRTR_NODE_APPS, list[i].port };
 +		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
@@ -3333,6 +3337,7 @@
 +
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
 +	(void)PE_parse_boot_argn("modem_pdm", &pd_full, sizeof(pd_full));
++	(void)PE_parse_boot_argn("modem_rmtfs", &rmtfs_on, sizeof(rmtfs_on));
 +	{
 +		uint32_t restart = 0;
 +		PE_parse_boot_argn("modem_pdr_restart", &restart, sizeof(restart));
