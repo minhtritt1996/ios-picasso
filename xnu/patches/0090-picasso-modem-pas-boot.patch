@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2492 @@
+@@ -0,0 +1,2499 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1828,7 +1828,14 @@
 +		return;
 +	}
 +	qm_tlv(&m, 0x01, &enable, 1);
-+	qm_tlv(&m, 0x02, path, (uint16_t)strlen(path));
++	{
++		/* QMI_STRING: u8 length, then the characters (no NUL) */
++		uint8_t str[64];
++		uint8_t n = (uint8_t)strlen(path);
++		str[0] = n;
++		memcpy(str + 1, path, n);
++		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++	}
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
 +	pdr_sent = true;
 +	LOG("t=%u ms: PDR register listener \"wlan/fw\" -> node %u port %x", g_ms, pdr_node, pdr_port);
