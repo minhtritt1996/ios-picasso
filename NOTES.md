@@ -337,6 +337,21 @@ C. Load `image/wlanmdsp.mbn` ourselves: the image links at IOVA 0xB0000000..0xB0
   (PicassoModem.cpp reconstructed from the patch, kernels under kernel-*.sweet) and
   artifacts are fetched with tools/gh-artifact.sh, which takes GH_TOKEN or /tmp/ghtoken.
 
+### PDR findings 2026-10-23 (libqmi error names)
+- The modem's servreg-notif QUERY_STATE (0x21) answers **result 0** for both "wlan/fw" and
+  "msm/modem/wlan_pd", so those names exist in its registry.
+- REGISTER_LISTENER (0x20) is refused: 0x2d (QMI_PROTOCOL_ERROR_INVALID_DATA_FORMAT) for
+  service-style names and 0x09 (QMI_PROTOCOL_ERROR_INVALID_HANDLE) for "msm/modem/..."
+  domain-style names.
+- All three service-name encodings (QMI string, QMI string + NUL, raw NUL-terminated) give
+  0x2d, so the name bytes are not the problem; next the enable TLV is varied (1 byte,
+  4 bytes, absent).
+- Request/response bytes observed:
+  req  00 01 00 20 00 0f 00 | 01 01 00 01 | 02 08 00 07 "wlan/fw"
+  resp 02 01 00 20 00 0e 00 | 02 04 00 01 00 2d 00 | 10 04 00 80 f5 39 ca
+  (the 0x10 TLV in responses is a 4-byte value that looks like a modem-side address or
+  an uninitialised state; QUERY_STATE returns 0x7fffffff there)
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
