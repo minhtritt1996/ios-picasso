@@ -493,6 +493,21 @@ kernel sends, with a kprobe on the QRTR send path, then diff them against ours.
   sweet_rpmh_vreg_enable() cannot vote them as-is; an ARC-level command would be needed.
 - Everything else in the modem environment matches (rails we vote, PIL args, firmware).
 
+### ARC corner vote works, WLAN still absent (2026-10-23, kernel 20505dc)
+- sweet_rpmh_arc_level() needed two fixes: the cmd-db lookup rejected ARC entries (they are
+  hardware type 3 at 0x30000 / 0x30060, VRM is type 4), and the TCS completion loop demanded
+  all three CMD_STATUS words (a single ARC command completed 0x10101/0/0 and was treated as
+  a timeout, quarantining the RSC).
+- Result: `cx.lvl=384` and `mss.lvl=384` now vote cleanly (rc 0). The modem still does not
+  bring up wlan_pd, WLFW never appears, register_listener for msm/modem/wlan_pd still
+  answers error 9. So the modem corner was not the gate.
+- Vendor sequence re-checked in icnss.c: the MSA (pil_wlan_fw_region) is assigned to
+  WLAN/MSS only *after* WLFW connects (line 1094), and the probe-time assign only returns it
+  to HLOS, so MSA permissions are not the pre-requisite either.
+Next idea: capture the **full** vendor dmesg window 15.5-19 s (boot Droidian, plain dmesg)
+to see every AP action between auth_and_reset and the wlan_pd indication; the AP may send a
+QMI/SSR message we do not.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
