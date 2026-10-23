@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,886 @@
+@@ -0,0 +1,905 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -602,7 +602,7 @@
 +{
 +	struct fat_vol v;
 +	uint64_t part_lba = 0, part_blocks = 0, meta_pa = 0, res = 0, st;
-+	uint32_t part_lun = 0;
++	uint32_t part_lun = 0, pas_id = PAS_ID_MODEM;
 +	uint8_t *mdt = NULL, *meta;
 +	int64_t mdt_size;
 +	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
@@ -635,10 +635,28 @@
 +		return false;
 +	}
 +
-+	st = scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, PAS_ID_MODEM, 0, 0, &res);
-+	LOG("PAS id %u supported: ret=%llx res=%llx", PAS_ID_MODEM, st, res);
-+	if (st != 0 || res != 1) {
-+		goto out_fat;
++	/* The device tree says qcom,pas-id = 4, but TrustZone is the authority:
++	 * probe the ids and use the first one it accepts as the modem. */
++	{
++		uint32_t id_supported = ~0u;
++
++		for (uint32_t id = 0; id <= 15; id++) {
++			uint64_t r = 0;
++			uint64_t s = scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, id, 0, 0, &r);
++			if (s == 0 && r == 1) {
++				LOG("PAS id %u supported", id);
++				if (id_supported == ~0u) {
++					id_supported = id;
++				}
++			}
++		}
++		if (id_supported == ~0u) {
++			LOG("no PAS id is supported (PAS disabled for apps?)");
++			goto out_fat;
++		}
++		pas_id = id_supported;
++		st = scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, pas_id, 0, 0, &res);
++		LOG("using PAS id %u (ret=%llx res=%llx)", pas_id, st, res);
 +	}
 +
 +	/* The .mdt is small: read it whole, it holds the ELF header and phdrs. */
@@ -654,6 +672,7 @@
 +		mdt_size = size;
 +		mdt = (uint8_t *)IOMalloc((vm_size_t)mdt_size);
 +		if (mdt == NULL) {
++			LOG("modem.mdt: %lld bytes, IOMalloc failed", mdt_size);
 +			goto out_fat;
 +		}
 +		if (fat_read_chain(&v, clus, mdt, (uint32_t)mdt_size) != 0) {
@@ -713,7 +732,7 @@
 +		mb();
 +		flush_dcache64(meta_pa, (unsigned int)meta_size, TRUE);
 +
-+		st = scm(SCM_FN(SCM_SVC_PIL, PIL_INIT_IMAGE), 2 | (SCM_ARG_RW << 6), PAS_ID_MODEM, meta_pa, 0, &res);
++		st = scm(SCM_FN(SCM_SVC_PIL, PIL_INIT_IMAGE), 2 | (SCM_ARG_RW << 6), pas_id, meta_pa, 0, &res);
 +		LOG("init_image: ret=%llx res=%llx resumes=%u (meta %llu bytes @%llx)", st, res, scm_resumes, meta_size, meta_pa);
 +		if (st != 0 || res != 0) {
 +			IOFree(mdt, (vm_size_t)mdt_size);
@@ -721,7 +740,7 @@
 +		}
 +	}
 +	if (relocate) {
-+		st = scm(SCM_FN(SCM_SVC_PIL, PIL_MEM_SETUP), 3, PAS_ID_MODEM, min_a,
++		st = scm(SCM_FN(SCM_SVC_PIL, PIL_MEM_SETUP), 3, pas_id, min_a,
 +		    ((uint64_t)(max_a - min_a) + 0xfff) & ~0xfffull, &res);
 +		LOG("mem_setup: ret=%llx res=%llx", st, res);
 +		if (st != 0 || res != 0) {
@@ -768,7 +787,7 @@
 +	LOG("segments loaded");
 +	IOFree(mdt, (vm_size_t)mdt_size);
 +
-+	st = scm(SCM_FN(SCM_SVC_PIL, PIL_AUTH_RESET), 1, PAS_ID_MODEM, 0, 0, &res);
++	st = scm(SCM_FN(SCM_SVC_PIL, PIL_AUTH_RESET), 1, pas_id, 0, 0, &res);
 +	LOG("auth_and_reset: ret=%llx res=%llx resumes=%u", st, res, scm_resumes);
 +	if (st != 0 || res != 0) {
 +		goto shutdown;
@@ -777,7 +796,7 @@
 +	goto out_fat;
 +
 +shutdown:
-+	st = scm(SCM_FN(SCM_SVC_PIL, PIL_SHUTDOWN), 1, PAS_ID_MODEM, 0, 0, &res);
++	st = scm(SCM_FN(SCM_SVC_PIL, PIL_SHUTDOWN), 1, pas_id, 0, 0, &res);
 +	LOG("shutdown after failure: ret=%llx res=%llx", st, res);
 +out_fat:
 +	if (v.fat != NULL) {
