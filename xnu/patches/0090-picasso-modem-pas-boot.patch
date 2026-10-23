@@ -2592,12 +2592,12 @@
 +{
 +	/* qrtr-lookup on the working Android system reports:
 +	 *   0x40 ver 1 inst 1  Service registry locator   (pd-mapper, on the AP)
-+	 *   0x1000 ver 5 inst 0 TFTP
++	 *   0x1000 ver 1 inst 0 TFTP (linux-msm/tqftpserv: qrtr_publish(fd, 4096, 1, 0))
 +	 *   0x15 ver 1 inst 0  Modem embedded file system (rmtfs)
 +	 * The NEW_SERVER record packs version and instance as two u16 halves. */
 +	static const struct { uint32_t svc, ver, inst, port; } list[] = {
 +		{ 0x40, 1, 1, PORT_PDM },
-+		{ 0x1000, 5, 0, PORT_TFTP },
++		{ 0x1000, 1, 0, PORT_TFTP },
 +		{ 0x15, 1, 0, PORT_RMTFS },
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
@@ -2606,7 +2606,7 @@
 +		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
 +		ns_server_add(list[i].svc, list[i].ver, list[i].inst, QRTR_NODE_APPS, list[i].port);
 +	}
-+	LOG("t=%u ms: announced pd-mapper 0x40 v1 i1, tftp 0x1000 v5 i0, rmtfs 0x15 v1 i0", g_ms);
++	LOG("t=%u ms: announced pd-mapper 0x40 v1 i1, tftp 0x1000 v1 i0, rmtfs 0x15 v1 i0", g_ms);
 +}
 +
 +/* ---------------------------------------------------------------- PAS boot */
