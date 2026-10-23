@@ -177,6 +177,7 @@
 +/* ---------------------------------------------------------------- vfat (read only) */
 +
 +static struct fat_vol *g_fat;           /* volume the QRTR file service reads */
++static uint32_t fw_dir = 1;             /* cluster of image/, 1 = not looked up yet */
 +
 +struct fat_vol {
 +	uint32_t lun;                   /* UFS LUN the partition lives on */
@@ -1806,7 +1807,6 @@
 +}
 +
 +/* Read a firmware file from the "modem" partition into dst (dst may be a WC mapping). */
-+static uint32_t fw_dir = 1;             /* cluster of image/, 1 = not looked up yet */
 +
 +static int64_t
 +fw_read(struct fat_vol *v, const char *name, void *dst, uint64_t max)
