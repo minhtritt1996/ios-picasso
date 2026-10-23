@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3425 @@
+@@ -0,0 +1,3436 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -740,6 +740,7 @@
 +static uint32_t pdr_restart_want;
 +static bool pdr_restarted;
 +static void pdr_restart_pd(const char *path);
++static void rmtfs_init_buf(void);
 +static void wlfw_start(void);
 +static void wlfw_step(void);
 +static bool wlfw_rx(const uint8_t *d, uint32_t len);
@@ -2606,6 +2607,30 @@
 +	return args[0] != 0 ? args[0] : args[1];
 +}
 +
++/* Allocate and hand the rmtfs shared buffer over once, at init: doing
++ * kmem_alloc_contig + an SCM call from inside the GLINK receive path is the
++ * first thing the modem asks for (ALLOC_BUFF) and stalls the link there. */
++static void
++rmtfs_init_buf(void)
++{
++	vm_offset_t va = 0;
++	uint64_t r;
++
++	if (rmtfs_pa != 0) {
++		return;
++	}
++	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
++		LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
++		return;
++	}
++	rmtfs_va = (uint8_t *)va;
++	rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++	r = rmtfs_assign(rmtfs_pa, RMTFS_BUF_SIZE);
++	LOG("rmtfs: shared buffer %llx+%llx assign %llx", rmtfs_pa,
++	    (uint64_t)RMTFS_BUF_SIZE, r);
++}
++
 +/* rmtfs paths are QMI strings: u8 length then the characters. */
 +static bool
 +qm_string_qmi(const uint8_t *d, uint32_t len, uint8_t type, char *out, size_t max)
@@ -2722,22 +2747,7 @@
 +				memcpy(&size, v, 4);
 +			}
 +			if (rmtfs_pa == 0) {
-+				vm_offset_t va = 0;
-+
-+				if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
-+				    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS ||
-+				    va == 0) {
-+					LOG("t=%u ms: rmtfs: cannot allocate the shared buffer", g_ms);
-+					qm_result(&m, false);
-+					break;
-+				}
-+				rmtfs_va = (uint8_t *)va;
-+				rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
-+				{
-+					uint64_t r = rmtfs_assign(rmtfs_pa, RMTFS_BUF_SIZE);
-+					LOG("t=%u ms: rmtfs: shared buffer %llx+%llx assign %llx",
-+					    g_ms, rmtfs_pa, (uint64_t)RMTFS_BUF_SIZE, r);
-+				}
++				rmtfs_init_buf();
 +			}
 +			addr = rmtfs_pa;
 +			LOG("t=%u ms: rmtfs alloc: caller %u size %u -> %llx", g_ms, caller, size, addr);
@@ -3353,6 +3363,7 @@
 +			LOG("wlan MSA assign rc %lld", r);
 +		}
 +	}
++	rmtfs_init_buf();
 +	tcsr_mutex = (volatile uint8_t *)ml_io_map(TCSR_MUTEX_PA, 0x4000);
 +	{
 +		/* Does the bootloader leave the WLAN firmware in its MSA region? */
