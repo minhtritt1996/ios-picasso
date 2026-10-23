@@ -249,6 +249,22 @@ WLFW (WLAN firmware out of reset), then WMI/HTC/HTT and the Apple80211 shim.
 Reference: ios-topaz patches 0118, 0121, 0122 (0113-0117 are now superseded by
 PicassoModem.cpp for the boot).
 
+### Wi-Fi step 2 constants, measured 2026-10-23 (live SMEM dump after MODEM READY)
+Apps<->modem SMEM partition (0,1): 6 items, 507904 bytes, 21360 used.
+- 478, 32 B: GLINK descriptor (descs[0]=tx.tail [1]=tx.head [2]=rx.tail [3]=rx.head)
+- 480, 16384 B: GLINK RX FIFO (created by the modem)
+- 479, 16384 B: **GLINK TX FIFO, does not exist yet: the AP must allocate it**
+  (`qcom_smem_alloc(remote, 479, SZ_16K)`), then both dirs are 16 KiB
+- 428/435: our SMP2P out / the modem's SMP2P in (340 B each)
+- 605 (32 B), 611 (4096 B): other SMP2P/queue items
+Global partition: 20 items, item 421 = "SFR Init..." (crash reason), etc.
+Doorbell (SM7250 uses IPCC, not APCS): base 0x408000, IPCC_REG_SEND_ID 0x0c,
+value = (client_id << 16) | signal_id = (2 << 16) | 0 from the DT mbox
+`<&ipcc 2 0>`. RX side: RECV_ID 0x10, RECV_SIGNAL_CLEAR 0x1c.
+Reference implementation to port: ios-topaz 0118 (GLINK/QRTR, 590 lines),
+0121 (pd-mapper/tftp/rmtfs, 2174), 0122 (WLFW, 533); QRTR node apps=1,
+WLFW QMI service 0x45, channel "IPCRTR", lcid 1, our intents 0x4400 x 8.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
