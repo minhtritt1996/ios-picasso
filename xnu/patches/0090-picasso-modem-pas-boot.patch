@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3474 @@
+@@ -0,0 +1,3503 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2492,21 +2492,6 @@
 +static uint8_t *rmtfs_va;
 +static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err;
 +
-+/* Size of a GPT partition in bytes. */
-+static int
-+part_size(const char *name, uint64_t *bytes)
-+{
-+	uint64_t first = 0, blocks = 0;
-+	uint32_t lun = 0;
-+	int err = sweet_ufs_part(name, &first, &blocks, &lun);
-+
-+	if (err) {
-+		return err;
-+	}
-+	*bytes = blocks * 512u;
-+	return 0;
-+}
-+
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
 +part_io(const char *name, uint64_t off, void *buf, uint32_t len, bool write)
@@ -2593,6 +2578,47 @@
 +	    (long long)args[0], (long long)args[1]);
 +	kmem_free(kernel_map, va, 0x1000);
 +	return args[0] != 0 ? args[0] : args[1];
++}
++
++/* The four EFS partitions cached in RAM: the modem reads them from inside the
++ * GLINK receive path, and a UFS transfer there would hold sweet_ufs_lock and
++ * starve the recovery thread. */
++struct efs_image { uint8_t *data; uint32_t size; };
++static struct efs_image efs_cache[4];
++static bool efs_loaded;
++
++static void
++rmtfs_load_efs(void)
++{
++	if (efs_loaded) {
++		return;
++	}
++	efs_loaded = true;
++	for (unsigned i = 0; i < 4; i++) {
++		uint64_t first = 0, blocks = 0, sz;
++		uint32_t lun = 0;
++		uint8_t *p;
++
++		if (sweet_ufs_part(rmtfs_parts[i].part, &first, &blocks, &lun) != 0) {
++			continue;
++		}
++		sz = blocks * 512u;
++		if (sz == 0 || sz > 0x2000000ull) {
++			continue;
++		}
++		p = (uint8_t *)IOMalloc((vm_size_t)sz);
++		if (p == NULL) {
++			continue;
++		}
++		if (sweet_ufs_pread(lun, first, blocks, 0, p, (uint32_t)sz) != 0) {
++			IOFree(p, (vm_size_t)sz);
++			continue;
++		}
++		efs_cache[i].data = p;
++		efs_cache[i].size = (uint32_t)sz;
++	}
++	LOG("rmtfs: EFS cached: %u/%u/%u/%u bytes", efs_cache[0].size,
++	    efs_cache[1].size, efs_cache[2].size, efs_cache[3].size);
 +}
 +
 +/* Allocate and hand the rmtfs shared buffer over once, at init: doing
@@ -2694,6 +2720,9 @@
 +			rmtfs_init_buf();       /* the first IOVEC follows within ms */
 +			ok = rmtfs_pa != 0;
 +		}
++		if (ok) {
++			rmtfs_load_efs();
++		}
 +		LOG("t=%u ms: rmtfs open \"%s\" -> %s", g_ms, path, ok ? rmtfs_parts[i].part : "FAILED");
 +		qm_result(&m, ok);
 +		if (ok) {
@@ -2733,8 +2762,8 @@
 +					ok = false;
 +					break;
 +				}
-+				if (part_size(rmtfs_parts[caller - 1].part, &psz) != 0 ||
-+				    base + bytes > psz) {
++				psz = efs_cache[caller - 1].size;
++				if (efs_cache[caller - 1].data == NULL || base + bytes > psz) {
 +					ok = false;
 +					break;
 +				}
@@ -2750,8 +2779,8 @@
 +							ok = false;
 +							break;
 +						}
-+						ok = part_io(rmtfs_parts[caller - 1].part, base + done,
-+						    (void *)dm->getVirtualAddress(), n, false) == 0;
++						memcpy((void *)dm->getVirtualAddress(),
++						    efs_cache[caller - 1].data + base + done, n);
 +						dm->release();
 +						done += n;
 +					}
