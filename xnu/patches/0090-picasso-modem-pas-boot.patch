@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2940 @@
+@@ -0,0 +1,2870 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -723,11 +723,11 @@
 +static uint32_t q_ver = 1, q_modem_node = QRTR_NODE_BCAST;
 +/* PDR names to try (full domain/service paths first) */
 +static const struct { const char *name; uint32_t inst; } pdr_tries[] = {
-+	{ "msm/modem/wlan_pd/wlan/fw", 0 },
-+	{ "msm/modem/wlan_pd/wlan", 0 },
-+	{ "msm/modem/root_pd/tms/servreg", 0 },
-+	{ "msm/modem/wlan_pd/wlfw", 0 },
++	{ "msm/modem/wlan_pd", 180 },
++	{ "msm/modem/wlan_pd", 0 },
 +	{ "wlan/fw", 180 },
++	{ "wlan/fw", 0 },
++	{ "msm/adsp/audio_pd", 74 },
 +};
 +
 +static bool q_hello_sent, q_hello_rx, q_lookup_sent, q_announced;
@@ -883,8 +883,12 @@
 +		return false;
 +	}
 +	struct glink_data_hdr h = { { CMD_TX_DATA, CHAN_LCID, g_ri[i].id }, len, 0 };
-+	g_ri[i].used = true;
-+	return tx_write(&h, sizeof(h), data, len);
++	bool sent = tx_write(&h, sizeof(h), data, len);
++
++	if (sent) {
++		g_ri[i].used = true;    /* only when the bytes really left */
++	}
++	return sent;
 +}
 +
 +/* packets wait here until the modem has a free RX intent for them */
@@ -1245,11 +1249,13 @@
 +	 * broadcast: ask the modem's name server for WLFW (service 0x45) too */
 +	if (chan_up() && q_hello_rx && !q_lookup_sent) {
 +		struct qrtr_ctrl l = { QRTR_TYPE_NEW_LOOKUP, QMI_SVC_WLFW, 0, 0xFFFFFFFFu, 0 };
-+		struct qrtr_ctrl l2 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 0, 0xFFFFFFFFu, 0 };
++		struct qrtr_ctrl l2 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 180, 0xFFFFFFFFu, 0 };
++		struct qrtr_ctrl l3 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 74, 0xFFFFFFFFu, 0 };
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l, sizeof(l));
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l2, sizeof(l2));
++		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l3, sizeof(l3));
 +		q_lookup_sent = true;
-+		LOG("t=%u ms: sent qrtr NEW_LOOKUP services 45 and 42", ms);
++		LOG("t=%u ms: sent qrtr NEW_LOOKUP 0x45 and 0x42 (instances 180/74)", ms);
 +	}
 +	if (chan_up() && q_hello_rx && !q_announced) {
 +		svc_announce();
@@ -2766,82 +2772,6 @@
 +	}
 +	LOG("watch done: slave-kernel %08x, %s", last, ready ? "READY" : "NOT ready");
 +	return ready;
-+}
-+
-+/* Log every private SMEM item: id, size and its first word/16 bytes. */
-+static void
-+smem_dump(struct smem_part_hdr *p, const char *what)
-+{
-+	uint8_t *e, *end;
-+	unsigned n = 0;
-+
-+	if (p == NULL) {
-+		LOG("SMEM %s: no partition", what);
-+		return;
-+	}
-+	LOG("SMEM %s: size %u used %u cached %u", what, p->size, p->free_uncached, p->free_cached);
-+	e = (uint8_t *)p + sizeof(*p);
-+	end = (uint8_t *)p + p->free_uncached;
-+	while (e + sizeof(struct smem_priv_entry) <= end && n < 60) {
-+		struct smem_priv_entry *h = (struct smem_priv_entry *)e;
-+		const uint8_t *d = e + sizeof(*h) + h->pad_hdr;
-+		if (h->canary != 0xA5A5) {
-+			LOG("SMEM %s: broken entry at +0x%x (canary %04x)", what,
-+			    (unsigned)(e - (uint8_t *)p), h->canary);
-+			break;
-+		}
-+		LOG("SMEM %s: item %u size %u data %02x%02x%02x%02x %02x%02x%02x%02x",
-+		    what, h->item, h->size - h->pad_data, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
-+		e += sizeof(*h) + h->pad_hdr + h->size;
-+		n++;
-+	}
-+	LOG("SMEM %s: %u items", what, n);
-+}
-+
-+/*
-+ * Next boot goes to recovery: write the Android bootloader control block
-+ * ("boot-recovery" in the misc partition's command field) and reset through
-+ * PSCI. This removes the manual Power+VolumeDown step after every test.
-+ */
-+static void
-+reboot_to_recovery(void)
-+{
-+	static const char bcb[32] = { 'b', 'o', 'o', 't', '-', 'r', 'e', 'c', 'o', 'v', 'e', 'r', 'y' };
-+	uint64_t first = 0, blocks = 0;
-+	uint32_t lun = 0;
-+	int err;
-+	uint64_t a[8] = { 0x84000009ULL, 0, 0, 0, 0, 0, 0, 0 };
-+
-+	err = sweet_ufs_part("misc", &first, &blocks, &lun);
-+	if (err == 0) {
-+		err = sweet_ufs_pwrite(lun, first, blocks, 0, bcb, sizeof(bcb));
-+	}
-+	LOG("recovery: misc LUN %u block 0x%llx, BCB write %d", lun, first, err);
-+	if (err != 0) {
-+		return;                         /* leave the phone alone if unsure */
-+	}
-+	IOSleep(200);
-+	LOG("recovery: PSCI SYSTEM_RESET");
-+	smc_call(a);
-+	LOG("recovery: PSCI reset returned");
-+}
-+
-+static void
-+recovery_thread(void *arg __unused, wait_result_t wr __unused)
-+{
-+	uint32_t rec = 1, delay = 45000;
-+
-+	if (!PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) || !rec) {
-+		thread_terminate(current_thread());
-+		return;
-+	}
-+	(void)PE_parse_boot_argn("modem_recovery_after", &delay, sizeof(delay));
-+	if (delay < 2000) {
-+		delay = 2000;
-+	}
-+	IOSleep(delay);
-+	reboot_to_recovery();
-+	thread_terminate(current_thread());
 +}
 +
 +static void
