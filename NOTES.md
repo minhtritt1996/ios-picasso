@@ -200,6 +200,31 @@ the toolchain this xnu-8796 needs for the IORPC ABI) becomes unsupported on 2026
 and macos-15 has no Xcode 15. Plan: keep using macos-14 until then; afterwards a
 self-hosted macOS VM (KVM is available on this host) or an Xcode-16 IORPC port.
 
+### >>> UPDATE 2026-10-23 (modem PAS: firmware path understood, init_image next) <<<
+Live runs, in order, each fixing one real blocker:
+1. `sweetusb=2` resets the phone on the first DWC3 DMA; test boots use `sweetusb=0`.
+   `sweetscan=-` is also needed: the SpringBoard heap scanner (default on) writes
+   ~700 lines per crash loop and overwrites the 4 MiB console ring.
+2. `modem` lives on **UFS LUN 4** (`sde48`), userdata on LUN 0; `sweet_ufs_part()`
+   now probes LUNs 0-7 and `sweet_ufs_pread()` takes the LUN.
+3. The FAT root holds only a directory with long name `image`; `modem.mdt` and
+   `modem.bNN` are **long-named** entries inside it. The driver parses VFAT long
+   names now (8.3 aliases are generated garbage, e.g. `PCAFUI~2`).
+4. `modem.mdt` (9420 B): e_phnum 35, hash phdr index 1 (p_offset 0x1000, p_filesz
+   0x2038, p_paddr 0x9B800000), loadable segments 0x8C000000..0x9B800000,
+   RELOCATABLE set. It is a **split** MDT: `phdrs[0].p_filesz` = 1172 = ELF header
+   + phdr table, and the 8248-byte hash segment is **packed right after the
+   phdrs** (1172 + 8248 = the whole file). That is the first branch of Linux's
+   `qcom_mdt_read_metadata()`: metadata = header + hash, contiguous, no b01 read.
+5. TrustZone answers `PAS is_supported` with 0 for ids 0-15, and
+   `SCM_SVC_INFO get_version` with -1, so the SCM path is alive but those calls
+   are not what this TZ exposes. We proceed with the device-tree id 4 anyway; the
+   `init_image` return value is the next answer to read.
+Test loop: build payload with `--cmdline "modem=1 modem_watch=25 <base>"`, dd to
+`boot`, reboot, wait for the Apple logo ~30 s, hold Power+VolDown ~12 s,
+`tools/picasso-modem-log.sh`. Artifacts: `tools/gh-artifact.sh RUN xnu-kernel OUT.zip`
+(8 ranged connections, ~35 s for 60 MB).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
