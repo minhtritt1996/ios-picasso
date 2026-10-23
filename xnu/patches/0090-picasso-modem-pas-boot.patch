@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2920 @@
+@@ -0,0 +1,2928 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -742,6 +742,7 @@
 +static uint32_t pdr_node, pdr_port;
 +static bool pdr_sent;
 +static bool pdr_nolen_done;
++static uint32_t pdr_instance;
 +static unsigned pdr_restart_next;
 +static void pdr_restart(const char *path);
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
@@ -1014,7 +1015,8 @@
 +		LOG("t=%u ms: qrtr v%u HELLO from node %u", g_ms, q_ver, src_node);
 +		break;
 +	case QRTR_TYPE_NEW_SERVER:
-+		LOG("t=%u ms: qrtr NEW_SERVER %x:%x node %u port %x", g_ms, c->a, c->b, c->c, c->d);
++		LOG("t=%u ms: qrtr NEW_SERVER svc %x v%u i%u node %u port %x", g_ms, c->a,
++		    c->b & 0xffff, c->b >> 16, c->c, c->d);
 +		if (q_srv_count < sizeof(q_srv) / sizeof(q_srv[0])) {
 +			q_srv[q_srv_count].svc = c->a;
 +			q_srv[q_srv_count].inst = c->b;
@@ -1025,6 +1027,7 @@
 +		if (c->a == 0x42 && c->d != 0) {
 +			pdr_node = c->c;
 +			pdr_port = c->d;
++			pdr_instance = c->b >> 16;      /* version in the low half */
 +		}
 +		if (c->a == QMI_SVC_WLFW) {
 +			LOG("t=%u ms: *** WLFW service 0x45 up: inst %x node %u port %x ***", g_ms, c->b, c->c, c->d);
@@ -1249,9 +1252,10 @@
 +	/* the vendor icnss registers a service lookup rather than trusting the
 +	 * broadcast: ask the modem's name server for WLFW (service 0x45) too */
 +	if (chan_up() && q_hello_rx && !q_lookup_sent) {
-+		struct qrtr_ctrl l = { QRTR_TYPE_NEW_LOOKUP, QMI_SVC_WLFW, 0, 0xFFFFFFFFu, 0 };
-+		struct qrtr_ctrl l2 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 180, 0xFFFFFFFFu, 0 };
-+		struct qrtr_ctrl l3 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 74, 0xFFFFFFFFu, 0 };
++		/* lookups carry the same version/instance pair as the records */
++		struct qrtr_ctrl l = { QRTR_TYPE_NEW_LOOKUP, QMI_SVC_WLFW, 1u, 0xFFFFFFFFu, 0 };
++		struct qrtr_ctrl l2 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 1u | (180u << 16), 0xFFFFFFFFu, 0 };
++		struct qrtr_ctrl l3 = { QRTR_TYPE_NEW_LOOKUP, 0x42, 1u | (74u << 16), 0xFFFFFFFFu, 0 };
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l, sizeof(l));
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l2, sizeof(l2));
 +		qrtr_send(QRTR_TYPE_NEW_LOOKUP, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &l3, sizeof(l3));
@@ -2375,18 +2379,22 @@
 +static void
 +svc_announce(void)
 +{
-+	static const struct { uint32_t svc, inst, port; } list[] = {
-+		/* The modem matches on this field: with instance 0 it ignored all
-+		 * three services, with 0x101/1 it queries pd-mapper and rmtfs. */
-+		{ 0x40, 0x101, PORT_PDM },
-+		{ 0x1000, 0x1, PORT_TFTP },
-+		{ 0x0e, 0x1, PORT_RMTFS },
++	/* qrtr-lookup on the working Android system reports:
++	 *   0x40 ver 1 inst 1  Service registry locator   (pd-mapper, on the AP)
++	 *   0x1000 ver 5 inst 0 TFTP
++	 *   0x15 ver 1 inst 0  Modem embedded file system (rmtfs)
++	 * The NEW_SERVER record packs version and instance as two u16 halves. */
++	static const struct { uint32_t svc, ver, inst, port; } list[] = {
++		{ 0x40, 1, 1, PORT_PDM },
++		{ 0x1000, 5, 0, PORT_TFTP },
++		{ 0x15, 1, 0, PORT_RMTFS },
 +	};
 +	for (unsigned i = 0; i < sizeof(list) / sizeof(list[0]); i++) {
-+		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc, list[i].inst, QRTR_NODE_APPS, list[i].port };
++		struct qrtr_ctrl c = { QRTR_TYPE_NEW_SERVER, list[i].svc,
++		    (list[i].ver & 0xffffu) | (list[i].inst << 16), QRTR_NODE_APPS, list[i].port };
 +		qrtr_send(QRTR_TYPE_NEW_SERVER, QRTR_PORT_CTRL, q_modem_node, QRTR_PORT_CTRL, &c, sizeof(c));
 +	}
-+	LOG("t=%u ms: announced pd-mapper 0x40 and tftp 0x1000", g_ms);
++	LOG("t=%u ms: announced pd-mapper 0x40 v1 i1, tftp 0x1000 v5 i0, rmtfs 0x15 v1 i0", g_ms);
 +}
 +
 +/* ---------------------------------------------------------------- PAS boot */
