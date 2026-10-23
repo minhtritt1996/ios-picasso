@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,883 @@
+@@ -0,0 +1,886 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -44,8 +44,8 @@
 +extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +extern "C" void flush_dcache64(addr64_t pa, unsigned int len, boolean_t phys);
 +extern "C" ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
-+extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
-+extern "C" int sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
++extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun);
++extern "C" int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
 +
 +#define LOG(fmt, ...)   IOLog("PicassoModem: " fmt "\n", ##__VA_ARGS__)
 +
@@ -175,6 +175,7 @@
 +/* ---------------------------------------------------------------- vfat (read only) */
 +
 +struct fat_vol {
++	uint32_t lun;                   /* UFS LUN the partition lives on */
 +	uint64_t first, blocks;         /* absolute device LBA and length of the partition */
 +	uint32_t bps, spc, rsvd, nfats, root_ents, fatsz, root_clus;
 +	uint32_t root_sec, root_secs, data_sec, fat_ents;
@@ -198,14 +199,14 @@
 +}
 +
 +static int
-+fat_mount(struct fat_vol *v, uint64_t first, uint64_t nblocks)
++fat_mount(struct fat_vol *v, uint32_t lun, uint64_t first, uint64_t nblocks)
 +{
 +	uint8_t bs[512];
 +	uint64_t total_sec;
 +	int err;
 +
 +	bzero(v, sizeof(*v));
-+	err = sweet_ufs_pread(first, nblocks, 0, bs, sizeof(bs));
++	err = sweet_ufs_pread(lun, first, nblocks, 0, bs, sizeof(bs));
 +	if (err) {
 +		LOG("vfat: cannot read boot sector: %d", err);
 +		return err;
@@ -216,6 +217,7 @@
 +	}
 +	v->first = first;
 +	v->blocks = nblocks;
++	v->lun = lun;
 +	v->bps = (uint32_t)fat_read16(bs, 11);
 +	v->spc = bs[13];
 +	v->rsvd = (uint32_t)fat_read16(bs, 14);
@@ -249,7 +251,7 @@
 +	if (v->fat == NULL) {
 +		return ENOMEM;
 +	}
-+	err = sweet_ufs_pread(first, nblocks, (uint64_t)v->rsvd * v->bps, v->fat, v->fatsz * v->bps);
++	err = sweet_ufs_pread(lun, first, nblocks, (uint64_t)v->rsvd * v->bps, v->fat, v->fatsz * v->bps);
 +	if (err) {
 +		LOG("vfat: cannot read the FAT: %d", err);
 +		return err;
@@ -293,7 +295,7 @@
 +		}
 +		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
 +		n = MIN(len, per);
-+		err = sweet_ufs_pread(v->first, v->blocks, off, out, n);
++		err = sweet_ufs_pread(v->lun, v->first, v->blocks, off, out, n);
 +		out += n;
 +		len -= n;
 +		clus = fat_next(v, clus);
@@ -310,7 +312,7 @@
 +	*used = 0;
 +	if (v->root_clus == 0) {
 +		uint32_t n = MIN(cap, v->root_secs * v->bps);
-+		err = sweet_ufs_pread(v->first, v->blocks, (uint64_t)v->root_sec * v->bps, buf, n);
++		err = sweet_ufs_pread(v->lun, v->first, v->blocks, (uint64_t)v->root_sec * v->bps, buf, n);
 +		if (!err) {
 +			*used = n;
 +		}
@@ -326,7 +328,7 @@
 +		}
 +		off = ((uint64_t)v->data_sec + (uint64_t)(clus - 2) * v->spc) * v->bps;
 +		n = MIN(cap - *used, per);
-+		err = sweet_ufs_pread(v->first, v->blocks, off, (uint8_t *)buf + *used, n);
++		err = sweet_ufs_pread(v->lun, v->first, v->blocks, off, (uint8_t *)buf + *used, n);
 +		if (err) {
 +			return err;
 +		}
@@ -600,6 +602,7 @@
 +{
 +	struct fat_vol v;
 +	uint64_t part_lba = 0, part_blocks = 0, meta_pa = 0, res = 0, st;
++	uint32_t part_lun = 0;
 +	uint8_t *mdt = NULL, *meta;
 +	int64_t mdt_size;
 +	uint32_t min_a = ~0u, max_a = 0, hash = ~0u;
@@ -618,17 +621,17 @@
 +		LOG("modem SMP2P item %u already exists: the modem is not cold, not touching it", ITEM_SMP2P_IN);
 +		return false;
 +	}
-+	if (sweet_ufs_part("modem", &part_lba, &part_blocks) != 0 &&
-+	    sweet_ufs_part("modem_a", &part_lba, &part_blocks) != 0) {
-+		LOG("no \"modem\" or \"modem_a\" partition");
++	if (sweet_ufs_part("modem", &part_lba, &part_blocks, &part_lun) != 0 &&
++	    sweet_ufs_part("modem_a", &part_lba, &part_blocks, &part_lun) != 0) {
++		LOG("no \"modem\" partition on LUNs 0-7");
 +		return false;
 +	}
-+	LOG("modem partition: block 0x%llx, %llu MiB", part_lba, part_blocks * 4096 >> 20);
++	LOG("modem partition: LUN %u block 0x%llx, %llu MiB", part_lun, part_lba, part_blocks * 4096 >> 20);
 +	out = smp2p_out(part);
 +	smp2p_add(out, "master-kernel", 0);
 +	smp2p_add(out, "ipa", 0);
 +	LOG("SMP2P out item %u ready (%u entries)", ITEM_SMP2P_OUT, out != NULL ? out->valid : 0);
-+	if (fat_mount(&v, part_lba, part_blocks) != 0) {
++	if (fat_mount(&v, part_lun, part_lba, part_blocks) != 0) {
 +		return false;
 +	}
 +

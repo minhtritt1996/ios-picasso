@@ -8,30 +8,69 @@
  extern void sweet_sample_start(void);
  extern void sweet_keys_init(void);
  extern void sweet_touch_init(void);
-@@ -300,7 +301,7 @@
+@@ -300,15 +301,19 @@
  }
  
  static int
 -ufs_find_partition(const char *want)
-+ufs_gpt_entry(const char *want, uint64_t *first_out, uint64_t *last_out)
++ufs_gpt_entry_lun(uint8_t lun, const char *want, uint64_t *first_out, uint64_t *last_out)
  {
  	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
- 	int error = ufs_read_blocks(1, 1);
-@@ -345,15 +346,89 @@
+-	int error = ufs_read_blocks(1, 1);
++	uint8_t saved = su.lun;
++	int error;
++
++	su.lun = lun;
++	error = ufs_read_blocks(1, 1);
+ 	if (error) {
+ 		return error;
+ 	}
+ 	if (memcmp(b, "EFI PART", 8) != 0) {
+-		printf("SWEET UFS: LUN %u has no GPT\n", su.lun);
++		su.lun = saved;
+ 		return ENXIO;
+ 	}
+ 	uint64_t entry_lba;
+@@ -317,11 +322,12 @@
+ 	memcpy(&nent, b + 80, 4);
+ 	memcpy(&esz, b + 84, 4);
+ 	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
+-		printf("SWEET UFS: unsupported GPT entries %u x %u\n", nent, esz);
++		su.lun = saved;
+ 		return ENXIO;
+ 	}
+ 	error = ufs_read_blocks(entry_lba, (nent * esz + UFS_BLOCK - 1) / UFS_BLOCK);
+ 	if (error) {
++		su.lun = saved;
+ 		return error;
+ 	}
+ 	for (uint32_t i = 0; i < nent; i++) {
+@@ -343,16 +349,112 @@
+ 		memcpy(&first, e + 32, 8);
+ 		memcpy(&last, e + 40, 8);
  		if (last < first) {
++			su.lun = saved;
  			return ENXIO;
  		}
 -		su.first_block = first;
 -		su.nblocks = last - first + 1;
 +		*first_out = first;
 +		*last_out = last;
++		su.lun = saved;
  		return 0;
  	}
 -	printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
- 	return ENOENT;
- }
- 
- static int
++	su.lun = saved;
++	return ENOENT;
++}
++
++static int
++ufs_gpt_entry(const char *want, uint64_t *first_out, uint64_t *last_out)
++{
++	return ufs_gpt_entry_lun(su.lun, want, first_out, last_out);
++}
++
++static int
 +ufs_find_partition(const char *want)
 +{
 +	uint64_t first, last;
@@ -52,33 +91,43 @@
 + * firmware on "modem" (iokit/Kernel/arm/PicassoModem.cpp). Lookup does not
 + * disturb su.first_block; reads share the bounce buffer and the lock.
 + */
-+int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks);
-+int sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
++int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun);
++int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst,
++    uint32_t len);
 +
++/*
++ * Find a GPT partition on any UFS LUN: on picasso "userdata" is on LUN 0
++ * but "modem" is on LUN 4, and every LUN has its own GPT.
++ */
 +int
-+sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks)
++sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun)
 +{
-+	uint64_t f, l;
-+	int error;
-+
 +	if (!su.ready) {
 +		return ENXIO;
 +	}
-+	lck_mtx_lock(&sweet_ufs_lock);
-+	error = ufs_gpt_entry(name, &f, &l);
-+	lck_mtx_unlock(&sweet_ufs_lock);
-+	if (error) {
-+		return error;
-+	}
-+	*first = f;
-+	*nblocks = l - f + 1;
-+	return 0;
-+}
++	for (uint32_t u = 0; u < 8; u++) {
++		uint64_t f, l;
++		int error;
 +
++		lck_mtx_lock(&sweet_ufs_lock);
++		error = ufs_gpt_entry_lun((uint8_t)u, name, &f, &l);
++		lck_mtx_unlock(&sweet_ufs_lock);
++		if (error == 0) {
++			*first = f;
++			*nblocks = l - f + 1;
++			*lun = u;
++			return 0;
++		}
++	}
+ 	return ENOENT;
+ }
+ 
 +int
-+sweet_ufs_pread(uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len)
++sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst,
++    uint32_t len)
 +{
 +	const char *b = (const char *)(su.dma + DMA_BOUNCE);
++	uint8_t saved;
 +	int error = 0;
 +
 +	if (!su.ready) {
@@ -88,6 +137,8 @@
 +		return EINVAL;
 +	}
 +	lck_mtx_lock(&sweet_ufs_lock);
++	saved = su.lun;
++	su.lun = (uint8_t)lun;
 +	while (len && !error) {
 +		uint64_t lba = off / UFS_BLOCK;
 +		uint32_t skip = (uint32_t)(off % UFS_BLOCK);
@@ -102,15 +153,15 @@
 +		off += want;
 +		len -= want;
 +	}
++	su.lun = saved;
 +	lck_mtx_unlock(&sweet_ufs_lock);
 +	return error;
 +}
 +
-+static int
+ static int
  ufs_take_over_host(void)
  {
- 	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
-@@ -660,6 +735,8 @@
+@@ -660,6 +762,8 @@
  	sweet_keys_init();
  	sweet_touch_init();
  	sweet_usb_probe();
