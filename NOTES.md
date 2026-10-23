@@ -588,6 +588,18 @@ Message ids used by the AP side, in the order icnss runs them:
 The TLV (type,length) tables are in qmi_wlfw_v01.c; fetch from
 greearb/ath10k-ct (ath10k-5.4/qmi_wlfw_v01.{h,c}) when implementing.
 
+### WLFW TLV ids (icnss generation, wlan_firmware_service_v01.c)
+IND_REGISTER 0x0020 request:
+  0x10 u8 fw_ready_enable, 0x11 u8 initiate_cal_download_enable,
+  0x12 u8 initiate_cal_update_enable, 0x13 u8 msa_ready_enable,
+  0x14 u8 pin_connect_result_enable, 0x15 u32 client_id,
+  0x16 u8 request_mem_enable, 0x17 u8 fw_mem_ready_enable,
+  0x18 u8 cold_boot_cal_done_enable, 0x19 u32 rejuvenate_enable
+CAP 0x0024 / MSA_READY 0x002b carry no request TLVs (empty request).
+HOST_CAP 0x0034: 0x10 daemon_support. DYNAMIC_FEATURE_MASK 0x003B.
+Source: os-vector/wire-os kernel/msm-4.9/drivers/soc/qcom/wlan_firmware_service_v01.{h,c}
+(also OnePlusOSS sm8150 icnss_qmi.c, same icnss generation as picasso).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
