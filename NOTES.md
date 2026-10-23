@@ -305,6 +305,25 @@ Host services implemented in PicassoModem.cpp: pd-mapper (0x40) and tftp (servic
 serving /readonly/firmware/image/<name> from image/<name> via the FAT reader, cached in
 RAM); rmtfs is not implemented yet and nothing has asked for it.
 
+### >>> UPDATE 2026-10-23 (60 s run: MSA empty, PDR stops after two TMS queries) <<<
+- The WLAN MSA pool (`qcom,wlan-msa-fixed-region`, 0x8BA00000 + 2 MiB) is **all zeros** at
+  boot: the bootloader does not preload any WLAN firmware.
+- pd-mapper now answers both queries (`tms/pdr_enabled`, `tms/pddump_disabled` -> 1 domain
+  each) but the modem asks nothing more in 60 s: no `wlan/fw`, no `kernel/elf_loader`, and
+  our tftp service (announced, service 4096) is never contacted. WLFW never appears.
+- Modem firmware contains no WLFW strings (strings over modem.b00..b33), while the vendor
+  host module qca_cld3_wlan.ko does; the WLFW server therefore comes from the WLAN
+  firmware, which nothing on this device has loaded yet.
+Open leads, ranked:
+A. pd-mapper response encoding: the request uses a 7-byte QMI header and a raw NUL-free
+   name TLV; the domain-list entry may also be raw/padded rather than the length-prefixed
+   form we copied from topaz. A silently rejected response would explain the dead end.
+B. servreg-notif (0x42): the modem may start the wlan PD only after the AP registers for
+   its state; no client registration has been attempted.
+C. Load `image/wlanmdsp.mbn` ourselves: the image links at IOVA 0xB0000000..0xB07B1198
+   (inside `qcom,iommu-dma-addr-pool`), 3.87 MB, split MDT-style; would need the WLAN
+   SMMU + copy engines, which is where the qcacld host driver comes in.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
