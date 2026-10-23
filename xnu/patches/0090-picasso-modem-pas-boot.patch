@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2563 @@
+@@ -0,0 +1,2581 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1822,9 +1822,12 @@
 +	}
 +}
 +
++/* variant sweep for the register-listener string encoding of "wlan/fw":
++ * 0 = QMI string (u8 len + chars), 1 = with NUL, 2 = raw NUL-terminated */
 +static const char * const pdr_paths[] = {
-+	"msm/modem/root_pd", "msm/modem/wlan", "msm/wlan/wlan_pd", "msm/modem/wlan/fw",
++	"wlan/fw", "wlan/fw", "wlan/fw",
 +};
++#define PDR_VARIANT_COUNT 3
 +static const char * const pdr_queries[] = { "wlan/fw", "msm/modem/wlan_pd" };
 +static unsigned pdr_qnext;
 +static unsigned pdr_next;
@@ -1849,9 +1852,24 @@
 +	{
 +		uint8_t str[64];
 +		uint8_t n = (uint8_t)strlen(path);
-+		str[0] = n;
-+		memcpy(str + 1, path, n);
-+		qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		unsigned variant = 0;
++		static unsigned sent_so_far;
++		variant = sent_so_far++;
++		if (variant == 0) {
++			str[0] = n;
++			memcpy(str + 1, path, n);
++			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		} else if (variant == 1) {
++			str[0] = (uint8_t)(n + 1);
++			memcpy(str + 1, path, n);
++			str[n + 1] = 0;
++			qm_tlv(&m, 0x02, str, (uint16_t)(n + 2));
++		} else {
++			memcpy(str, path, n);
++			str[n] = 0;
++			qm_tlv(&m, 0x02, str, (uint16_t)(n + 1));
++		}
++		LOG("t=%u ms: PDR encoding variant %u", g_ms, variant);
 +	}
 +	LOG("t=%u ms: PDR register listener \"%s\" -> node %u port %x", g_ms, path, pdr_node, pdr_port);
 +	qm_send(&m, PORT_PDR, pdr_node, pdr_port);
