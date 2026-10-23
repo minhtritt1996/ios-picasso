@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2870 @@
+@@ -0,0 +1,2891 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2772,6 +2772,27 @@
 +	}
 +	LOG("watch done: slave-kernel %08x, %s", last, ready ? "READY" : "NOT ready");
 +	return ready;
++}
++
++/* Independent of the modem/GLINK path: after modem_recovery_after ms, write the
++ * Android BCB command "boot-recovery" into misc and reset through PSCI, so a
++ * hung modem thread can never keep the phone in iOS. */
++static void
++recovery_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	uint32_t rec = 1, delay = 45000;
++
++	if (!PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) || !rec) {
++		thread_terminate(current_thread());
++		return;
++	}
++	(void)PE_parse_boot_argn("modem_recovery_after", &delay, sizeof(delay));
++	if (delay < 2000) {
++		delay = 2000;
++	}
++	IOSleep(delay);
++	reboot_to_recovery();
++	thread_terminate(current_thread());
 +}
 +
 +static void
