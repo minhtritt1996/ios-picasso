@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2931 @@
+@@ -0,0 +1,2935 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1362,13 +1362,17 @@
 +	return false;
 +}
 +
++/* Both servreg-locator and rmtfs declare `struct qmi_result { u16 result;
++ * u16 error; }` as ONE TLV 0x02 (four bytes), not the generic split
++ * result/error TLVs. */
 +static void
 +qm_result(struct qmsg *m, bool ok)
 +{
-+	uint16_t r = 0;
-+	qm_tlv(m, 0x02, &r, 2);
-+	uint16_t e = ok ? 0 : 1;
-+	qm_tlv(m, 0x03, &e, 2);
++	uint16_t r[2];
++
++	r[0] = ok ? 0 : 1;
++	r[1] = 0;
++	qm_tlv(m, 0x02, r, 4);
 +}
 +
 +/* TLVs start after the 7-byte QMI header; this stack sends the service
