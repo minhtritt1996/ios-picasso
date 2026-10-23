@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3462 @@
+@@ -0,0 +1,3474 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2607,9 +2607,13 @@
 +	if (rmtfs_pa != 0) {
 +		return;
 +	}
-+	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
-+	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
-+		LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
++	/* Low memory only: the modem addresses this buffer with 32-bit
++	 * physical addresses in its IOVEC requests. */
++	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0,
++	    0xFFFFFFFFull, (kma_flags_t)(KMA_DATA | KMA_ZERO),
++	    VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
++		LOG("rmtfs: cannot allocate %u bytes below 4 GiB",
++		    (uint32_t)RMTFS_BUF_SIZE);
 +		return;
 +	}
 +	rmtfs_va = (uint8_t *)va;
@@ -2717,10 +2721,15 @@
 +				uint64_t psz = 0, done = 0, base = (uint64_t)e[0] * 512;
 +
 +				bytes = (uint64_t)e[2] * 512;
-+				/* phys_offset is an offset from the shared buffer's base
-+				 * (rmtfs.c: phys_base = entries[i].phys_offset and the
-+				 * memory device is addressed by offset), not an address. */
-+				if ((uint64_t)e[1] + bytes > RMTFS_BUF_SIZE) {
++				/*
++				 * phys_offset is the buffer address the modem wants
++				 * the data at (rmtfs_mem_ptr() maps it as an absolute
++				 * physical address inside the memory device). TZ will
++				 * not hand ordinary kernel RAM to the modem VMs, so
++				 * write straight into the address it names instead of
++				 * through an assigned buffer.
++				 */
++				if (e[1] < 0x40000000ull || bytes == 0 || bytes > 0x800000ull) {
 +					ok = false;
 +					break;
 +				}
@@ -2733,14 +2742,17 @@
 +					/* never write back to the phone's EFS */
 +					rmtfs_writes++;
 +				} else {
-+					/* bounded chunks: a multi-megabyte single UFS
-+					 * read from the GLINK path is what the modem
-+					 * asks for and what we have never done. */
 +					while (ok && done < bytes) {
 +						uint32_t n = (uint32_t)MIN(bytes - done, 0x40000ull);
++						IOMemoryMap *dm = map_phys((uint64_t)e[1] + done, n, false);
 +
++						if (dm == NULL) {
++							ok = false;
++							break;
++						}
 +						ok = part_io(rmtfs_parts[caller - 1].part, base + done,
-+						    rmtfs_va + e[1] + done, n, false) == 0;
++						    (void *)dm->getVirtualAddress(), n, false) == 0;
++						dm->release();
 +						done += n;
 +					}
 +					rmtfs_reads++;
@@ -2755,9 +2767,9 @@
 +					memcpy(&e2, iov + 9, 4);
 +				}
 +				LOG("t=%u ms: rmtfs iovec caller %u %s FAILED n=%u len=%u "
-+				    "e0=%x e1=%x e2=%x pa=%llx va=%p", g_ms, caller,
++				    "e0=%x e1=%x e2=%x pa=%llx", g_ms, caller,
 +				    write ? "write" : "read", iov != NULL ? iov[0] : 0,
-+				    iovlen, e0, e1, e2, rmtfs_pa, rmtfs_va);
++				    iovlen, e0, e1, e2, rmtfs_pa);
 +			}
 +			qm_result(&m, ok);
 +			break;
