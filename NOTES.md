@@ -411,6 +411,36 @@ Next suspects for the dead end after OPEN: the exact OPEN response bytes (dump t
 whether the modem expects the four files opened in a specific order, or that it needs the
 `svc`/`sysfs` variants of the rmtfs service instance (announced instance 1 here).
 
+### >>> GOLDEN DATA 2026-10-23: Droidian (vendor kernel) as the live reference <<<
+Droidian still boots on this phone: rootfs is `/data/rootfs.img` (34 GB) inside `userdata`
+(sda34, ext4); the iOS root is the separate `darwin` partition, so nothing was lost.
+Boot image `~/droidian/output/halium-boot-picasso.img` (cmdline has
+`service_locator.enable=1`, `androidboot.usbcontroller=a600000.dwc3`). Reachable over
+Tailscale: `droidian@100.110.234.108`, password 1234, sudo with the same password.
+Kernel: `4.19.113-lineage-picasso+ #65`; **Wi-Fi works there** (wlan0 associated, DHCP).
+Vendor bring-up measured from its dmesg:
+- modem PIL at 15.4 s: `subsys-pil-tz 4080000.qcom,mss: modem: loading from 0x8c000000 to
+  0x9b800000`, firmware via ueventd from /vendor/firmware_mnt/image (same files we load).
+- 18.147 s: `service-notifier: root_service_service_ind_cb: Indication received from
+  msm/modem/wlan_pd, state: 0x1fffffff, trans-id: 1`, ACKed with **instance 180**.
+- 18.149 s: `icnss_qmi: QMI Server Connected: state: 0x980`; 24.186 s: `icnss: WLAN FW is
+  ready: 0xd87` — i.e. the modem itself brings wlan_pd up ~2.5 s after PIL and the WLAN
+  firmware then hosts WLFW.
+- The kernel's PDR client: `service-notifier.c` uses `SERVREG_NOTIF_SERVICE_ID_V01 = 0x42`,
+  version 0x01, and does `qmi_add_lookup(svc, ver, instance)` before registering; the
+  printed "74"/"180 service" are those **client instance ids**.
+- Userspace daemons seen: `qrtr-ns -f`, `pd-mapper`, `tftp_server`; **no rmtfs daemon**,
+  yet WLAN works, so EFS is not required for WLAN bring-up.
+USB reference data (why USB is closed for XNU):
+- `msm-dwc3 a600000.ssusb: Linked as a consumer to 15000000.apps-smmu`: USB sits behind the
+  apps-SMMU; DT `apps-smmu@15000000` is one 1 MiB block (no non-secure bank to dodge).
+- Only the HS PHY exists (`ssphy-qmp ... unable to get vdd supply`).
+- Droidian has no `/dev/mem`, so S2CR/DWC3 cannot be read live to copy the working config;
+  in XNU those accesses hang, i.e. the gate is TZ/SMMU security, not driver sequencing.
+Next: finish the PDR experiment with the confirmed name (`msm/modem/wlan_pd`, instances
+180 then 0) plus lookups for 0x42; if WLFW appears, continue with the topaz WLFW/WMI stack.
+Optional later: a Droidian kernel module (source: MiCode picasso-r-oss) to dump SMMU/DWC3.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
