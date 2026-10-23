@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2582 @@
+@@ -0,0 +1,2623 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -730,6 +730,7 @@
 +static void pdr_query(void);
 +static uint32_t pdr_node, pdr_port;
 +static bool pdr_sent;
++static bool pdr_nolen_done;
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
 +static unsigned g_ms;                           /* watch time, for the log */
@@ -1245,6 +1246,9 @@
 +	if (chan_up() && q_hello_rx && pdr_port != 0) {
 +		if (!pdr_sent) {
 +			pdr_register();
++		} else if (!pdr_nolen_done) {
++			pdr_nolen_done = true;
++			pdr_register_nolen("wlan/fw");
 +		} else {
 +			pdr_query();
 +		}
@@ -1877,6 +1881,43 @@
 +	if (pdr_next >= sizeof(pdr_tries) / sizeof(pdr_tries[0])) {
 +		pdr_sent = true;
 +	}
++}
++
++/* Some Qualcomm servers still speak the old 5-byte QMI header (no msg_len
++ * field). Send the same register request in that shape too. */
++static void
++pdr_register_nolen(const char *path)
++{
++	uint8_t *b = (uint8_t *)IOMalloc(128);
++	uint8_t enable = 1;
++	uint16_t txn = pdr_txn++;
++	uint16_t msg = SERVREG_REGISTER_LISTENER;
++	uint16_t len;
++	uint32_t n = 5;
++	uint8_t slen = (uint8_t)strlen(path);
++
++	if (b == NULL) {
++		return;
++	}
++	bzero(b, 128);
++	b[0] = QMI_REQ;
++	memcpy(b + 1, &txn, 2);
++	memcpy(b + 3, &msg, 2);
++	b[n++] = 0x01;
++	len = 1;
++	memcpy(b + n, &len, 2);
++	n += 2;
++	b[n++] = enable;
++	b[n++] = 0x02;
++	len = (uint16_t)(slen + 1);
++	memcpy(b + n, &len, 2);
++	n += 2;
++	b[n++] = slen;
++	memcpy(b + n, path, slen);
++	n += slen;
++	LOG("t=%u ms: PDR register (5-byte header) \"%s\"", g_ms, path);
++	qrtr_send(QRTR_TYPE_DATA, PORT_PDR, pdr_node, pdr_port, b, n);
++	IOFree(b, 128);
 +}
 +
 +static void
