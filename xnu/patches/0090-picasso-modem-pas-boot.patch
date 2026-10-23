@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,1731 @@
+@@ -0,0 +1,1738 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1709,8 +1709,15 @@
 +done:
 +	LOG("done");
 +	{
-+		uint32_t rec = 1;
++		uint32_t rec = 1, delay = 11000;
++		(void)PE_parse_boot_argn("modem_recovery_delay", &delay, sizeof(delay));
 +		if (PE_parse_boot_argn("modem_recovery", &rec, sizeof(rec)) && rec) {
++			/* the console ring is flushed every ufslogsecs (10 s): let the
++			 * summary reach the partition before the reset drops the RAM ring */
++			if (delay < 1000) {
++				delay = 1000;
++			}
++			IOSleep(delay);
 +			reboot_to_recovery();
 +		}
 +	}
