@@ -481,6 +481,18 @@ comes from something else in the request or from the modem's PDR state.
 Next decisive step (needs Droidian): capture the exact register_listener bytes the vendor
 kernel sends, with a kprobe on the QRTR send path, then diff them against ours.
 
+### Droidian byte capture blocked; modem rails are RPMh ARC levels (2026-10-23)
+- The vendor kernel has **no kprobe_events** (uprobes only), so the register_listener
+  bytes cannot be captured with tracefs on that kernel.
+- Android's AP never loads a WLAN firmware file: /vendor/firmware_mnt/image has only
+  bdwlan.*, and dmesg shows `icnss: WLAN FW is ready: 0xd87` at 24.6 s with no PIL of a
+  wlan image. The modem starts its own WLAN core; the AP only waits for WLFW.
+- Different from our driver: vendor PIL votes the modem's proxy regulators. Resolved from
+  the live DT (dtc -I fs): `vdd_cx` = RPMh ARC resource "cx.lvl" (pm8150 S1, level 0x10),
+  `vdd_mss` = "mss.lvl" (pm8150 S8, level 0x10). Those are *levels*, not voltages, so our
+  sweet_rpmh_vreg_enable() cannot vote them as-is; an ARC-level command would be needed.
+- Everything else in the modem environment matches (rails we vote, PIL args, firmware).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
