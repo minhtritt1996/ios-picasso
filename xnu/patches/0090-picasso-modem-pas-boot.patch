@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,2661 @@
+@@ -0,0 +1,2925 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1340,6 +1340,28 @@
 +	m->n += 3 + len;
 +}
 +
++static bool
++qm_tlv_find(const uint8_t *d, uint32_t len, uint8_t type, const uint8_t **val, uint32_t *vlen)
++{
++	uint32_t i = 7;
++
++	while (i + 3 <= len) {
++		uint8_t t = d[i];
++		uint16_t l;
++		memcpy(&l, d + i + 1, 2);
++		if (i + 3 + l > len) {
++			return false;
++		}
++		if (t == type) {
++			*val = d + i + 3;
++			*vlen = l;
++			return true;
++		}
++		i += 3 + l;
++	}
++	return false;
++}
++
 +static void
 +qm_result(struct qmsg *m, bool ok)
 +{
@@ -2046,6 +2068,246 @@
 +	return true;
 +}
 +
++/* ---------------------------------------------------------------- rmtfs */
++
++/*
++ * The modem's EFS (modemst1/modemst2/fsc/fsg) reached through a shared buffer.
++ * linux-msm/rmtfs: OPEN 1, CLOSE 2, RW_IOVEC 3, ALLOC_BUFF 4. The buffer is
++ * contiguous kernel memory handed to HLOS + MSS_MSA(15) + NAV(0x2b) through
++ * SCM hyp_assign_phys (0x0c/0x16), as the kernel's rmtfs_mem does.
++ */
++#define RMTFS_BUF_SIZE      0x300000
++#define VMID_HLOS           3
++#define VMID_MSS_MSA        15
++#define VMID_NAV            0x2B
++#define PERM_RW             6
++
++static const struct { const char *path, *part; } rmtfs_parts[] = {
++	{ "/boot/modem_fs1", "modemst1" },
++	{ "/boot/modem_fs2", "modemst2" },
++	{ "/boot/modem_fsc", "fsc" },
++	{ "/boot/modem_fsg", "fsg" },
++};
++static uint64_t rmtfs_pa;
++static uint8_t *rmtfs_va;
++static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err;
++
++/* Read/write len bytes at byte offset off of a GPT partition. */
++static int
++part_io(const char *name, uint64_t off, void *buf, uint32_t len, bool write)
++{
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	int err = sweet_ufs_part(name, &first, &blocks, &lun);
++
++	if (err) {
++		return err;
++	}
++	if (write) {
++		return sweet_ufs_pwrite(lun, first, blocks, off, buf, len);
++	}
++	return sweet_ufs_pread(lun, first, blocks, off, buf, len);
++}
++
++static uint64_t
++rmtfs_assign(uint64_t addr, uint64_t size)
++{
++	static const uint32_t vmids[] = { VMID_HLOS, VMID_MSS_MSA, VMID_NAV };
++	vm_offset_t va = 0;
++	uint64_t pa, args[8];
++	uint64_t *p;
++	uint32_t *src, *dst;
++	unsigned n;
++
++	if (kmem_alloc_contig(kernel_map, &va, 0x1000, PAGE_MASK, 0, 0,
++	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
++		return ~0ull;
++	}
++	pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++	p = (uint64_t *)va;
++	p[0] = addr;
++	p[1] = size;
++	src = (uint32_t *)(p + 8);
++	src[0] = VMID_HLOS;
++	dst = (uint32_t *)(p + 16);
++	for (unsigned i = 0; i < 3; i++) {
++		dst[6 * i] = vmids[i];
++		dst[6 * i + 1] = PERM_RW;
++	}
++	p[32] = 4;
++	p[33] = pa + 0x80;
++	p[34] = 3 * 24;
++	p[35] = 0;
++	mb();
++	args[0] = SCM_FN(0x0C, 0x16);
++	args[1] = 7 | (1 << 4) | (1 << 8) | (1 << 12);
++	args[2] = pa;
++	args[3] = 16;
++	args[4] = pa + 0x40;
++	args[5] = pa + 0x100;
++	args[6] = 0;
++	args[7] = 0;
++	smc_call(args);
++	for (n = 0; args[0] == 1 && n < 100000; n++) {
++		uint64_t again[8] = { 1, args[1], args[2], args[3], args[4], args[5], args[6], 0 };
++		memcpy(args, again, sizeof(args));
++		smc_call(args);
++	}
++	LOG("rmtfs: SCM assign %llx+%llx to modem: ret=%llx res=%llx", addr, size, args[0], args[1]);
++	kmem_free(kernel_map, va, 0x1000);
++	return args[0] != 0 ? args[0] : args[1];
++}
++
++/* rmtfs paths are QMI strings: u8 length then the characters. */
++static bool
++qm_string_qmi(const uint8_t *d, uint32_t len, uint8_t type, char *out, size_t max)
++{
++	const uint8_t *v = NULL;
++	uint32_t vl = 0;
++
++	out[0] = 0;
++	if (!qm_tlv_find(d, len, type, &v, &vl) || vl < 1) {
++		return false;
++	}
++	uint32_t n = v[0];
++	if (n > vl - 1) {
++		n = vl - 1;
++	}
++	n = MIN(n, (uint32_t)max - 1);
++	memcpy(out, v + 1, n);
++	out[n] = 0;
++	return true;
++}
++
++static void
++rmtfs_rx(uint32_t node, uint32_t port, uint16_t txn, uint16_t msg, const uint8_t *d, uint32_t len)
++{
++	struct qmsg m;
++	char path[64];
++	uint32_t caller = 0, i, l;
++	const uint8_t *v;
++	bool ok = true;
++
++	qm_init(&m, txn, msg);
++	if (m.b == NULL) {
++		return;
++	}
++	/* TLV 0x01 (u32 caller id) on every request except OPEN */
++	if (msg != 1) {
++		l = 0;
++		if (qm_tlv_find(d, len, 0x01, &v, &l) && l >= 4) {
++			memcpy(&caller, v, 4);
++		}
++	}
++	switch (msg) {
++	case 1:                                 /* OPEN */
++		path[0] = 0;
++		if (!qm_string_qmi(d, len, 0x01, path, sizeof(path))) {
++			(void)qm_string(d, len, 0x01, path, sizeof(path));    /* raw fallback */
++		}
++		for (i = 0; i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]); i++) {
++			if (strcmp(path, rmtfs_parts[i].path) == 0) {
++				break;
++			}
++		}
++		ok = i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]);
++		if (ok) {
++			uint8_t probe[16];
++			ok = part_io(rmtfs_parts[i].part, 0, probe, sizeof(probe), false) == 0;
++		}
++		LOG("t=%u ms: rmtfs open \"%s\" -> %s", g_ms, path, ok ? rmtfs_parts[i].part : "FAILED");
++		qm_result(&m, ok);
++		if (ok) {
++			uint32_t id = i + 1;
++			qm_tlv(&m, 0x10, &id, 4);
++		}
++		break;
++	case 2:                                 /* CLOSE */
++		qm_result(&m, true);
++		break;
++	case 3: {                               /* RW_IOVEC */
++			uint16_t l2 = 0;
++			const uint8_t *dir = NULL, *iov = NULL;
++			uint32_t iovlen = 0;
++			bool write;
++			(void)qm_tlv_find(d, len, 0x02, &dir, &l2);
++			(void)qm_tlv_find(d, len, 0x03, &iov, &iovlen);
++			write = dir != NULL && *dir != 0;
++			ok = caller >= 1 && caller <= sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]) &&
++			    iov != NULL && iovlen >= 1 && rmtfs_pa != 0;
++			for (i = 0; ok && i < iov[0] && 1 + 12 * (i + 1) <= iovlen; i++) {
++				uint32_t e[3];
++				uint64_t bytes;
++				memcpy(e, iov + 1 + 12 * i, 12);
++				bytes = (uint64_t)e[2] * 512;
++				if (e[1] < rmtfs_pa || (uint64_t)e[1] + bytes > rmtfs_pa + RMTFS_BUF_SIZE) {
++					ok = false;
++					break;
++				}
++				if (write) {
++					/* never write back to the phone's EFS */
++					rmtfs_writes++;
++				} else {
++					ok = part_io(rmtfs_parts[caller - 1].part, (uint64_t)e[0] * 512,
++					    rmtfs_va + (e[1] - rmtfs_pa), (uint32_t)bytes, false) == 0;
++					rmtfs_reads++;
++				}
++			}
++			if (!ok && ++rmtfs_err <= 3) {
++				LOG("t=%u ms: rmtfs iovec caller %u %s FAILED", g_ms, caller,
++				    write ? "write" : "read");
++			}
++			qm_result(&m, ok);
++			break;
++		}
++	case 4: {                               /* ALLOC_BUFF */
++			uint32_t size = 0;
++			uint64_t addr;
++			l = 0;
++			if (qm_tlv_find(d, len, 0x02, &v, &l) && l >= 4) {
++				memcpy(&size, v, 4);
++			}
++			if (rmtfs_pa == 0) {
++				vm_offset_t va = 0;
++
++				if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++				    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS ||
++				    va == 0) {
++					LOG("t=%u ms: rmtfs: cannot allocate the shared buffer", g_ms);
++					qm_result(&m, false);
++					break;
++				}
++				rmtfs_va = (uint8_t *)va;
++				rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++				{
++					uint64_t r = rmtfs_assign(rmtfs_pa, RMTFS_BUF_SIZE);
++					LOG("t=%u ms: rmtfs: shared buffer %llx+%llx assign %llx",
++					    g_ms, rmtfs_pa, (uint64_t)RMTFS_BUF_SIZE, r);
++				}
++			}
++			addr = rmtfs_pa;
++			LOG("t=%u ms: rmtfs alloc: caller %u size %u -> %llx", g_ms, caller, size, addr);
++			qm_result(&m, addr != 0);
++			if (addr != 0) {
++				qm_tlv(&m, 0x10, &addr, 8);
++			}
++			break;
++		}
++	case 5:                                 /* GET_DEV_ERROR */
++		qm_result(&m, true);
++		{
++			uint8_t st = 0;
++			qm_tlv(&m, 0x10, &st, 1);
++		}
++		break;
++	default:
++		LOG("t=%u ms: rmtfs: unknown msg %u", g_ms, msg);
++		qm_result(&m, false);
++		break;
++	}
++	qm_send(&m, PORT_RMTFS, node, port);
++}
++
 +/* ---------------------------------------------------------------- service dispatch */
 +
 +static bool
@@ -2070,10 +2332,12 @@
 +		return true;
 +	}
 +	if (dst_port == PORT_RMTFS) {
-+		LOG("t=%u ms: rmtfs request, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
-+		    g_ms, len, len > 0 ? data[0] : 0, len > 1 ? data[1] : 0, len > 2 ? data[2] : 0,
-+		    len > 3 ? data[3] : 0, len > 4 ? data[4] : 0, len > 5 ? data[5] : 0,
-+		    len > 6 ? data[6] : 0, len > 7 ? data[7] : 0);
++		if (len >= 7 && data[0] == QMI_REQ) {
++			uint16_t txn, msg;
++			memcpy(&txn, data + 1, 2);
++			memcpy(&msg, data + 3, 2);
++			rmtfs_rx(src_node, src_port, txn, msg, data, len);
++		}
 +		return true;
 +	}
 +	if (dst_port == PORT_PDR) {
