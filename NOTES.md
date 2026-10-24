@@ -760,6 +760,25 @@ from alloc-ranges), pil_wlan_fw_region 0x8ba00000 (2 MiB, exactly the size the m
 asks for, currently zeroed and unused until WLFW), smem_region 0x80900000 (in use).
 Trying the pil_wlan_fw_region as the rmtfs buffer is the cheapest next experiment.
 
+### The modem address is confirmed, but the AP may not write reserved memory (2026-10-24 11:10)
+Variant ae serves the buffer from pil_wlan_fw_region (0x8ba00000, exactly the 2 MiB the
+modem asks for), and the modem then uses 0x8ba00200 - our address plus the same 0x200
+offset. So the 32-bit truncation theory is fully confirmed: give it a low address and the
+IOVEC address matches.
+But the memcpy there hangs just like before: the AP is denied (XPU) on that reserved
+carveout, and it is denied on the truncated kernel address too. Every attempt to write a
+reserved region hangs the GLINK master with no fault.
+What is needed is a buffer **below 4 GiB in normal AP-owned RAM**. kmem_alloc_contig
+always hands out >0x1_00000000 at this point, IOMallocContiguous fails (or kills the boot
+when retried), so the options for the next session are:
+  a) reserve a low range (e.g. 0x48000000..0x50000000, past the kernel image, before the
+     first modem carveout at 0x80900000) in the shim's ADT as an owned region and map it;
+  b) allocate very early (before the VM hands out low pages) or from the DMA pool with a
+     single call (one call at the PAS-metadata point did work for 9 KiB);
+  c) check whether the modem accepts a 64-bit ALLOC_BUFF address when the reply TLV is
+     lengthened (the truncation may be in the modem's parser, not the protocol).
+The phone is left running variant ac (md5 21529ab58062c91669cf6f058e13f7db).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
