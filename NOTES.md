@@ -779,6 +779,20 @@ when retried), so the options for the next session are:
      lengthened (the truncation may be in the modem's parser, not the protocol).
 The phone is left running variant ac (md5 21529ab58062c91669cf6f058e13f7db).
 
+### The XNU ADT has no /reserved-memory (2026-10-24 11:25)
+Variant af added a read-only dump of the device tree XNU actually sees; it reports
+`adt: no /reserved-memory node`. The shim passes an Apple-style ADT (memory, chosen,
+interrupts), not the Qualcomm DT, so the reserved carveout map cannot be read from inside
+the kernel this way (the Linux DT is only visible to the recovery/Linux kernel).
+Next concrete step, deterministic and safe: let the **shim** reserve the rmtfs window.
+shim/board.c already computes the RAM chunk and the exclusion list (hw.rsv[]); carve a
+2 MiB hole below 4 GiB at a known offset inside that chunk (e.g. the page after the
+payload/ADT area), record base/size in the ADT (a /chosen or memory-map property), and
+have PicassoModem read that property and use it as the rmtfs buffer. That satisfies both
+constraints at once: below 4 GiB (32-bit modem field) and AP-owned RAM (XPU allows it).
+The phone currently runs variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots
+and logs.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
