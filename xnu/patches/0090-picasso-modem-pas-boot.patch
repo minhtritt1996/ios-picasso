@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3618 @@
+@@ -0,0 +1,3651 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1030,6 +1030,7 @@
 +	{
 +		static unsigned int q_dbg;
 +
++		g_action = ACT_RX | ((type & 0xff) << 8) | (dst_port & 0xff);
 +		if (modem_dbg && q_dbg < 200) {
 +			q_dbg++;
 +			LOG("t=%u ms: rx#%u type %u port %x->%x size %u len %u", g_ms, q_dbg,
@@ -2120,6 +2121,35 @@
 + * on the console, stack included).
 + */
 +static volatile uint32_t g_beat;
++/* Last modem action, cheap stores only: the stall monitor dumps it. */
++static volatile uint32_t g_action;
++
++#define ACT_RX      1u          /* (type << 8) | (dst_port & 0xff) */
++#define ACT_IOVEC   2u
++#define ACT_REPLY   3u
++#define ACT_PDH     4u          /* pd-mapper */
++#define ACT_OPEN    5u
++#define ACT_ALLOC   6u
++
++/* Written to misc+2 KiB before panicking: the console and the ring both die with
++ * the stall, so this is the only post-mortem witness we have without a UART. */
++static void
++stall_dump(uint32_t beat, uint32_t action)
++{
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	char buf[512];
++
++	if (sweet_ufs_part("misc", &first, &blocks, &lun) != 0) {
++		return;
++	}
++	bzero(buf, sizeof(buf));
++	snprintf(buf, sizeof(buf),
++	    "PICASSOMODEM STALL beat=%u action=%u\n"
++	    "action: 1=rx (type<<8|port) 2=iovec 3=reply 4=pd-mapper 5=open 6=alloc\n",
++	    beat, action);
++	(void)sweet_ufs_pwrite(lun, first, blocks, 0x800, buf, sizeof(buf));
++}
 +static volatile uint32_t g_watch;
 +
 +static void
@@ -2136,7 +2166,9 @@
 +		}
 +		if (g_beat == last) {
 +			if (++same >= 6) {
-+				panic("PicassoModem: GLINK loop stalled (beat %u)", g_beat);
++				stall_dump(g_beat, g_action);
++				panic("PicassoModem: GLINK loop stalled (beat %u action %u)",
++				    g_beat, g_action);
 +			}
 +		} else {
 +			same = 0;
@@ -2794,6 +2826,7 @@
 +	if (m.b == NULL) {
 +		return;
 +	}
++	g_action = ACT_IOVEC + (msg << 4);
 +	if (rmtfs_msgs++ < 12) {
 +		LOG("t=%u ms: rmtfs msg %u txn %u len %u", g_ms, msg, txn, len);
 +	}
