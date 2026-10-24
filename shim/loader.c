@@ -268,8 +268,8 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 		p->phys_base = pbase;
 		p->mem_size = msize;
 		pa_of_va_base = p->phys_base - p->virt_base;
-		con_hex("RAM base", pbase);
-		con_hex("RAM size", msize);
+		/* Printed after the copy: a con_hex here has stalled the shim
+		 * before COPY on the low-bank layouts. */
 	}
 
 	/* The payload must not overlap where the kernel goes. */
@@ -286,6 +286,8 @@ const char *loader_boot(uintptr_t dtb, uintptr_t info)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
 	}
 	con_str("COPY", "done");
+	con_hex("RAM base", p->phys_base);
+	con_hex("RAM size", p->mem_size);
 	con_skip();
 	con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
 
