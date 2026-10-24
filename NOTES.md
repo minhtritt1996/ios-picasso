@@ -1045,6 +1045,20 @@ Flash it from whichever host sees the phone:
   fastboot flash boot shim/out/variant-bc.img   (or dd from recovery)
 and photograph the panic.
 
+### Low-bank attempts stop in the shim probe (2026-10-24 19:47)
+Two low windows were tried by changing the payload's phys_base (mkadt profile + the shim's
+RAM fallback):
+  0x80000000+0x3cc00000  -> the shim printed its probe screen and never jumped
+  0x9b800000+0x20000000  -> same, and that window starts 3 MiB inside the DT's
+                            removed_region@80b00000 which ends at 0x9bb00000
+  0x9c000000+0x1c000000  -> flashed (variant bk, md5 4e0f589d81e6db84ed53dd46580701a0),
+                            the phone did not come back on its own either; no USB at
+                            +200 s, so it hung somewhere in the shim/kernel hand-off
+The probe screen itself still prints `RAM 0x140000000 + 0xC0000000` while `PHYS` shows the
+new fallback, so the loader's view of the payload's placement is not what we changed: the
+next thing to read is loader.c around the PAYLOAD/segment copy (it may use the ADT values or
+a compile-time base for the destination) before trying more addresses.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
