@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3505 @@
+@@ -0,0 +1,3514 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1022,6 +1022,15 @@
 +	} else {
 +		LOG("t=%u ms: qrtr: bad packet, %u bytes", g_ms, len);
 +		return;
++	}
++	{
++		static unsigned int q_dbg;
++
++		if (q_dbg < 48) {
++			q_dbg++;
++			LOG("t=%u ms: rx#%u type %u port %x->%x size %u len %u", g_ms, q_dbg,
++			    type, src_port, dst_port, size, len);
++		}
 +	}
 +	const struct qrtr_ctrl *c = (const struct qrtr_ctrl *)(p + hlen);
 +
