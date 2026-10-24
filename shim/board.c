@@ -84,70 +84,9 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 		 * of the chunk when that top is inside the low 4 GiB and hand the
 		 * window to the kernel in /chosen; xnu never sees it as RAM.
 		 */
-		uint64_t win = 0x200000, win_base = 0;
-		uint64_t top = phys_base + mem_size;
-
-		if (top <= 0x100000000ull && mem_size > (96ull << 20)) {
-			top -= win;
-			mem_size = top - phys_base;
-			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", top);
-			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
-		} else {
-			/*
-			 * The kernel runs above 4 GiB, so take the window from a low
-			 * bank instead: xnu never uses those banks in this layout and
-			 * the modem's 32-bit address can reach them.
-			 */
-			for (uint32_t m = 0; m < hw.nmem && !win_base; m++) {
-				uint64_t b = hw.mem[m].base, e = b + hw.mem[m].size;
-				if (e > 0x100000000ull) {
-					e = 0x100000000ull;
-				}
-				if (e <= b + win) {
-					continue;
-				}
-				/* top of this bank, aligned down, minus the window */
-				uint64_t cand = (e & ~0x1fffffull) - win;
-				int okc = 1;
-				for (int k = 0; k < (int)hw.nrsv; k++) {
-					if (range_overlaps(cand, win, hw.rsv[k].base, hw.rsv[k].size)) {
-						okc = 0;
-						break;
-					}
-				}
-				if (okc && range_overlaps(cand, win, phys_base, mem_size)) {
-					okc = 0;
-				}
-				if (okc) {
-					win_base = cand;
-				}
-			}
-			if (!win_base && phys_base >= 0x100000000ull) {
-				/*
-				 * The bootloader only reports the high banks here, but xnu
-				 * used to run in the low bank (0x80000000 + 0x3cc00000) and
-				 * does not use it in this layout: take its top 2 MiB.
-				 * Everything below 0x9b800000 is carve-outs, so the end of
-				 * the bank is free.
-				 */
-				uint64_t cand = 0xbbc00000ull - win;
-				int okc = 1;
-
-				for (int k = 0; k < (int)hw.nrsv; k++) {
-					if (range_overlaps(cand, win, hw.rsv[k].base, hw.rsv[k].size)) {
-						okc = 0;
-						break;
-					}
-				}
-				if (okc) {
-					win_base = cand;
-				}
-			}
-			if (win_base) {
-				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", win_base);
-				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
-			}
-		}
+		/* xnu now runs in the low bank, so its own allocator can hand out
+		 * memory below 4 GiB for the modem's rmtfs buffer; no window is
+		 * published any more. */
 		bad += !adt_set_u64(adt, "chosen", "dram-base", phys_base);
 		bad += !adt_set_u64(adt, "chosen", "dram-size", mem_size);
 	}

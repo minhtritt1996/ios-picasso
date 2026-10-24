@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3577 @@
+@@ -0,0 +1,3535 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2676,61 +2676,19 @@
 +		return;
 +	}
 +	{
-+		/* The shim carves a 2 MiB window below 4 GiB (the modem keeps the
-+		 * ALLOC_BUFF address in 32 bits) and publishes it in /chosen. */
-+		IORegistryEntry *ch = IORegistryEntry::fromPath("/chosen", gIODTPlane);
++		/* xnu owns the low bank now, so a plain kernel allocation lands below
++		 * 4 GiB and the modem's 32-bit ALLOC_BUFF address can point at it. */
++		vm_offset_t va = 0;
 +
-+		if (ch != NULL) {
-+			OSData *pd = OSDynamicCast(OSData, ch->getProperty("dram-base"));
-+			OSData *ps = OSDynamicCast(OSData, ch->getProperty("dram-size"));
-+			OSData *pb = OSDynamicCast(OSData, ch->getProperty("sweet-rmtfs-base"));
-+			OSData *pz = OSDynamicCast(OSData, ch->getProperty("sweet-rmtfs-size"));
-+			uint64_t db = 0, ds = 0, wb = 0, wz = 0;
-+
-+			if (pd != NULL && pd->getLength() >= 8) {
-+				memcpy(&db, pd->getBytesNoCopy(), 8);
-+			}
-+			if (ps != NULL && ps->getLength() >= 8) {
-+				memcpy(&ds, ps->getBytesNoCopy(), 8);
-+			}
-+			if (pb != NULL && pb->getLength() >= 8) {
-+				memcpy(&wb, pb->getBytesNoCopy(), 8);
-+			}
-+			if (pz != NULL && pz->getLength() >= 8) {
-+				memcpy(&wz, pz->getBytesNoCopy(), 8);
-+			}
-+			ch->release();
-+			LOG("rmtfs: adt dram %llx+%llx window %llx+%llx", db, ds, wb, wz);
-+			if (wb != 0 && wz >= RMTFS_BUF_SIZE) {
-+				IOMemoryMap *m = map_phys(wb, RMTFS_BUF_SIZE, true);
-+
-+				if (m != NULL) {
-+					rmtfs_va = (uint8_t *)m->getVirtualAddress();
-+					rmtfs_pa = wb;
-+					LOG("rmtfs: buffer from the adt window pa %llx", rmtfs_pa);
-+					return;
-+				}
-+			}
-+		}
-+	}
-+	{
-+		/*
-+		 * The modem keeps the ALLOC_BUFF address in a 32-bit field, so the
-+		 * buffer must live below 4 GiB. Kernel allocations land above it
-+		 * (0x144xxxxxx) and IOMallocContiguous kills the boot, so use the
-+		 * 2 MiB pil_wlan_fw_region carveout instead: below 4 GiB, exactly
-+		 * the size the modem asks for, and reserved for HLOS until the
-+		 * WLAN firmware starts.
-+		 */
-+		IOMemoryMap *m = map_phys(WLAN_MSA_PA, RMTFS_BUF_SIZE, true);
-+
-+		if (m == NULL) {
-+			LOG("rmtfs: cannot map the MSA carveout");
++		if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++		    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS ||
++		    va == 0) {
++			LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
 +			return;
 +		}
-+		rmtfs_va = (uint8_t *)m->getVirtualAddress();
-+		rmtfs_pa = WLAN_MSA_PA;
-+		LOG("rmtfs: buffer from the wlan MSA carveout pa %llx", rmtfs_pa);
++		rmtfs_va = (uint8_t *)va;
++		rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++		LOG("rmtfs: buffer pa %llx", rmtfs_pa);
 +	}
 +	{
 +		static const uint32_t vm[1] = { VMID_MSS_MSA };
