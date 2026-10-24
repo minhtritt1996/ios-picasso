@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3691 @@
+@@ -0,0 +1,3699 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2141,28 +2141,36 @@
 +stall_paint(uint32_t beat, uint32_t action)
 +{
 +	PE_Video v;
-+	volatile uint32_t *fb;
-+	uint32_t x, y, row;
++	uint32_t y, x, row;
++	uint64_t pa;
 +
 +	bzero(&v, sizeof(v));
 +	PE_current_console(&v);
-+	if ((uintptr_t)v.v_baseAddr == 0 || v.v_rowBytes == 0) {
++	if ((uintptr_t)v.v_baseAddr == 0 || v.v_rowBytes == 0 || v.v_height < 80) {
 +		return;
 +	}
-+	fb = (volatile uint32_t *)(uintptr_t)v.v_baseAddr;
-+	row = v.v_rowBytes / 4;
-+	if (v.v_height < 520 || v.v_width < 520) {
-+		return;
-+	}
-+	/* bar 1: action + 1 units of 8 px at y=30; bar 2: beat units at y=60 */
-+	for (y = 30; y < 46; y++) {
-+		for (x = 20; x < 20 + (action + 1) * 8 && x < v.v_width; x++) {
-+			fb[y * row + x] = 0x00ffffff;
-+		}
-+	}
-+	for (y = 60; y < 76; y++) {
-+		for (x = 20; x < 20 + (beat & 0x3ff) * 4 && x < v.v_width; x++) {
-+			fb[y * row + x] = 0x0000ffff;
++	/* v_baseAddr is a physical address here: map each bar band first. */
++	row = v.v_rowBytes;
++	pa = (uint64_t)(uintptr_t)v.v_baseAddr;
++	{
++		const uint32_t bands[2] = { 30, 60 };
++		const uint32_t units[2] = { (action + 1) * 8, (beat & 0x3ff) * 4 };
++		const uint32_t colour[2] = { 0x00ffffff, 0x0000ffff };
++
++		for (unsigned b = 0; b < 2; b++) {
++			uint64_t row_pa = pa + (uint64_t)bands[b] * row;
++			uint64_t band_pa = row_pa & ~0xfffull;
++			vm_offset_t va = ml_io_map((vm_offset_t)band_pa, 0x10000);
++
++			if (va == 0) {
++				continue;
++			}
++			volatile uint32_t *p = (volatile uint32_t *)(va + (row_pa - band_pa));
++			for (y = 0; y < 16; y++) {
++				for (x = 20; x < 20 + units[b] && x < v.v_width; x++) {
++					p[y * (row / 4) + x] = colour[b];
++				}
++			}
 +		}
 +	}
 +}
