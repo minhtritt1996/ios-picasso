@@ -1017,6 +1017,25 @@ Next: reproduce with the console minimal (e.g. `debug` without the console bit, 
 `sweetfb_noconsole=1` and read only the ring) and see whether the modem keeps going past
 rx#22; if it does, the console is the culprit and the ring becomes the primary witness.
 
+### Quiet console does not stop the freeze (2026-10-24 17:26, 99db49c / variant bb)
+Variant bb (high-rate logs behind `modem_dbg`, ring every second, glink 120 s, recovery
+180 s) was flashed from k60 and never came back within 210 s, and k60 then saw no USB at
+all - the same hard hang as before. So reducing console/log traffic is not the cure; the
+freeze follows the first served IOVEC (`iovec#0 ... copied`, `reply msg 3 sent`) and the
+next control packet, and takes the whole kernel with it.
+This is now the single blocker for the WLAN work, and every remaining hypothesis (console
+lock, TX burst, IOMalloc per request, modem flooding) needs evidence we cannot get from a
+console that dies with the kernel.
+Recommendation for the next session, in this order:
+  1. Get a live log: hardware UART at 0x988000 as UniXNU-picasso does (needs a UART
+     adapter on the test points). This removes all guesswork, permanently.
+  2. Without UART: make the ring independent of the kernel log path - e.g. write the trace
+     into the fixed pool (0xE0000000 + reserved tail) from the modem thread with plain
+     stores, so a log after the freeze can be read from recovery with dd on /dev/block?
+     recovery cannot read PMEM, so this needs fastboot/EDL - fine if the phone lands in
+     fastboot after the hang.
+  3. Only then continue the modem work (tftp/wlan_pd/WLFW).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
