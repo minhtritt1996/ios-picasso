@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3791 @@
+@@ -0,0 +1,3809 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -3060,7 +3060,25 @@
 +				}
 +			}
 +			if (!ok && rmtfs_err <= 3) {
-+				LOG("t=%u ms: rmtfs iovec FAILED", g_ms);
++				uint32_t e0 = 0, e2 = 0;
++				uint64_t e1 = 0, csz = 0;
++
++				if (iov != NULL && iovlen >= 13) {
++					uint32_t ee[3] = { 0, 0, 0 };
++
++					memcpy(ee, iov + 1, 12);
++					e0 = ee[0];
++					e1 = ee[1];
++					e2 = ee[2];
++				}
++				if (caller >= 1 && caller <= 4) {
++					csz = efs_cache[caller - 1].size;
++				}
++				LOG("t=%u ms: rmtfs iovec FAILED caller %u w %u n %u "
++				    "blk %u addr %llx nblk %u pa %llx va %llx csz %llu",
++				    g_ms, caller, (uint32_t)write, iov != NULL ? iov[0] : 0,
++				    e0, e1, e2, rmtfs_pa,
++				    (uint64_t)(uintptr_t)rmtfs_va, csz);
 +				rmtfs_err++;
 +			}
 +			break;
