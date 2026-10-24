@@ -862,6 +862,27 @@ Caveat: the notes record 1.2 GiB in the low bank before the highmem switch, so 9
 plausible but tight for iOS; if userspace struggles, the bank can be raised later while
 keeping dram-size below 0x100000000.
 
+### Where the low-base work stands (2026-10-24 13:10)
+Latest observations, in order:
+- mkadt profile now uses the low bank (0x80000000 + 0x3cc00000); the ADT file, the payload
+  and the image all contain that value.
+- fastboot (not adb) is the reliable way to flash: `fastboot flash boot shim/out/variant-x.img`
+  then `fastboot reboot`. There is no A/B slot on this phone (`getvar current-slot` is not
+  a variable).
+- The console after flashing variant ap still showed `rmtfs alloc ... -> 0x1452f8000`
+  (>4 GiB) and an IOVEC with the truncated address, i.e. the running kernel behaved like the
+  high-RAM build: either the flash did not take (the phone was in fastboot, it did take) or
+  the ADT dram-base is being replaced before xnu reads it. The kernel-side log line that
+  would settle it (`rmtfs: buffer pa`) did not appear on the visible console, so this needs
+  the ring (which was never written in those runs).
+Next, with the phone in recovery:
+  1. flash variant ap again (fastboot), let it run, and pull the ring (not the console) to see
+     `rmtfs: buffer pa` and the first `tick 5000 ms` line,
+  2. if `buffer pa` is still above 4 GiB, print the ADT's dram-base from inside the kernel
+     (add a LOG of PE_state.video/phys_base or read /chosen again in the driver),
+  3. only when the buffer is low and AP-owned should the IOVEC copy stop truncating.
+The phone was restored to variant af via fastboot.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
