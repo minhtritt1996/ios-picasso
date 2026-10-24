@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3652 @@
+@@ -0,0 +1,3653 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2160,6 +2160,8 @@
 +
 +	for (;;) {
 +		IOSleep(500);
++		/* Keep the witness fresh: also proves whether UFS still works. */
++		stall_dump(g_beat, g_action);
 +		if (!g_watch) {
 +			same = 0;
 +			last = g_beat;
@@ -2167,7 +2169,6 @@
 +		}
 +		if (g_beat == last) {
 +			if (++same >= 6) {
-+				stall_dump(g_beat, g_action);
 +				panic("PicassoModem: GLINK loop stalled (beat %u action %u)",
 +				    g_beat, g_action);
 +			}
