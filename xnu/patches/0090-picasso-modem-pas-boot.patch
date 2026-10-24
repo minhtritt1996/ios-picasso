@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3515 @@
+@@ -0,0 +1,3527 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2756,6 +2756,10 @@
 +				 * write straight into the address it names instead of
 +				 * through an assigned buffer.
 +				 */
++				if (rmtfs_msgs <= 16) {
++					LOG("t=%u ms: iovec parse e0=%x e1=%x e2=%x bytes=%llu caller %u",
++					    g_ms, e[0], e[1], e[2], bytes, caller);
++				}
 +				if (e[1] < 0x40000000ull || bytes == 0 || bytes > 0x800000ull) {
 +					ok = false;
 +					break;
@@ -2773,11 +2777,19 @@
 +						uint32_t n = (uint32_t)MIN(bytes - done, 0x40000ull);
 +						vm_offset_t dst = ml_io_map((vm_offset_t)(e[1] + done), n);
 +
++						if (rmtfs_msgs <= 16) {
++							LOG("t=%u ms: iovec map %llx+%u -> %llx", g_ms,
++							    (uint64_t)e[1] + done, n, (uint64_t)dst);
++						}
 +						if (dst == 0) {
 +							ok = false;
 +							break;
 +						}
 +						memcpy((void *)dst, efs_cache[caller - 1].data + base + done, n);
++						if (rmtfs_msgs <= 16) {
++							LOG("t=%u ms: iovec copied %u bytes to %llx", g_ms, n,
++							    (uint64_t)dst);
++						}
 +						done += n;
 +					}
 +					rmtfs_reads++;
