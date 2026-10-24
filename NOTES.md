@@ -690,6 +690,31 @@ Measured before this change: EFS opens and ALLOC_BUFF succeed, the modem never
 issues an IOVEC read, never asks for wlanmdsp.mbn over tftp and never registers
 WLFW; register_listener for msm/modem/wlan_pd answers error 9.
 
+### Session state 2026-10-24 08:00 (branch omp, head 0856662)
+Verified working, all measured on the phone:
+- modem PAS boot, GLINK/QRTR, our name server, pd-mapper, tftp announce, rmtfs 14.
+- pd-mapper serves the six real domains from the modem partition's *.jsn files.
+- rmtfs: EFS cached in RAM at init (1048576/1048576/131072/1048576 bytes), OPEN answers
+  modemst1/modemst2, ALLOC_BUFF answers a 3 MiB buffer.
+- ARC corners cx.lvl/mss.lvl vote rc 0.
+- The kernel returns to recovery reliably (ring flushes, BCB written) once UFS is kept out
+  of the GLINK receive path.
+Blocked (the modem simply stops after ALLOC_BUFF):
+- it never sends an IOVEC read (so EFS contents are irrelevant to it so far),
+- it never queries pd-mapper for kernel/elf_loader or wlan/fw,
+- it never asks for /readonly/firmware/image/wlanmdsp.mbn over tftp,
+- it never registers WLFW 0x45, and register_listener for msm/modem/wlan_pd still answers
+  error 9 even with the exact vendor domain list and instance 180.
+Open hypotheses: the WLAN PD start needs an AP-side trigger we have not found (PDR restart
+is being tested now), or the modem's PD manager waits for a host service whose identity we
+still do not know. Everything else on the AP side (rails, corners, EFS, pd-mapper, tftp)
+is in place.
+How to run the loop today: the phone is attached to the build machine, so plain adb works
+(no k60). `tools/bisect-modem.sh VARIANT...` flashes shim/out/variant-<x>.img with
+clear-misc, readback verification, a proof that adb dropped, and a ring boot-args check;
+`tools/sweet-log-pull.sh -p darwin out.txt` reads the ring. Variants built so far:
+h,i,j (bisect), k..u (rmtfs work), each with md5 in /tmp/bisect.log or the commit log.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
