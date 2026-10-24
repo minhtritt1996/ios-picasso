@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3576 @@
+@@ -0,0 +1,3618 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -36,6 +36,7 @@
 +#include <IOKit/IODeviceTreeSupport.h>
 +#include <IOKit/IOBSD.h>
 +#include <kern/thread.h>
++#include <kern/debug.h>
 +#include <pexpert/pexpert.h>
 +#include <libkern/libkern.h>
 +#include <vm/pmap.h>
@@ -2113,6 +2114,37 @@
 +	rm->release();
 +}
 +
++/*
++ * A stall monitor on another CPU: if the GLINK loop stops making progress the
++ * machine deadlocks with no message, so turn that into a panic (which xnu prints
++ * on the console, stack included).
++ */
++static volatile uint32_t g_beat;
++static volatile uint32_t g_watch;
++
++static void
++modem_monitor(void *arg __unused, wait_result_t wr __unused)
++{
++	uint32_t last = 0, same = 0;
++
++	for (;;) {
++		IOSleep(500);
++		if (!g_watch) {
++			same = 0;
++			last = g_beat;
++			continue;
++		}
++		if (g_beat == last) {
++			if (++same >= 6) {
++				panic("PicassoModem: GLINK loop stalled (beat %u)", g_beat);
++			}
++		} else {
++			same = 0;
++			last = g_beat;
++		}
++	}
++}
++
 +/* ---------------------------------------------------------------- WLFW client */
 +
 +/*
@@ -3540,14 +3572,17 @@
 +			(void)PE_parse_boot_argn("modem_glink_ms", &glink_ms, sizeof(glink_ms));
 +			ipcc = (volatile uint8_t *)ml_io_map(IPCC_BASE, 0x1000);
 +			if (glink_start(part)) {
++				g_watch = 1;
 +				for (unsigned ms = 0; ms < glink_ms; ms++) {
 +					if (ms != 0 && (ms % 1000) == 0) {
 +						LOG("tick %u ms: alive, tx %u rx %u drops %u",
 +						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops);
 +					}
++					g_beat++;
 +					glink_poll(part, ms);
 +					IOSleep(1);
 +				}
++				g_watch = 0;
 +				glink_summary();
 +			}
 +		}
@@ -3578,6 +3613,13 @@
 +	started = true;
 +	if (kernel_thread_start(modem_thread, NULL, &thread) == KERN_SUCCESS) {
 +		thread_deallocate(thread);
++	}
++	{
++		thread_t mon;
++
++		if (kernel_thread_start(modem_monitor, NULL, &mon) == KERN_SUCCESS) {
++			thread_deallocate(mon);
++		}
 +	}
 +	if (kernel_thread_start(recovery_thread, NULL, &thread) == KERN_SUCCESS) {
 +		thread_deallocate(thread);
