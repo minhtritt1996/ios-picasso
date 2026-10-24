@@ -811,6 +811,22 @@ Two earlier variants (aa/ab/ad) showed that IOMallocContiguous called from the d
 the boot, so the buffer must come from kmem_alloc_contig after the low bank is in use.
 The phone was left on variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots and logs.
 
+### Low-bank experiment hangs (2026-10-24 12:34)
+Variant ak = shim 837c106 (exclude RAM >= 4 GiB) + kernel 2c3361d (IOVEC copy), md5
+b61e9a6eafb5edcb6596b1a46779add1. Flashed, adb dropped, and the phone never came back
+(no adb, no USB after 4 minutes), so either the exclusion broke hw_pick_ram (the excluded
+range is 1 TiB wide and the arithmetic may overflow) or the low bank cannot host the
+payload any more. NOTE: NOTES.md line ~1914 records that xnu used to run in the low bank
+(1.2 GiB) before the HIGHMEM switch, so a low bank is not impossible, but it needs care.
+The phone is dark and needs a power cycle; the boot partition currently holds variant ak,
+so the first thing to do is flash variant af (4682a2b073c3b0b2124c85cd3c28cb68) or ai
+(96221c369fc144f0b7d34a328b42c5ab) back from recovery.
+Next steps for the low bank, in order:
+  1. make the exclusion small and precise (e.g. [0x100000000, 0x140000000) instead of a
+     1 TiB span) and verify hw_pick_ram's bounds handling,
+  2. log the picked range from the shim console (con_dec) so a hang is attributable,
+  3. only then expect kmem_alloc_contig to return low pages and the IOVEC copies to work.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
