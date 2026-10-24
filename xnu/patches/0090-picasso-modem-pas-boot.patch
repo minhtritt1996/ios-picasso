@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3558 @@
+@@ -0,0 +1,3563 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1250,10 +1250,15 @@
 +static bool
 +glink_start(struct smem_part_hdr *part)
 +{
-+	bool existed = smem_get(part, SMEM_GLINK_DESC, NULL) != NULL;
++	bool existed;
 +
++	LOG("glink: start, part %p", part);
++	existed = smem_get(part, SMEM_GLINK_DESC, NULL) != NULL;
++	LOG("glink: desc %s", existed ? "present" : "missing");
 +	g_desc = (volatile uint32_t *)smem_alloc(part, SMEM_GLINK_DESC, 32);
++	LOG("glink: desc alloc %p", g_desc);
 +	g_tx = (uint8_t *)smem_alloc(part, SMEM_GLINK_FIFO_TX, GLINK_TX_SIZE);
++	LOG("glink: tx fifo alloc %p", g_tx);
 +	if (g_desc == NULL || g_tx == NULL) {
 +		LOG("glink: SMEM alloc failed (desc %p tx %p)", g_desc, g_tx);
 +		return false;
