@@ -30,8 +30,20 @@ done
 
 say() { echo "$*" | tee -a "$LOG"; }
 
-q() { sshpass -p "$K60_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "$REMOTE" "$1"; }
-have_device() { q "adb devices" 2>/dev/null | grep -q "$SERIAL"; }
+# Prefer a phone attached to this machine; fall back to the SSH host.
+LOCAL=0
+q() {
+	if [ "$LOCAL" = 1 ]; then
+		bash -c "$1"
+	else
+		sshpass -p "$K60_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "$REMOTE" "$1"
+	fi
+}
+have_device() {
+	if adb devices 2>/dev/null | grep -q "$SERIAL"; then LOCAL=1; return 0; fi
+	LOCAL=0
+	q "adb devices" 2>/dev/null | grep -q "$SERIAL"
+}
 
 say "=== $(date +%F' '%T) waiting for the phone in recovery"
 deadline=$(( $(date +%s) + WAIT ))
@@ -49,7 +61,11 @@ for v in "${variants[@]}"; do
 	want=$(md5sum "$img" | cut -d' ' -f1)
 	size=$(stat -c %s "$img")
 	say "$v: flash $want ($size B)"
-	sshpass -p "$K60_PASS" scp -q -o StrictHostKeyChecking=no "$img" "$REMOTE:/tmp/v.img" || { say "$v: scp failed"; continue; }
+	if [ "$LOCAL" = 1 ]; then
+		cp "$img" /tmp/v.img || { say "$v: copy failed"; continue; }
+	else
+		sshpass -p "$K60_PASS" scp -q -o StrictHostKeyChecking=no "$img" "$REMOTE:/tmp/v.img" || { say "$v: scp failed"; continue; }
+	fi
 	q "adb -s $SERIAL push /tmp/v.img /tmp/v.img >/dev/null" || { say "$v: push failed"; continue; }
 	q "adb -s $SERIAL shell dd if=/dev/zero of=/dev/block/bootdevice/by-name/misc bs=4096 count=1" >/dev/null 2>&1
 	q "adb -s $SERIAL shell dd if=/tmp/v.img of=/dev/block/bootdevice/by-name/boot bs=4M" >/dev/null 2>&1
