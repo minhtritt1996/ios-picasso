@@ -19,8 +19,10 @@ HIGH_PHYS_BASE = 0x100000000
 HIGH_MEM_SIZE = 0xfcc00000
 # picasso: the bootloader hands the kernel three banks; the largest
 # contiguous one that no carve-out touches is 0x14000000 + 3 GiB.
-PICASSO_PHYS_BASE = 0x140000000
-PICASSO_MEM_SIZE = 0xC0000000
+# The low bank: xnu must run below 4 GiB for the modem's 32-bit rmtfs
+# ALLOC_BUFF address to be usable (the modem's EFS buffer lives in xnu's RAM).
+PICASSO_PHYS_BASE = 0x80000000
+PICASSO_MEM_SIZE = 0x3cc00000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
