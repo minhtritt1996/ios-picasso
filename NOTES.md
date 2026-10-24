@@ -847,6 +847,21 @@ Next session, in order:
      path writes into memory the AP owns.
 The phone was restored to variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots.
 
+### The high bank was baked into the ADT profile (2026-10-24 13:05, 8da9f87)
+Photo of variant an: still `rmtfs alloc ... -> bba00000` and a freeze at rmtfs msg 3, and
+the shim exclusion changed nothing because the live FDT is not available to the shim: it
+falls back to RAM_FALLBACK_* (0) and therefore keeps the payload's built-in layout, which
+comes from tools/mkadt.py's picasso profile: PICASSO_PHYS_BASE 0x140000000 +
+PICASSO_MEM_SIZE 0xC0000000. So every payload we have been flashing put xnu above 4 GiB.
+8da9f87 changes the profile to the low bank (0x80000000 + 0x3cc00000); the regenerated ADT
+now reads dram-base 0x80000000 / dram-size 0x3cc00000 and payload variant-ao
+(md5 a8c6844f7fd8445380f443c0fd5da5c1) is built on it. This is the experiment that should
+finally give xnu low RAM, kmem_alloc_contig low pages and a rmtfs buffer the modem can
+address; it was not flashed because the phone was not attached any more.
+Caveat: the notes record 1.2 GiB in the low bank before the highmem switch, so 972 MiB is
+plausible but tight for iOS; if userspace struggles, the bank can be raised later while
+keeping dram-size below 0x100000000.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
