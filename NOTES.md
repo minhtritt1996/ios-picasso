@@ -1126,6 +1126,20 @@ CI: `gh workflow run xnu.yml --ref omp` -> run 40100058840 (head `05b18e1`). Not
 `picasso` remote needs a token on push (no credential helper):
 `git push https://x-access-token:$(cat /tmp/ghtoken)@github.com/minhtritt1996/ios-picasso.git omp:omp`.
 
+### Synthetic key presses removed; variant bo packaged (2026-10-24 21:05)
+The console showed `SWEET HID: key 0x30 down/up` and `key 0x40 down/up` repeating with
+`0 clients` while nobody touched the phone: 0x40 is `kHIDUsage_Csmr_Menu` from the
+boot-arg `sweethidtest=5` (SweetHIDButtons::testFired presses Home every 5 s, up to 60
+events), 0x30 is `kHIDUsage_Csmr_Power` from the sweet_keys PMIC observer threading button
+state every 20 ms (`keys_thread` -> `sweet_hid_key(0, ...)`). `sweethidtest=5` is gone from
+`tools/picasso-boot.sh`, `tools/picasso-boot-remote.sh` and `tools/picasso-fastboot-remote.sh`
+(commit `c125d3b`).
+`shim/out/variant-bo.img` (md5 `44dadd5495b3174e5335f1624a2d7550`, 36 499 456 B) holds the
+kernel of CI run `40100058840` (head `05b18e1`: tftp WRQ accepted into a RAM file, iovec
+refusal logging, `rmtfs_pa` logged at ALLOC) with cmdline 426 bytes, no `sweethidtest`.
+It is ready to flash with `tools/picasso-boot.sh /tmp/ci40100/kernel.development.sweet "<modem args>"`
+once the phone is in recovery; nothing has been flashed since variant bn.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
