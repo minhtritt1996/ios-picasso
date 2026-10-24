@@ -41,12 +41,17 @@
 int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
     uint64_t excl_base, uint64_t excl_size)
 {
-	struct range excl[3];
+	struct range excl[4];
 	int nexcl = 0;
 	struct range out;
 
 	excl[nexcl].base = 0;
 	excl[nexcl].size = LOW_MEMORY_END;
+	nexcl++;
+	/* Nothing at or above 4 GiB either: the modem's rmtfs ALLOC_BUFF address
+	 * is 32 bits, so the shared EFS buffer must be reachable by it. */
+	excl[nexcl].base = 0x100000000ull;
+	excl[nexcl].size = 0x10000000000ull - 0x100000000ull;
 	nexcl++;
 	if (excl_size) {
 		excl[nexcl].base = excl_base;
