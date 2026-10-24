@@ -974,6 +974,16 @@ second in the GLINK loop, and raise modem_recovery_after to 180000 so the recove
 cannot race the work. If it still freezes at the same place, the suspect is the TX path
 (qm_send of the IOVEC response) or the console lock, not the copy.
 
+### Fine-grained run hung as expected; needs a manual power cycle (2026-10-24 14:57)
+Variant aw (md5 0c778ca3a307a05ea9e971c6b1ea90c0) = 1 s heartbeat + every IOVEC logged +
+modem_glink_ms=120000 + modem_recovery_after=180000. Flashed, and the phone never came back
+on its own within ~225 s, so this boot hangs hard too (the recovery thread cannot write the
+BCB either, which is why no automatic return). A manual power cycle is needed.
+When the phone is next in recovery: flash aw again, and this time read the console photo
+(the ring stops with the hang): the last `iovec#N` line and the last `tick` say whether the
+freeze is in our TX reply, in the console lock or in the copy.
+State of the chain: EFS read #1 is served (cache-inhibited pool), then the machine dies.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
