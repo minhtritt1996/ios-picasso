@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3972 @@
+@@ -0,0 +1,3979 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2841,6 +2841,8 @@
 +static uint64_t rmtfs_pa;
 +static uint8_t *rmtfs_va;
 +static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs, rmtfs_iov_logs;
++/* diagnostic: refuse the modem's EFS reads, to see whether it retries */
++static unsigned g_efs_fail;
 +
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
@@ -3132,6 +3134,10 @@
 +					f2 = e[2];
 +				}
 +				bytes = (uint64_t)e[2] * 512;
++				if (!write && g_efs_fail && rmtfs_reads == 0) {
++					ok = false;
++					break;
++				}
 +				if (rmtfs_pa == 0 || e[1] < rmtfs_pa ||
 +				    e[1] - rmtfs_pa + bytes > RMTFS_BUF_SIZE ||
 +				    e[0] * 512ull + bytes > efs_cache[caller - 1].size) {
@@ -3793,6 +3799,7 @@
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
 +	(void)PE_parse_boot_argn("modem_pdm", &pd_full, sizeof(pd_full));
 +	(void)PE_parse_boot_argn("modem_dbg", &modem_dbg, sizeof(modem_dbg));
++	(void)PE_parse_boot_argn("modem_efs_fail", &g_efs_fail, sizeof(g_efs_fail));
 +	(void)PE_parse_boot_argn("modem_rmtfs", &rmtfs_on, sizeof(rmtfs_on));
 +	{
 +		uint32_t restart = 0;
