@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3685 @@
+@@ -0,0 +1,3791 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1721,6 +1721,7 @@
 +/* files served from the modem partition, cached in kernel memory */
 +struct fw_file { char name[64]; uint8_t *data; uint32_t size; };
 +static struct fw_file fw_files[4];
++static struct fw_file ram_view;
 +
 +static struct fw_file *
 +fw_get(const char *name)
@@ -1777,9 +1778,42 @@
 +	bool used, write;
 +	uint32_t port, node, rport;
 +	struct fw_file *f;
++	struct ram_file *wf;
 +	uint64_t size, sent, seek;
 +	uint32_t blk, rsize, wsize;
 +};
++/* Writes: rmtfs' tftp serves /readwrite/ out of a RAM fs; wlan_pd writes
++ * there (server_check.txt) and retries every 5 ms when it is refused. */
++struct ram_file { char name[64]; uint8_t *data; uint32_t size, cap; };
++static struct ram_file ram[4];
++
++static struct ram_file *
++ram_file_get(const char *name, bool create)
++{
++	for (unsigned i = 0; i < 4; i++) {
++		if (ram[i].name[0] != 0 && strcmp(ram[i].name, name) == 0) {
++			return &ram[i];
++		}
++	}
++	if (!create) {
++		return NULL;
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		if (ram[i].name[0] == 0) {
++			strlcpy(ram[i].name, name, sizeof(ram[i].name));
++			ram[i].cap = 1u << 20;
++			ram[i].data = (uint8_t *)IOMalloc(ram[i].cap);
++			ram[i].size = 0;
++			if (ram[i].data == NULL) {
++				ram[i].name[0] = 0;
++				return NULL;
++			}
++			return &ram[i];
++		}
++	}
++	return NULL;
++}
++
 +static struct tftp_sess sess[8];
 +static uint32_t next_sess_port = PORT_SESS;
 +static unsigned tftp_reqs, tftp_missing;
@@ -1953,15 +1987,61 @@
 +	}
 +	tftp_reqs++;
 +	if (s->write) {
-+		LOG("t=%u ms: tftp WRQ %s (writes dropped)", g_ms, file);
-+		tftp_error(s, 2, "read only");
-+		tftp_close(s);
++		s->wf = ram_file_get(file, true);
++		if (s->wf == NULL) {
++			LOG("t=%u ms: tftp WRQ %s: no RAM file", g_ms, file);
++			tftp_error(s, 2, "no space");
++			tftp_close(s);
++			return;
++		}
++		s->wf->size = 0;
++		LOG("t=%u ms: tftp WRQ %s accepted, blk %u", g_ms, file, s->blk);
++		if (!opts) {
++			uint8_t a[4] = { 0, OP_ACK, 0, 0 };
++			tftp_send(s, a, 4);
++			return;
++		}
++		o = oack;
++		*o++ = 0;
++		*o++ = OP_OACK;
++		o = tftp_opt(o, oack + sizeof(oack), "blksize", s->blk);
++		o = tftp_opt(o, oack + sizeof(oack), "timeoutms", timeoutms);
++		if (want_tsize) {
++			o = tftp_opt(o, oack + sizeof(oack), "tsize", 0);
++		}
++		o = tftp_opt(o, oack + sizeof(oack), "wsize", s->wsize);
++		tftp_send(s, oack, (uint32_t)(o - oack));
 +		return;
 +	}
 +	if (strncmp(file, "/readwrite/", 11) == 0) {
-+		LOG("t=%u ms: tftp RRQ %s: no RAM filesystem", g_ms, file);
-+		tftp_error(s, 1, "file not found");
-+		tftp_close(s);
++		struct ram_file *rf = ram_file_get(file, false);
++
++		if (rf == NULL || rf->size == 0) {
++			LOG("t=%u ms: tftp RRQ %s: no such RAM file", g_ms, file);
++			tftp_error(s, 1, "file not found");
++			tftp_close(s);
++			return;
++		}
++		ram_view.name[0] = 0;
++		ram_view.data = rf->data;
++		ram_view.size = rf->size;
++		s->f = &ram_view;
++		s->size = rf->size;
++		LOG("t=%u ms: tftp RRQ %s from RAM (%u B)", g_ms, file, rf->size);
++		if (!opts) {
++			tftp_data(s, 1, 0, 0);
++			return;
++		}
++		o = oack;
++		*o++ = 0;
++		*o++ = OP_OACK;
++		o = tftp_opt(o, oack + sizeof(oack), "blksize", s->blk);
++		o = tftp_opt(o, oack + sizeof(oack), "timeoutms", timeoutms);
++		if (want_tsize) {
++			o = tftp_opt(o, oack + sizeof(oack), "tsize", s->size);
++		}
++		o = tftp_opt(o, oack + sizeof(oack), "wsize", s->wsize);
++		tftp_send(s, oack, (uint32_t)(o - oack));
 +		return;
 +	}
 +	if (!tftp_map(file, path, sizeof(path))) {
@@ -2025,6 +2105,30 @@
 +			LOG("t=%u ms: tftp sess %x: modem ERROR %u after %llu B", g_ms, s->port, blk, s->sent);
 +		}
 +		tftp_close(s);
++		return true;
++	}
++	if (s->write) {
++		if (op != OP_DATA) {
++			tftp_error(s, 4, "Expected DATA opcode");
++			tftp_close(s);
++			return true;
++		}
++		{
++			uint32_t n = len > 4 ? len - 4 : 0;
++			uint8_t a[4] = { 0, OP_ACK, d[2], d[3] };
++
++			if (s->wf != NULL && n != 0 && s->wf->size + n <= s->wf->cap) {
++				memcpy(s->wf->data + s->wf->size, d + 4, n);
++				s->wf->size += n;
++			}
++			tftp_send(s, a, 4);
++			if (n < s->blk) {
++				if (s->wf != NULL) {
++					LOG("t=%u ms: tftp WRQ done %s (%u B)", g_ms, s->wf->name, s->wf->size);
++				}
++				tftp_close(s);
++			}
++		}
 +		return true;
 +	}
 +	if (op != OP_ACK) {
@@ -2971,6 +3075,8 @@
 +			if (rmtfs_pa == 0) {
 +				rmtfs_init_buf();
 +			}
++			LOG("t=%u ms: rmtfs alloc pa %llx va %llx", g_ms, rmtfs_pa,
++			    (uint64_t)(uintptr_t)rmtfs_va);
 +			addr = rmtfs_pa;
 +			LOG("t=%u ms: rmtfs alloc: caller %u size %u -> %llx", g_ms, caller, size, addr);
 +			qm_result(&m, addr != 0);
