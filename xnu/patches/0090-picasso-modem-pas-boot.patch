@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3558 @@
+@@ -0,0 +1,3540 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2637,41 +2637,23 @@
 +		return;
 +	}
 +	{
-+		/* The modem keeps the ALLOC_BUFF address in a 32-bit field, so the
-+		 * buffer must live below 4 GiB or its IOVEC points somewhere else
-+		 * entirely (writing there hung the GLINK thread in XPU). Ask the
-+		 * DMA allocator first: it hands out low, physically contiguous
-+		 * memory. */
-+		void *p = NULL;
-+		uint64_t pa = 0;
++		/*
++		 * The modem keeps the ALLOC_BUFF address in a 32-bit field, so the
++		 * buffer must live below 4 GiB. Kernel allocations land above it
++		 * (0x144xxxxxx) and IOMallocContiguous kills the boot, so use the
++		 * 2 MiB pil_wlan_fw_region carveout instead: below 4 GiB, exactly
++		 * the size the modem asks for, and reserved for HLOS until the
++		 * WLAN firmware starts.
++		 */
++		IOMemoryMap *m = map_phys(WLAN_MSA_PA, RMTFS_BUF_SIZE, true);
 +
-+		for (unsigned i = 0; i < 4 && rmtfs_pa == 0; i++) {
-+			pa = 0;
-+			p = IOMallocContiguous(RMTFS_BUF_SIZE, PAGE_SIZE, &pa);
-+			LOG("rmtfs: IOMallocContiguous try %u -> %p pa %llx", i, p, pa);
-+			if (p != NULL && pa != 0 && (pa >> 32) == 0) {
-+				rmtfs_va = (uint8_t *)p;
-+				rmtfs_pa = pa;
-+			} else if (p != NULL) {
-+				IOFreeContiguous(p, RMTFS_BUF_SIZE);
-+			}
-+		}
-+		if (rmtfs_pa == 0) {
-+			vm_offset_t v = 0;
-+
-+			if (kmem_alloc_contig(kernel_map, &v, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
-+			    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) == KERN_SUCCESS &&
-+			    v != 0) {
-+				rmtfs_va = (uint8_t *)v;
-+				rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)v));
-+			}
-+		}
-+		if (rmtfs_pa == 0) {
-+			LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
++		if (m == NULL) {
++			LOG("rmtfs: cannot map the MSA carveout");
 +			return;
 +		}
-+		LOG("rmtfs: buffer source %s pa %llx", p != NULL ? "IOContig" : "kmem",
-+		    rmtfs_pa);
++		rmtfs_va = (uint8_t *)m->getVirtualAddress();
++		rmtfs_pa = WLAN_MSA_PA;
++		LOG("rmtfs: buffer from the wlan MSA carveout pa %llx", rmtfs_pa);
 +	}
 +	{
 +		static const uint32_t vm[1] = { VMID_MSS_MSA };
