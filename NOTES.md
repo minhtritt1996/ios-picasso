@@ -1002,6 +1002,21 @@ Alternatively enable the hardware UART at 0x988000 as UniXNU-picasso does
 (scripts/make-picasso-adt.py sets UART_BASE) to get a live console, which removes the
 guesswork for every future hang.
 
+### Same freeze with UFS out of OPEN (2026-10-24 16:25, 3d43693 / variant az)
+Console (variant az, serial console restored, EFS-cache-only OPEN):
+  rmtfs msg 3 txn 1 len 38
+  iovec#0 caller 1 read e0=1 e1=e0000200 e2=1 copied
+  rmtfs reply msg 3 -> qm_send / sent
+  rx#22 type 7 port fffffffe->ffffffe size 20      <- stops here, phone reboots
+So removing the UFS read from OPEN changed nothing; the freeze is on the packet right after
+our IOVEC reply, and no handler log follows (`ns:`/`qrtr type 7` never appear), i.e. it
+happens between the rx trace line and the dispatch log. That pattern - always exactly one
+log line short - points at the console/IOLog path itself rather than at the modem code, which
+would also explain why the ring stops at the same instant.
+Next: reproduce with the console minimal (e.g. `debug` without the console bit, or keep
+`sweetfb_noconsole=1` and read only the ring) and see whether the modem keeps going past
+rx#22; if it does, the console is the culprit and the ring becomes the primary witness.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
