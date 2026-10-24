@@ -1,6 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-24 16:15, latest)
+## Agent handoff / active work (2026-10-25 00:10, latest)
+### >>> UPDATE 2026-10-25 (bp8 hung: UFS write from the modem thread; fixed, needs a power cycle) <<<
+1. **bp8 = `b19f98b` (CI `40112275350`), same cmdline as bp7 plus `modem_recovery=1
+   modem_recovery_after=170000 modem_recovery_after_fw=1`, flashed OK (md5 `0eb7679897c5...`)
+   but the phone never came back**: no adb, no fastboot and no USB device at all on the k60 host
+   after 8+ minutes, so the recovery thread never fired. The only behavioural difference from bp7
+   is that the *modem thread* wrote a 4 KiB status block into `darwin` every 10 s, i.e. a UFS
+   write inside the GLINK loop - the exact trap in the memory notes. Treat bp8 as self-inflicted.
+2. **Fix in `ac84e0e` (building)**: `modem_status_text()` in the modem driver now only *formats*
+   text; the write happens in the log flusher thread (the single UFS writer), every 10th flush, and
+   `sweet_ufs_pwrite()` takes the mutex itself so the flusher must not wrap it in another lock.
+   The console tick line is shortened (legible in a photo) and PDR registration retries are capped
+   at 8 instead of one every 2 s forever.
+3. **Blocked on one physical action**: the phone needs a 10-15 s power-button hold; if it lands in
+   fastboot, `fastboot reboot recovery`. Then `. tools/picasso-status-pull.sh` (needs
+   `tools/picasso-status-pull.sh`) prints the status block on the next boot.
+4. **Still open**: the ring on `darwin` is stale (bp5-era content, no `PDR rx type`), so the bp7
+   kernel's log flusher apparently never flushed. The new tick line prints `st %u` (whether the
+   flusher started) and `log total/seq/fails`, which settles it from a single photo or from the
+   status block.
 ### >>> UPDATE 2026-10-24 (bp7 ring is stale; status block added to stop photo-guessing) <<<
 1. **bp7 boot (commit `eda6762`, CI `40107911357`, flashed by the user) ran the modem phase to
    `tick 148000 ms` on the console (amp2p alive, `pdr 3`, `efs r 1 w 0`, `tftp 0`), i.e. the modem
