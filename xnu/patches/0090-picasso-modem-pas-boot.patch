@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3653 @@
+@@ -0,0 +1,3691 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2132,6 +2132,41 @@
 + */
 +static volatile uint32_t g_beat;
 +
++/*
++ * Lock-free witness: paint two bars straight into the framebuffer memory, which
++ * no lock in the kernel or the console path can block. Bar lengths encode the
++ * last action and the loop beat, so a photo of the screen is the post-mortem.
++ */
++static void
++stall_paint(uint32_t beat, uint32_t action)
++{
++	PE_Video v;
++	volatile uint32_t *fb;
++	uint32_t x, y, row;
++
++	bzero(&v, sizeof(v));
++	PE_current_console(&v);
++	if ((uintptr_t)v.v_baseAddr == 0 || v.v_rowBytes == 0) {
++		return;
++	}
++	fb = (volatile uint32_t *)(uintptr_t)v.v_baseAddr;
++	row = v.v_rowBytes / 4;
++	if (v.v_height < 520 || v.v_width < 520) {
++		return;
++	}
++	/* bar 1: action + 1 units of 8 px at y=30; bar 2: beat units at y=60 */
++	for (y = 30; y < 46; y++) {
++		for (x = 20; x < 20 + (action + 1) * 8 && x < v.v_width; x++) {
++			fb[y * row + x] = 0x00ffffff;
++		}
++	}
++	for (y = 60; y < 76; y++) {
++		for (x = 20; x < 20 + (beat & 0x3ff) * 4 && x < v.v_width; x++) {
++			fb[y * row + x] = 0x0000ffff;
++		}
++	}
++}
++
 +/* Written to misc+2 KiB before panicking: the console and the ring both die with
 + * the stall, so this is the only post-mortem witness we have without a UART. */
 +static void
@@ -2160,8 +2195,11 @@
 +
 +	for (;;) {
 +		IOSleep(500);
-+		/* Keep the witness fresh: also proves whether UFS still works. */
-+		stall_dump(g_beat, g_action);
++		/* Lock-free witness first: it cannot block. */
++		stall_paint(g_beat, g_action);
++		if ((g_beat & 0x1f) == 0) {
++			stall_dump(g_beat, g_action);   /* UFS copy, may block */
++		}
 +		if (!g_watch) {
 +			same = 0;
 +			last = g_beat;
