@@ -1232,6 +1232,54 @@ said is in it:
   u32 nsec), the parse advanced by 12, so the second and later entries of a multi-entry read were
   garbage. Fixed in the same build.
 
+### >>> ACTIVE HANDOFF 2026-10-24 22:57 (user stopped the session here) <<<
+State: **bp6 is flashed and running on the phone** (fastboot flash boot shim/out/variant-bp6.img,
+md5 `7d7e49b4d0cdc77afce019d1b8a9ce87`, kernel artifact from CI run `40107911357`, commit `eda6762`).
+Build/package recipe used:
+```
+tools/gh-artifact.sh <RUN> xnu-kernel /tmp/ci-bp6/k.zip   (artifact name is xnu-kernel, NOT
+                                                          kernel.development.sweet)
+python3 tools/mkpayload.py /tmp/ci-bp6/kernel.development.sweet shim/out/picasso-clean.adt \
+        shim/out/payload-bp6.bin
+bash shim/build.sh --picasso "$PWD/shim/out/payload-bp6.bin"   # --picasso is REQUIRED: without it
+        # the image gets the default layout (18 MB, payload once) and will not boot;
+        # the correct image is 36499456 bytes with the payload at file offset 0x41000
+cp shim/out/shim-boot.img shim/out/variant-bp6.img
+```
+What bp6 (commit `eda6762`) adds, all in patch 0090/0093:
+- GLINK/QRTR loop no longer stops after 20 s (`glink_ms` default 0 = forever; boot arg
+  `modem_glink_ms` still forces a limit). Ticks print every second for the first 20 s, then 10 s.
+- `smp2p in: "<name>" = value` once, then `smp2p slave-kernel now %08x` on every change - answers
+  whether the modem died after its first EFS read (`modem_alive_check()`).
+- `efs data: <16 bytes>` the first time an EFS read is served (is the backing store right?).
+- `PDR rx type %02x len %u: <24 bytes>` for the first ten inbound PDR messages (before only QMI
+  responses were printed, so ind/other types were invisible).
+- PDR re-registration every 2 s (`pdr_retry_all`), because the modem answered only the first burst.
+- iovec entry stride fixed 12 -> 16 bytes (u32 sector, u64 phys, u32 nsec); the 2nd+ entries of any
+  multi-entry read were being mis-parsed.
+- 0093 exports `sweet_log_total_g` / `sweet_log_seq_g` / `sweet_log_fails_g` and the tick prints them
+  as `| log total/seq/fails`, so the flush thread's progress is visible from the console photo.
+
+Next concrete step (unchanged by the stop): get the bp6 ring - power-cycle to fastboot, `fastboot
+reboot recovery`, then
+```
+adb -s f9f3d7b0 shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=5242106 count=1025 2>/dev/null" > /tmp/ring-bp6.bin
+```
+and read `ring` with `tr -d '\\000'`. Three questions in order: (1) `smp2p slave-kernel FATAL`? (2)
+does `efs data:` show real modemst1 bytes, and does the modem speak again after the iovec (rx count
+rising in later ticks)? (3) does any PDR retry at 2 s get a different `result/error`?
+
+Ideas queued, not started:
+- Vendor AP WLAN driver on this phone is `drivers/net/wireless/cnss2` (source reachable at
+  `minhtritt1996/android_kernel_xiaomi_sm7250`, branch `picasso`); it uses **no PDR at all** - it
+  waits for the WLFW QMI service 0x45 and then does IND register -> host cap -> respond mem -> BDF
+  download -> M3. So PDR registration is optional; the real gate is the modem reaching its WLAN PD.
+- If the modem turns out to be alive but stuck on EFS, serve the *write* path too (we currently only
+  count writes, never persist them) and check the fs header bytes we return for sector 1.
+- If the modem is FATAL, collect its crash reason (SMEM 0xfffe/0xfffe item used by
+  `modem_watch`) and the modem log before changing anything else.
+
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
