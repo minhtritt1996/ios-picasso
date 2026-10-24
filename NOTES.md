@@ -1232,6 +1232,37 @@ said is in it:
   u32 nsec), the parse advanced by 12, so the second and later entries of a multi-entry read were
   garbage. Fixed in the same build.
 
+### bp6/bp7: the packaging trap, then the measured answer (2026-10-24 23:10, user stopped here)
+- bp6 (kernel `eda6762`) did not boot at all: I packaged it with
+  `python3 tools/mkpayload.py KERNEL ADT OUT` **without `--cmdline`**, so the payload carried the
+  default 36-byte `debug=0xc serial=3 cpus=1 keepsyms=1` instead of the 450-byte real one
+  (`modem=1 ufslogsecs=1 rd=ufsroot0 ufsroot=darwin sweetfb_* ...`). No boot-args, no ring, and the
+  ring read back was still bp5's. Always pass `--cmdline`, and check the payload header:
+  `python3 -c "d=open('shim/out/payload-X.bin','rb').read(0x400);print(d[0x48:0x48+608].split(b'\\0')[0].decode())"`
+  must print the long line, not the 36-byte default.
+- bp7 = the same kernel rebuilt as `shim/out/variant-bp7.img` (md5 `d8fabe9de378e21cb66562b5b66b90ca`)
+  with the real 445-byte cmdline (`modem_glink_ms` dropped so the loop default "forever" applies).
+  Flashed at 23:00.
+- Photo at t=148 s: ticks keep printing, `pdr 3`, `rx 81`, `tx 84`, `efs r 1 w 0`, `| log 37470/3/0`.
+  Read carefully: the modem answered **exactly three** PDR messages (the responses at t=2..4 ms),
+  ignored the restart-PD/query-state burst, and ignored every 2-second re-registration this kernel
+  now sends - the inbound counters never move again after t=4 ms. `smp2p slave-kernel now ...` never
+  printed, i.e. the modem did **not** raise its FATAL bit: it is alive but its QRTR/EFS client is
+  parked. The single EFS iovec read we served is the last thing it did.
+- `log 37470/3/0` also says the ring has exactly 3 flushes and `fails 0`: the flush thread is not
+  erroring, it is stuck (or the counter only updates on success, which it does - so the thread never
+  completed another 4 KiB write while the console kept printing). This is the separate
+  ring-vs-UFS-contention bug, not the modem.
+- To make the tick usable next time: `sweet_log_total_g` is only assigned after a *successful* flush,
+  so it cannot show live growth. Print `sweet_log_total` (the atomic in sweet_ufs.c, export it) and a
+  "flushing since ms" timestamp instead, and put a timeout on the flush's ufs_write_blocks.
+- Consequence for the modem work: the next experiment has to break the "one EFS read then parked"
+  state. Options, in order of cost: (1) answer the iovec with the data *and* check the fs header we
+  return for sector 1 (the `efs data:` line from bp7's console photo was not legible in the photo
+  taken, so this is still unverified); (2) persist EFS *writes* (we only count them) so the modem's
+  fs state machine can finish; (3) stop serving EFS entirely for one boot (`rmtfs_on=0`) and see
+  whether the modem moves on anyway - that separates "EFS client parked" from "modem parked".
+
 ### >>> ACTIVE HANDOFF 2026-10-24 22:57 (user stopped the session here) <<<
 State: **bp6 is flashed and running on the phone** (fastboot flash boot shim/out/variant-bp6.img,
 md5 `7d7e49b4d0cdc77afce019d1b8a9ce87`, kernel artifact from CI run `40107911357`, commit `eda6762`).
