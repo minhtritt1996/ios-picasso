@@ -674,6 +674,22 @@ and is now allocated below 4 GiB because the modem's request carries a 32-bit
 address. Observed modem addresses: 0x41f58000 (plausible DDR) and 0x3ed82000
 (below DDR, rejected by the range check).
 
+### The real PDR database lives in the modem partition (2026-10-24 07:35)
+The six `*.jsn` files in the modem partition's `image/` directory are exactly what
+pd-mapper serves (mount /dev/block/bootdevice/by-name/modem read-only and cat them):
+  modemr.jsn : msm/modem/root_pd  inst 180 : tms/servreg, tms/pdr_enabled, gps/gps_service
+  modemuw.jsn: msm/modem/wlan_pd  inst 180 : kernel/elf_loader, tms/servreg, wlan/fw
+  adspr.jsn  : msm/adsp/root_pd   inst 74  : tms/servreg
+  adsps.jsn  : msm/adsp/sensor_pd inst 74  : tms/servreg
+  adspua.jsn : msm/adsp/audio_pd  inst 74  : tms/servreg, avs/audio
+  cdspr.jsn  : msm/cdsp/root_pd   inst 76  : tms/servreg
+Our earlier hand-written table was close for root_pd/wlan_pd but served one domain
+for `tms/pdr_enabled` and invented instances. 5121fc3 serves the six domains and
+answers every other service query with the domains that provide it.
+Measured before this change: EFS opens and ALLOC_BUFF succeed, the modem never
+issues an IOVEC read, never asks for wlanmdsp.mbn over tftp and never registers
+WLFW; register_listener for msm/modem/wlan_pd answers error 9.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
