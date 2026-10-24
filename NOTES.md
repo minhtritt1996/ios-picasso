@@ -1198,6 +1198,40 @@ Two observability fixes, both in the kernel now (run 40105926204):
    bsd/dev/sweet_ufs.c:658)"), which happened once and cost a build. Patch numbering is
    the ordering contract; add a later patch instead of editing an earlier one's loop.
 
+### Where the modem conversation actually stops (2026-10-24 22:40, bp5 ring read back)
+The ring from bp5 (`total=35654`, `seq=3`, 35 KB) is not a truncated boot: it ends at
+`launchd_cache_loader`, i.e. exactly when the modem watch starts, and a photo at t=30000 ms shows
+the console still printing ticks, so the two differ only by the flush thread. Everything the modem
+said is in it:
+- QRTR: HELLO from node 0; `NEW_SERVER svc 42 v1 i180 node 0 port 2` (servreg) and `svc 2b v2 i18 node 0 port 1`.
+  No `svc 45` (WLFW) ever, so the modem never brought its wlan PD up.
+- pd-mapper: `tms/pdr_enabled` answered with 6 domains, `tms/pddump_disabled` with 0 - the host side
+  of the pd-mapper works and the modem used it.
+- rmtfs: open `boot/modem_fs1` -> modemst1, open `boot/modem_fs2` -> modemst2, ALLOC 2 MiB ->
+  0xb0878000, then ONE iovec read (sector 1, pa+0x200, 1 block). We answered it; the modem then
+  sent **nothing for the rest of the boot** (last inbound message timestamped 4 ms).
+- PDR: every registration was *rejected*: `result 1 error 9` for `msm/modem/wlan_pd` and for
+  `msm/adsp/audio_pd`, `result 1 error 45` for `wlan/fw`, each with an extra 4-byte TLV 0x10
+  (`0xca39f580`). Later restart-PD/query-state messages were never answered at all.
+- The vendor PDR wire format is confirmed from the msm-4.11+ sources: REGISTER_LISTENER is message
+  0x20 with TLV 0x01 = enable and TLV 0x02 = service path (1-byte length + chars); the state
+  notification is 0x22 (state, path, txn) and must be acked with 0x23 (path, txn). The old
+  `service-notifier.c` in the vendor tree that this phone uses only ever sends those two TLVs, so
+  the request *bytes* were right - the paths/instance are what the modem dislikes.
+- Vendor side for this phone: the AP's WLAN driver is `drivers/net/wireless/cnss2` and it does NOT
+  use PDR at all (no servreg string in it): it waits for the WLFW QMI service and then drives it
+  (IND register -> host cap -> respond mem -> BDF download -> M3). So PDR is optional for us and
+  the real gate is the modem reaching its WLAN subsystem.
+- Consequence measured next, not yet known: whether the modem is dead (SMP2P `slave-kernel` FATAL)
+  or waiting after that single EFS read. The bp6 kernel prints the modem's SMP2P entry names/values
+  from inside the GLINK loop (`smp2p in: "<name>" = value`, then any change), the first 16 bytes of
+  the EFS data we hand over (`efs data: ...`), the raw bytes of the first ten PDR messages, and the
+  ring's own progress (`log total/seq/fails`) in every tick; it also re-registers PDR every 2 s and
+  keeps the GLINK loop running forever instead of 20 s (`modem_glink_ms` still overrides).
+- Iovec bug found by reading the reference encoder: an entry is 16 bytes (u32 sector, u64 phys,
+  u32 nsec), the parse advanced by 12, so the second and later entries of a multi-entry read were
+  garbage. Fixed in the same build.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
