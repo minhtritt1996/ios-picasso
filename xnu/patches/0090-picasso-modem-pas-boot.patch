@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3809 @@
+@@ -0,0 +1,3837 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -779,6 +779,9 @@
 +static void pdr_restart(const char *path);
 +static struct { uint32_t svc, inst, node, port; } q_srv[64];
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
++/* last QRTR message, so the one-line tick shows where the modem went quiet */
++static uint32_t g_last_dport, g_last_len, g_last_ms, g_last_qmi, g_last_src_port;
++static unsigned g_tftp_wrq;
 +static unsigned g_ms;                           /* watch time, for the log */
 +
 +static uint32_t
@@ -1927,6 +1930,7 @@
 +static void
 +tftp_request(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
 +{
++	g_tftp_wrq++;
 +	char buf[512], *p, *end, *file, *mode, oack[256], *o, path[128], rel[96];
 +	uint16_t op = (uint16_t)(d[0] << 8 | d[1]);
 +	struct tftp_sess *s = NULL;
@@ -2759,7 +2763,7 @@
 +};
 +static uint64_t rmtfs_pa;
 +static uint8_t *rmtfs_va;
-+static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs;
++static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs, rmtfs_iov_logs;
 +
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
@@ -2981,7 +2985,7 @@
 +		return;
 +	}
 +	g_action = ACT_IOVEC + (msg << 4);
-+	if (rmtfs_msgs++ < 12) {
++	if (rmtfs_msgs++ < 40) {
 +		LOG("t=%u ms: rmtfs msg %u txn %u len %u", g_ms, msg, txn, len);
 +	}
 +	/* TLV 0x01 (u32 caller id) on every request except OPEN */
@@ -3032,6 +3036,8 @@
 +			const uint8_t *dir = NULL, *iov = NULL;
 +			uint32_t iovlen = 0;
 +			bool write;
++			uint32_t f0 = 0, f2 = 0;
++			uint64_t f1 = 0;
 +
 +			(void)qm_tlv_find(d, len, 0x02, &dir, &l2);
 +			(void)qm_tlv_find(d, len, 0x03, &iov, &iovlen);
@@ -3043,6 +3049,11 @@
 +				uint64_t bytes;
 +
 +				memcpy(e, iov + 1 + 12 * i, 12);
++				if (i == 0) {
++					f0 = e[0];
++					f1 = e[1];
++					f2 = e[2];
++				}
 +				bytes = (uint64_t)e[2] * 512;
 +				if (rmtfs_pa == 0 || e[1] < rmtfs_pa ||
 +				    e[1] - rmtfs_pa + bytes > RMTFS_BUF_SIZE ||
@@ -3058,6 +3069,10 @@
 +					    (size_t)bytes);
 +					rmtfs_reads++;
 +				}
++			}
++			if (ok && rmtfs_iov_logs++ < 6) {
++				LOG("t=%u ms: rmtfs iovec ok caller %u w %u n %u blk %u addr %llx nblk %u",
++				    g_ms, caller, (uint32_t)write, iov[0], f0, f1, f2);
 +			}
 +			if (!ok && rmtfs_err <= 3) {
 +				uint32_t e0 = 0, e2 = 0;
@@ -3129,6 +3144,17 @@
 +static bool
 +svc_rx(uint32_t src_node, uint32_t src_port, uint32_t dst_port, const uint8_t *data, uint32_t len)
 +{
++	g_last_dport = dst_port;
++	g_last_src_port = src_port;
++	g_last_len = len;
++	g_last_ms = g_ms;
++	g_last_qmi = 0;
++	if (len >= 5 && data[0] == QMI_REQ) {
++		uint16_t qm;
++
++		memcpy(&qm, data + 3, 2);
++		g_last_qmi = qm;
++	}
 +	if (dst_port == PORT_PDM) {
 +		if (len >= 7 && data[0] == QMI_REQ) {
 +			uint16_t txn, msg;
@@ -3766,8 +3792,10 @@
 +				g_watch = 1;
 +				for (unsigned ms = 0; ms < glink_ms; ms++) {
 +					if (ms != 0 && (ms % 1000) == 0) {
-+						LOG("tick %u ms: alive, tx %u rx %u drops %u",
-+						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops);
++						LOG("tick %u ms: alive, tx %u rx %u drops %u | efs r %u w %u err %u | tftp %u | last port %x qmi %x len %u at %u ms",
++						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops,
++						    rmtfs_reads, rmtfs_writes, rmtfs_err, g_tftp_wrq,
++						    g_last_dport, g_last_qmi, g_last_len, g_last_ms);
 +					}
 +					g_beat++;
 +					glink_poll(part, ms);
