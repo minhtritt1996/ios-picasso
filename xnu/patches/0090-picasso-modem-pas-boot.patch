@@ -3750,9 +3750,9 @@
 +		err = sweet_ufs_pwrite(lun, first, blocks, 0, bcb, sizeof(bcb));
 +	}
 +	LOG("recovery: misc LUN %u block 0x%llx, BCB write %d", lun, first, err);
-+	if (err != 0) {
-+		return;                         /* leave the phone alone if unsure */
-+	}
++	/* Reset even when the BCB write failed: sitting in a boot that cannot be
++	 * observed costs a power cycle, while a plain reset falls back to the
++	 * bootloader and is always recoverable. */
 +	IOSleep(200);
 +	LOG("recovery: PSCI SYSTEM_RESET");
 +	smc_call(a);
