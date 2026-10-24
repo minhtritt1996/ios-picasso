@@ -42,12 +42,18 @@ range_overlaps(uint64_t a, uint64_t as, uint64_t b, uint64_t bs)
 int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
     uint64_t excl_base, uint64_t excl_size)
 {
-	struct range excl[3];
+	struct range excl[4];
 	int nexcl = 0;
 	struct range out;
 
 	excl[nexcl].base = 0;
 	excl[nexcl].size = LOW_MEMORY_END;
+	nexcl++;
+	/* Keep xnu below 4 GiB (the modem's rmtfs ALLOC_BUFF field is 32 bits and
+	 * the AP may only write banks the bootloader gave HLOS): exclude exactly
+	 * the 3 GiB bank at 0x140000000, not a huge span. */
+	excl[nexcl].base = 0x100000000ull;
+	excl[nexcl].size = 0x100000000ull;
 	nexcl++;
 	if (excl_size) {
 		excl[nexcl].base = excl_base;
