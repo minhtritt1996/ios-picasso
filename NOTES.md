@@ -958,6 +958,22 @@ cache-inhibited mapping works.
 Next: read the ring (with ufslogsecs=1) to see whether the modem now progresses to
 tftp RRQ / wlan_pd; the phone was in fastboot/dark at the time of writing.
 
+### EFS read #1 now completes; the freeze moved one step later (2026-10-24 14:45)
+Console of variant av (reproducible):
+  rmtfs alloc: caller 1 size 2097152 -> e0000000
+  rmtfs msg 3 txn 1 len 38
+  iovec caller 1 read e0=1 e1=e0000200 e2=1 copied        <- success
+  rx#22 type 7 ...
+  PicassoModem: t                                          <- cut mid-line, console dead
+So the first EFS read is served (cache-inhibited pool copy), and the machine freezes on the
+next packet(s) - the modem sends a lot at this point (earlier runs showed ~1000 msg/s).
+The ring did not capture it either (small ring, flush #4), which means the hang takes the
+whole kernel down rather than just the modem thread.
+Next build (not done yet): log every IOVEC (not just the first four), heartbeat every
+second in the GLINK loop, and raise modem_recovery_after to 180000 so the recovery reset
+cannot race the work. If it still freezes at the same place, the suspect is the TX path
+(qm_send of the IOVEC response) or the console lock, not the copy.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
