@@ -14,12 +14,7 @@
 /* xnu maps its RAM in 32 MB blocks: a partial block would map a
  * neighbour carve-out cacheable. */
 #define RAM_ALIGN	(32UL << 20)
-/*
- * Keep xnu below 4 GiB: the modem keeps the rmtfs ALLOC_BUFF address in 32
- * bits, so the shared EFS buffer has to be addressable by it, and the kernel
- * can only hand out low pages when its own RAM is low.
- */
-#define RAM_MAX		(4ULL << 30)
+#define RAM_MAX		(8ULL << 30)
 
 /*
  * The RAM the kernel gets, when the device tree cannot be read.
@@ -38,20 +33,21 @@
 #define RAM_FALLBACK_SIZE	0
 #endif
 
+static int
+range_overlaps(uint64_t a, uint64_t as, uint64_t b, uint64_t bs)
+{
+	return as != 0 && bs != 0 && a < b + bs && b < a + as;
+}
+
 int board_pick_ram(uint64_t *phys_base, uint64_t *mem_size,
     uint64_t excl_base, uint64_t excl_size)
 {
-	struct range excl[4];
+	struct range excl[3];
 	int nexcl = 0;
 	struct range out;
 
 	excl[nexcl].base = 0;
 	excl[nexcl].size = LOW_MEMORY_END;
-	nexcl++;
-	/* Nothing at or above 4 GiB either: the modem's rmtfs ALLOC_BUFF address
-	 * is 32 bits, so the shared EFS buffer must be reachable by it. */
-	excl[nexcl].base = 0x100000000ull;
-	excl[nexcl].size = 0x10000000000ull - 0x100000000ull;
 	nexcl++;
 	if (excl_size) {
 		excl[nexcl].base = excl_base;
@@ -82,7 +78,7 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 		 * of the chunk when that top is inside the low 4 GiB and hand the
 		 * window to the kernel in /chosen; xnu never sees it as RAM.
 		 */
-		uint64_t win = 0x200000;
+		uint64_t win = 0x200000, win_base = 0;
 		uint64_t top = phys_base + mem_size;
 
 		if (top <= 0x100000000ull && mem_size > (96ull << 20)) {
@@ -90,6 +86,40 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 			mem_size = top - phys_base;
 			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", top);
 			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
+		} else {
+			/*
+			 * The kernel runs above 4 GiB, so take the window from a low
+			 * bank instead: xnu never uses those banks in this layout and
+			 * the modem's 32-bit address can reach them.
+			 */
+			for (uint32_t m = 0; m < hw.nmem && !win_base; m++) {
+				uint64_t b = hw.mem[m].base, e = b + hw.mem[m].size;
+				if (e > 0x100000000ull) {
+					e = 0x100000000ull;
+				}
+				if (e <= b + win) {
+					continue;
+				}
+				/* top of this bank, aligned down, minus the window */
+				uint64_t cand = (e & ~0x1fffffull) - win;
+				int okc = 1;
+				for (int k = 0; k < (int)hw.nrsv; k++) {
+					if (range_overlaps(cand, win, hw.rsv[k].base, hw.rsv[k].size)) {
+						okc = 0;
+						break;
+					}
+				}
+				if (okc && range_overlaps(cand, win, phys_base, mem_size)) {
+					okc = 0;
+				}
+				if (okc) {
+					win_base = cand;
+				}
+			}
+			if (win_base) {
+				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", win_base);
+				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
+			}
 		}
 		bad += !adt_set_u64(adt, "chosen", "dram-base", phys_base);
 		bad += !adt_set_u64(adt, "chosen", "dram-size", mem_size);
