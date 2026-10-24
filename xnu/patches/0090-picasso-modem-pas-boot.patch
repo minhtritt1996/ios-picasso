@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3535 @@
+@@ -0,0 +1,3555 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2674,6 +2674,26 @@
 +
 +	if (rmtfs_pa != 0) {
 +		return;
++	}
++	{
++		/* What the kernel actually sees: this settles whether the ADT's
++		 * dram-base reached xnu (the rmtfs buffer has to be below 4 GiB). */
++		IORegistryEntry *ch = IORegistryEntry::fromPath("/chosen", gIODTPlane);
++
++		if (ch != NULL) {
++			OSData *pd = OSDynamicCast(OSData, ch->getProperty("dram-base"));
++			OSData *ps = OSDynamicCast(OSData, ch->getProperty("dram-size"));
++			uint64_t db = 0, ds = 0;
++
++			if (pd != NULL && pd->getLength() >= 8) {
++				memcpy(&db, pd->getBytesNoCopy(), 8);
++			}
++			if (ps != NULL && ps->getLength() >= 8) {
++				memcpy(&ds, ps->getBytesNoCopy(), 8);
++			}
++			ch->release();
++			LOG("rmtfs: chosen dram %llx+%llx", db, ds);
++		}
 +	}
 +	{
 +		/* xnu owns the low bank now, so a plain kernel allocation lands below
