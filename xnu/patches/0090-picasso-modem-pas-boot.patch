@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3854 @@
+@@ -0,0 +1,3917 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2495,6 +2495,14 @@
 +static unsigned pdr_qnext;
 +static unsigned pdr_next;
 +
++static void
++pdr_retry_all(void)
++{
++	pdr_next = 0;
++	pdr_sent = false;
++	pdr_register();
++}
++
 +/* Register interest for every candidate service path; the modem answers each
 + * with its own result, which tells us the name it expects. */
 +static void
@@ -3060,11 +3068,11 @@
 +			write = dir != NULL && *dir != 0;
 +			ok = caller >= 1 && caller <= 4 && iov != NULL && iovlen >= 1 &&
 +			    rmtfs_pa != 0 && rmtfs_va != NULL;
-+			for (i = 0; ok && i < iov[0] && 1 + 12 * (i + 1) <= iovlen; i++) {
++			for (i = 0; ok && i < iov[0] && 1 + 16 * (i + 1) <= iovlen; i++) {
 +				uint32_t e[3];
 +				uint64_t bytes;
 +
-+				memcpy(e, iov + 1 + 12 * i, 12);
++				memcpy(e, iov + 1 + 16 * i, 16);
 +				if (i == 0) {
 +					f0 = e[0];
 +					f1 = e[1];
@@ -3085,6 +3093,13 @@
 +					    (size_t)bytes);
 +					rmtfs_reads++;
 +				}
++			}
++			if (ok && !write && rmtfs_iov_logs == 0 && rmtfs_va != NULL) {
++				const uint8_t *q = rmtfs_va;
++
++				LOG("t=%u ms: efs data: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
++				    g_ms, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7],
++				    q[8], q[9], q[10], q[11], q[12], q[13], q[14], q[15]);
 +			}
 +			if (ok && rmtfs_iov_logs++ < 6) {
 +				LOG("t=%u ms: rmtfs iovec ok caller %u w %u n %u blk %u addr %llx nblk %u",
@@ -3571,6 +3586,44 @@
 +	return ok;
 +}
 +
++/*
++ * The modem can die after GLINK starts; modem_watch() only sees the boot
++ * phase. Re-read its SMP2P entries from the GLINK loop so a dead modem is
++ * not mistaken for a modem with nothing to say.
++ */
++static volatile uint32_t *g_slave_kernel;
++static uint32_t g_sk_last;
++
++static void
++modem_alive_check(void)
++{
++	struct smem_part_hdr *part = smem_partition(0, 1);
++	struct smp2p_hdr *in;
++	uint32_t sz = 0;
++
++	if (part == NULL) {
++		return;
++	}
++	in = (struct smp2p_hdr *)smem_get(part, ITEM_SMP2P_IN, &sz);
++	if (in == NULL || in->magic != SMP2P_MAGIC) {
++		return;
++	}
++	if (g_slave_kernel == NULL) {
++		struct smp2p_entry *e = (struct smp2p_entry *)(in + 1);
++
++		for (uint32_t i = 0; i < in->valid && i < SMP2P_MAX_ENTRY; i++) {
++			LOG("smp2p in: \"%s\" = %08x", e[i].name, e[i].value);
++			if (strncmp(e[i].name, "slave-kernel", 16) == 0) {
++				g_slave_kernel = &e[i].value;
++			}
++		}
++	}
++	if (g_slave_kernel != NULL && *g_slave_kernel != g_sk_last) {
++		g_sk_last = *g_slave_kernel;
++		LOG("smp2p slave-kernel now %08x%s", g_sk_last, (g_sk_last & 1) ? " FATAL" : "");
++	}
++}
++
 +/* Watch the modem's SMP2P "slave-kernel" entry (bit0 fatal, bit1 ready). */
 +static bool
 +modem_watch(unsigned seconds)
@@ -3800,14 +3853,24 @@
 +
 +		if (modem_watch(watch) && part != NULL) {
 +			/* Wi-Fi step 2: GLINK over SMEM, then QRTR over IPCRTR. */
-+			unsigned glink_ms = 20000;
++			/* 0 = serve the modem for as long as the system runs: EFS,
++			 * the pd-mapper and WLFW all need this thread alive. */
++			unsigned glink_ms = 0;
 +
 +			(void)PE_parse_boot_argn("modem_glink_ms", &glink_ms, sizeof(glink_ms));
 +			ipcc = (volatile uint8_t *)ml_io_map(IPCC_BASE, 0x1000);
 +			if (glink_start(part)) {
 +				g_watch = 1;
-+				for (unsigned ms = 0; ms < glink_ms; ms++) {
-+					if (ms != 0 && (ms % 1000) == 0) {
++				for (unsigned ms = 0; glink_ms == 0 || ms < glink_ms; ms++) {
++					bool loud = ms < 20000 ? (ms % 1000) == 0 : (ms % 10000) == 0;
++
++					if (ms != 0 && loud) {
++						modem_alive_check();
++					}
++					if (ms != 0 && (ms % 2000) == 0) {
++						pdr_retry_all();
++					}
++					if (ms != 0 && loud) {
 +						LOG("tick %u ms: alive, tx %u rx %u drops %u | efs r %u w %u err %u | tftp %u | pdr %u | last port %x qmi %x len %u at %u ms | log %llu/%u/%u",
 +						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops,
 +						    rmtfs_reads, rmtfs_writes, rmtfs_err, g_tftp_wrq,
