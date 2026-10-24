@@ -827,6 +827,26 @@ Next steps for the low bank, in order:
   2. log the picked range from the shim console (con_dec) so a hang is attributable,
   3. only then expect kmem_alloc_contig to return low pages and the IOVEC copies to work.
 
+### Low window reaches the modem, but the AP still cannot write it (2026-10-24 12:50)
+Variant am (shim 32a9c44 + kernel 2c3361d): the console showed
+  rmtfs alloc: caller 1 size 2097152 -> bba00000     (below 4 GiB, from the low bank)
+  rmtfs msg 3 txn 1 len 38                            then the screen freezes
+and the ring was never written (log thread did not flush), i.e. the kernel deadlocks in the
+IOVEC path again. That window (0xbba00000) is RAM in the low bank, which xnu does not own
+in this layout (dram-base 0x140000000); the AP's XPU evidently only permits the banks the
+bootloader handed to HLOS.
+Conclusion: the rmtfs buffer must live in RAM **xnu itself owns**, and since the modem's
+address field is 32-bit, xnu must run in a low bank. Variant ak tried exactly that and hung,
+but for an unknown reason (no console/ring evidence yet).
+Next session, in order:
+  1. reproduce ak but log the picked range to the shim console (con_hex2 "PHYS") and take a
+     photo; that says whether the exclusion broke the pick or the payload cannot live low,
+  2. if the pick is sane but the boot hangs, bisect the shim (MMU/framebuffer assumptions
+     may be tied to the high bank),
+  3. only then re-test rmtfs: with xnu low, kmem_alloc_contig returns low pages and the copy
+     path writes into memory the AP owns.
+The phone was restored to variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
