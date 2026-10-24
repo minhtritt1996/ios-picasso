@@ -1,0 +1,239 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -51,6 +51,8 @@
+ static void sweet_log_start(void);
+ extern void picasso_modem_init(void);
+ extern void sweet_sample_start(void);
++void sweet_log_append(const char *c, int size);
++static void sweet_ufs_watchdog_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
+@@ -113,6 +115,15 @@
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
++	/* Last UFS command, for the heartbeat: a command whose start time never
++	 * clears is the hang, and it names the LBA, length and LUN. */
++	volatile uint64_t cmd_lba;
++	volatile uint64_t cmd_start;
++	volatile uint32_t cmd_count;
++	volatile uint32_t cmd_serial;
++	volatile uint64_t err_serial;
++	volatile uint8_t cmd_op, cmd_lun;
++	volatile int last_err;
+ } su;
+ 
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+@@ -146,6 +157,29 @@
+  * One SCSI command in slot 0, data (if any) to/from the bounce buffer
+  * (to the device when write is set). Returns 0 or an errno.
+  */
++/*
++ * Every command on a LUN other than the root one is written straight into the
++ * ring, before it is issued: those are the modem's firmware reads, they run
++ * once, and if one of them wedges the controller this line is the only record
++ * of which LBA was in flight.
++ */
++static void
++ufs_trace(void)
++{
++	char line[96];
++	int n;
++
++	if (su.cmd_lun == 0) {
++		return;
++	}
++	n = snprintf(line, sizeof(line), "SWEET CMD %u: lun %u op 0x%02x lba 0x%llx n %u\n",
++	    (unsigned)su.cmd_serial, (unsigned)su.cmd_lun, (unsigned)su.cmd_op,
++	    (unsigned long long)su.cmd_lba, (unsigned)su.cmd_count);
++	if (n > 0) {
++		sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
++	}
++}
++
+ static int
+ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ {
+@@ -221,7 +255,8 @@
+ 		uint64_t now = mach_absolute_time();
+ 		if (now > deadline) {
+ 			ufs_wr(REG_UTRLCLR, ~1u);
+-			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
++			su.last_err = ETIMEDOUT;
++			su.err_serial++;
+ 			return ETIMEDOUT;
+ 		}
+ 		if (sleepable && now >= spin_until) {
+@@ -264,12 +299,22 @@
+ 	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
+ 		return EINVAL;
+ 	}
++	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x28; su.cmd_lun = su.lun;
++	su.cmd_serial++;
++	su.cmd_start = mach_absolute_time();
++	ufs_trace();
+ 	uint8_t cdb[10] = {
+ 		0x28, 0,
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false);
++	su.cmd_start = 0;
++	if (error) {
++		su.last_err = error;
++		su.err_serial++;
++	}
++	return error;
+ }
+ 
+ /*
+@@ -282,15 +327,26 @@
+ 	if (!su.writable || !su.nblocks || count == 0 || count > BOUNCE_SIZE / UFS_BLOCK ||
+ 	    lba < su.first_block || lba - su.first_block >= su.nblocks ||
+ 	    count > su.nblocks - (lba - su.first_block) || lba + count - 1 > UINT32_MAX) {
+-		printf("SWEET UFS: refusing write of %u blocks at 0x%llx\n", count, lba);
++		su.last_err = EPERM;
++		su.err_serial++;
+ 		return EPERM;
+ 	}
++	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x2a; su.cmd_lun = su.lun;
++	su.cmd_serial++;
++	su.cmd_start = mach_absolute_time();
++	ufs_trace();
+ 	uint8_t cdb[10] = {
+ 		0x2a, 0,
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	su.cmd_start = 0;
++	if (error) {
++		su.last_err = error;
++		su.err_serial++;
++	}
++	return error;
+ }
+ 
+ /* WRITE(10) of count device blocks from the bounce buffer, any partition. */
+@@ -301,12 +357,22 @@
+ 	    lba + count - 1 > UINT32_MAX) {
+ 		return EINVAL;
+ 	}
++	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x2a; su.cmd_lun = su.lun;
++	su.cmd_serial++;
++	su.cmd_start = mach_absolute_time();
++	ufs_trace();
+ 	uint8_t cdb[10] = {
+ 		0x2a, 0,
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	su.cmd_start = 0;
++	if (error) {
++		su.last_err = error;
++		su.err_serial++;
++	}
++	return error;
+ }
+ 
+ static int
+@@ -830,6 +896,7 @@
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
++	sweet_ufs_watchdog_start();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+@@ -863,6 +930,8 @@
+ /* readable from other drivers: is the flush thread moving at all? */
+ uint64_t sweet_log_total_g;
+ unsigned sweet_log_seq_g, sweet_log_fails_g;
++/* Bumped on every flusher wakeup: tells a dead thread from one blocked in UFS. */
++volatile uint32_t sweet_log_beats;
+ /* set by the thread itself, so a flusher that never starts is visible */
+ unsigned sweet_log_started_g;
+ uint64_t sweet_log_base_g, sweet_log_nblocks_g;
+@@ -938,6 +1007,7 @@
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
+ 	for (;;) {
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++		sweet_log_beats++;
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+ 		if (total == flushed) {
+ 			continue;
+@@ -988,7 +1058,7 @@
+ 		/* Machine-readable state for the modem driver, written by this thread
+ 		 * only: UFS traffic stays in one place. sweet_ufs_pwrite() takes the
+ 		 * lock itself, and the partition never moves, so look it up once. */
+-		if (sweet_log_secs <= 4 && (seq % 10) == 0) {
++		if (sweet_log_secs <= 4 && (seq == 1 || (seq % 10) == 0)) {
+ 			if (st_nblocks == 0 &&
+ 			    sweet_ufs_part("darwin", &st_first, &st_nblocks, &st_lun) != 0) {
+ 				st_nblocks = 0;
+@@ -1023,6 +1093,60 @@
+ 	}
+ }
+ 
++/*
++ * Heartbeat: one console line every two seconds, no UFS traffic at all.  If
++ * these lines stop the scheduler itself died; if they keep coming while the
++ * persistent log does not, the flusher is blocked, and the line shows what the
++ * UFS layer is doing and how long the outstanding command has been running.
++ */
++static int sweet_hb_chan;
++
++static void
++sweet_ufs_watchdog(__unused void *arg, __unused wait_result_t wr)
++{
++	uint32_t tick = 0;
++
++	for (;;) {
++		(void)tsleep(&sweet_hb_chan, PZERO, "sweethb", hz * 2);
++		uint64_t start = su.cmd_start, age_ms = 0;
++		if (start) {
++			uint64_t now = mach_absolute_time();
++			if (now > start) {
++				uint64_t ns = 0;
++				absolutetime_to_nanoseconds(now - start, &ns);
++				age_ms = ns / 1000000ull;
++			}
++		}
++		char line[192];
++		int n = snprintf(line, sizeof(line),
++		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
++		    " age %u ms | err %d x%u\n",
++		    ++tick, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
++		    sweet_log_seq_g, (unsigned)sweet_log_beats,
++		    (unsigned)su.cmd_serial, (unsigned long long)su.cmd_lba,
++		    (unsigned)su.cmd_count, (unsigned)su.cmd_lun, (unsigned)su.cmd_op,
++		    (unsigned)age_ms, su.last_err, (unsigned)su.err_serial);
++		if (n > 0) {
++			/* Ring first: printf() can block in the framebuffer driver, and
++			 * then the ring is the only channel that still records progress.
++			 * The console hook appends the same text again; a duplicated
++			 * heartbeat line is cheaper than a lost one. */
++			sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
++			printf("%s", line);
++		}
++	}
++}
++
++static void
++sweet_ufs_watchdog_start(void)
++{
++	thread_t thread;
++
++	if (kernel_thread_start(sweet_ufs_watchdog, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
+ int sweet_ufs_rootdev(dev_t *dev);
+ 
