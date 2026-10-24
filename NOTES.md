@@ -944,6 +944,20 @@ if the boot then reaches userspace and the link stays alive, the copy/mapping is
 Note the flakiness: another boot with the same image reached iOS userspace with no ALLOC at
 all (modem thread stopped at glink_start), so always read the ring, not just the console.
 
+### rmtfs EFS copy works: the pool must be mapped CACHE-INHIBITED (2026-10-24 14:35, 85c81c8)
+Isolation test (variant au, copy skipped) kept the GLINK link alive past the IOVEC
+(rx#22, rx#23 after `(copy skipped)`), so the freeze was the store into the pool mapping.
+85c81c8 maps the 8 MiB pool at 0xE0000000 with kIOMapInhibitCache instead of
+kIOMapWriteCombineCache and copies again. Console of variant av:
+  rmtfs alloc: caller 1 size 2097152 -> e0000000
+  rmtfs msg 3 txn 1 len 38
+  iovec caller 1 read e0=1 e1=e0000200 e2=1 copied     <- the copy completed
+and the modem kept talking (next lines follow), i.e. EFS reads are served for the first
+time. Write-combining a mapping of DRAM the kernel does not manage hangs this SoC; a
+cache-inhibited mapping works.
+Next: read the ring (with ufslogsecs=1) to see whether the modem now progresses to
+tftp RRQ / wlan_pd; the phone was in fastboot/dark at the time of writing.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
