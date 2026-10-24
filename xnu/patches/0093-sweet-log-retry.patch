@@ -1,24 +1,31 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -860,6 +860,9 @@
+@@ -860,6 +860,12 @@
  static char sweet_log_ring[SWEET_LOG_SIZE];
  static uint64_t _Atomic sweet_log_total;
  static int sweet_log_chan;
 +/* readable from other drivers: is the flush thread moving at all? */
 +uint64_t sweet_log_total_g;
 +unsigned sweet_log_seq_g, sweet_log_fails_g;
++/* set by the thread itself, so a flusher that never starts is visible */
++unsigned sweet_log_started_g;
++uint64_t sweet_log_base_g, sweet_log_nblocks_g;
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -918,6 +921,7 @@
+@@ -918,6 +924,11 @@
  {
  	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
  	uint64_t flushed = 0, seq = 0;
 +	unsigned fails = 0;
++
++	sweet_log_base_g = base;
++	sweet_log_nblocks_g = su.nblocks;
++	sweet_log_started_g = 1;
  	void *bounce = (void *)(su.dma + DMA_BOUNCE);
  
  	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
-@@ -956,9 +960,20 @@
+@@ -956,9 +967,20 @@
  		}
  		lck_mtx_unlock(&sweet_ufs_lock);
  		if (error) {

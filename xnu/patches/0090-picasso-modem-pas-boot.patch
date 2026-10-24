@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3917 @@
+@@ -0,0 +1,3970 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -784,6 +784,13 @@
 +static unsigned g_tftp_wrq, pdr_rx_logs;
 +extern "C" uint64_t sweet_log_total_g;
 +extern "C" unsigned sweet_log_seq_g, sweet_log_fails_g;
++extern "C" unsigned sweet_log_started_g;
++extern "C" uint64_t sweet_log_base_g, sweet_log_nblocks_g, sweet_log_position(void);
++extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t blocks, uint64_t off,
++    void *buf, uint32_t len);
++extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *blocks, uint32_t *lun);
++/* the modem's SMP2P entry, read by modem_alive_check() further down */
++static volatile uint32_t *g_slave_kernel;
 +static unsigned g_ms;                           /* watch time, for the log */
 +
 +static uint32_t
@@ -2758,6 +2765,50 @@
 +	return true;
 +}
 +
++/*
++ * Somewhere to put machine-readable state that does not depend on the log
++ * flusher: one 4 KiB block just below the ring in the root partition. A boot
++ * that never flushes its ring can still be read back with dd from recovery.
++ */
++static void
++status_block(unsigned ms)
++{
++	static char buf[4096];
++	static unsigned sq;
++	uint64_t first = 0, blocks = 0;
++	uint32_t lun = 0;
++	int err;
++	int n = 0;
++
++	if (sweet_ufs_part("darwin", &first, &blocks, &lun) != 0 || blocks < 2048) {
++		return;
++	}
++	n += snprintf(buf, sizeof(buf),
++	    "SWEETSTAT 1\n"
++	    "ms %u\nseq %u\n"
++	    "tx %u\nrx %u\ndrops %u\npdr %u\ntftp %u\n"
++	    "efs_r %u\nefs_w %u\nefs_err %u\n"
++	    "last_dport %x\nlast_ms %u\nlast_qmi %x\nlast_len %u\n"
++	    "log_started %u\nlog_total %llu\nlog_flushed %llu\nlog_seq %u\nlog_fails %u\n"
++	    "log_base 0x%llx\nlog_nblocks %llu\n"
++	    "sk %08x\nslot %08x\n",
++	    ms, sq++, g_tx_msgs, g_rx_msgs, g_txq_drops, pdr_rx_logs, g_tftp_wrq,
++	    rmtfs_reads, rmtfs_writes, rmtfs_err,
++	    g_last_dport, g_last_ms, g_last_qmi, g_last_len,
++	    sweet_log_started_g, sweet_log_position(), sweet_log_total_g, sweet_log_seq_g,
++	    sweet_log_fails_g, sweet_log_base_g, sweet_log_nblocks_g,
++	    g_slave_kernel != NULL ? *g_slave_kernel : 0xffffffffu,
++	    *(volatile uint32_t *)&g_action);
++	if (n > 0) {
++		bzero(buf + MIN((size_t)n, sizeof(buf) - 1), 1);
++		err = sweet_ufs_pwrite(lun, first, blocks,
++		    (blocks - 1026) * 512ull, buf, sizeof(buf));
++		if (err != 0 && modem_dbg) {
++			LOG("status block write %d", err);
++		}
++	}
++}
++
 +/* ---------------------------------------------------------------- rmtfs */
 +
 +/*
@@ -3591,7 +3642,6 @@
 + * phase. Re-read its SMP2P entries from the GLINK loop so a dead modem is
 + * not mistaken for a modem with nothing to say.
 + */
-+static volatile uint32_t *g_slave_kernel;
 +static uint32_t g_sk_last;
 +
 +static void
@@ -3869,6 +3919,9 @@
 +					}
 +					if (ms != 0 && (ms % 2000) == 0) {
 +						pdr_retry_all();
++					}
++					if (ms != 0 && (ms % 10000) == 0) {
++						status_block(ms);
 +					}
 +					if (ms != 0 && loud) {
 +						LOG("tick %u ms: alive, tx %u rx %u drops %u | efs r %u w %u err %u | tftp %u | pdr %u | last port %x qmi %x len %u at %u ms | log %llu/%u/%u",
