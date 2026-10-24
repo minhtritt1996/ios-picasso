@@ -66,6 +66,21 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 
 	/* Keep the compiled-in placeholder if we could not pick a range. */
 	if (phys_base && mem_size) {
+		/*
+		 * The modem keeps the rmtfs ALLOC_BUFF address in a 32-bit field,
+		 * so its EFS buffer must live below 4 GiB. Carve 2 MiB off the top
+		 * of the chunk when that top is inside the low 4 GiB and hand the
+		 * window to the kernel in /chosen; xnu never sees it as RAM.
+		 */
+		uint64_t win = 0x200000;
+		uint64_t top = phys_base + mem_size;
+
+		if (top <= 0x100000000ull && mem_size > (96ull << 20)) {
+			top -= win;
+			mem_size = top - phys_base;
+			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", top);
+			bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
+		}
 		bad += !adt_set_u64(adt, "chosen", "dram-base", phys_base);
 		bad += !adt_set_u64(adt, "chosen", "dram-size", mem_size);
 	}

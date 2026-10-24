@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3526 @@
+@@ -0,0 +1,3564 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2674,6 +2674,44 @@
 +
 +	if (rmtfs_pa != 0) {
 +		return;
++	}
++	{
++		/* The shim carves a 2 MiB window below 4 GiB (the modem keeps the
++		 * ALLOC_BUFF address in 32 bits) and publishes it in /chosen. */
++		IORegistryEntry *ch = IORegistryEntry::fromPath("/chosen", gIODTPlane);
++
++		if (ch != NULL) {
++			OSData *pd = OSDynamicCast(OSData, ch->getProperty("dram-base"));
++			OSData *ps = OSDynamicCast(OSData, ch->getProperty("dram-size"));
++			OSData *pb = OSDynamicCast(OSData, ch->getProperty("sweet-rmtfs-base"));
++			OSData *pz = OSDynamicCast(OSData, ch->getProperty("sweet-rmtfs-size"));
++			uint64_t db = 0, ds = 0, wb = 0, wz = 0;
++
++			if (pd != NULL && pd->getLength() >= 8) {
++				memcpy(&db, pd->getBytesNoCopy(), 8);
++			}
++			if (ps != NULL && ps->getLength() >= 8) {
++				memcpy(&ds, ps->getBytesNoCopy(), 8);
++			}
++			if (pb != NULL && pb->getLength() >= 8) {
++				memcpy(&wb, pb->getBytesNoCopy(), 8);
++			}
++			if (pz != NULL && pz->getLength() >= 8) {
++				memcpy(&wz, pz->getBytesNoCopy(), 8);
++			}
++			ch->release();
++			LOG("rmtfs: adt dram %llx+%llx window %llx+%llx", db, ds, wb, wz);
++			if (wb != 0 && wz >= RMTFS_BUF_SIZE) {
++				IOMemoryMap *m = map_phys(wb, RMTFS_BUF_SIZE, true);
++
++				if (m != NULL) {
++					rmtfs_va = (uint8_t *)m->getVirtualAddress();
++					rmtfs_pa = wb;
++					LOG("rmtfs: buffer from the adt window pa %llx", rmtfs_pa);
++					return;
++				}
++			}
++		}
 +	}
 +	{
 +		/*

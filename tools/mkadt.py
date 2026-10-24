@@ -121,6 +121,11 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         ph(),
         ('dram-base', u64(phys_base)),
         ('dram-size', u64(mem_size)),
+        # 2 MiB window the shim carves from the top of the chunk (below 4 GiB)
+        # for the modem's rmtfs/EFS buffer: the modem keeps ALLOC_BUFF
+        # addresses in 32 bits. Zero means "not available".
+        ('sweet-rmtfs-base', u64(0)),
+        ('sweet-rmtfs-size', u64(0)),
         ('random-seed', seed),
         ('debug-enabled', u32(1)),
         ('firmware-version', cstr('sweet-shim')),
