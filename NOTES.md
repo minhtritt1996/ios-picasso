@@ -1036,6 +1036,15 @@ Recommendation for the next session, in this order:
      fastboot after the hang.
   3. Only then continue the modem work (tftp/wlan_pd/WLFW).
 
+### Stall monitor turns the silent freeze into a panic (2026-10-24 17:45, 5d1083e)
+Variant bc (md5 b1363a37c3556c8d69020878211c8db9, copied to k60 as /tmp/vbc.img) adds a
+monitor thread: while the GLINK loop runs, a beat is bumped each iteration; six consecutive
+500 ms periods without a bump panic with "PicassoModem: GLINK loop stalled (beat N)". xnu
+prints panics on the console with a stack, so the next hang should finally say where it is.
+Flash it from whichever host sees the phone:
+  fastboot flash boot shim/out/variant-bc.img   (or dd from recovery)
+and photograph the panic.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
