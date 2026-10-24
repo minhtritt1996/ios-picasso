@@ -899,6 +899,28 @@ return to recovery by itself** and read the ring; its first lines contain
 back, add a late heartbeat log that prints dram-base so it is on screen at freeze time.
 The phone was restored to variant af via fastboot.
 
+### Two decisive findings (2026-10-24 13:45)
+1. **`shim/build.sh` hard-codes the high bank**: line 57 passes
+   `-DRAM_FALLBACK_BASE=0x140000000 -DRAM_FALLBACK_SIZE=0xC0000000` to the shim, so the shim
+   always places xnu at 0x140000000 and patches /chosen with that value - the ADT profile
+   change (0x80000000) never had any effect. The ring now proves it:
+   `rmtfs: chosen dram 140000000+c0000000`.
+2. **The fixed pool at 0xE0000000 works on picasso.** Ring of variant as (pool +
+   `ufslogsecs=1`, which makes the ring flush every second):
+     rmtfs: chosen dram 140000000+c0000000
+     rmtfs: buffer from modem pool pa e0000000
+     scm assign e0000000+200000 vmid f: ret=-2 res=536870925   (same as the reference port)
+     segments loaded / auth_and_reset ret 0 / modem is up (MODEM READY)
+     ... then iOS userspace exec lines: the kernel boots and runs.
+   So ios-sapphire's trick (a fixed low pool that the kernel does not manage, address
+   echoed by the modem) is valid here; writing 0xE0000000 does not hang the AP, unlike the
+   0xBBA00000 window tried earlier.
+Remaining in that boot: the modem thread stops right after MODEM READY, before glink_start's
+first log (`glink: desc made by the modem, ...`), while the rest of the kernel runs to
+userspace. Next session: instrument glink_start (hwlock/SMEM/FIFO steps) with `ufslogsecs=1`
+so a stall is visible within a second.
+The phone was restored to variant af.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
