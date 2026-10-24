@@ -116,6 +116,27 @@ int board_patch_adt(uintptr_t adt, uint64_t phys_base, uint64_t mem_size)
 					win_base = cand;
 				}
 			}
+			if (!win_base && phys_base >= 0x100000000ull) {
+				/*
+				 * The bootloader only reports the high banks here, but xnu
+				 * used to run in the low bank (0x80000000 + 0x3cc00000) and
+				 * does not use it in this layout: take its top 2 MiB.
+				 * Everything below 0x9b800000 is carve-outs, so the end of
+				 * the bank is free.
+				 */
+				uint64_t cand = 0xbbc00000ull - win;
+				int okc = 1;
+
+				for (int k = 0; k < (int)hw.nrsv; k++) {
+					if (range_overlaps(cand, win, hw.rsv[k].base, hw.rsv[k].size)) {
+						okc = 0;
+						break;
+					}
+				}
+				if (okc) {
+					win_base = cand;
+				}
+			}
 			if (win_base) {
 				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-base", win_base);
 				bad += !adt_set_u64(adt, "chosen", "sweet-rmtfs-size", win);
