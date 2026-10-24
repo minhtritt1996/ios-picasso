@@ -883,6 +883,22 @@ Next, with the phone in recovery:
   3. only when the buffer is low and AP-owned should the IOVEC copy stop truncating.
 The phone was restored to variant af via fastboot.
 
+### Measurement caveat: console photos can be stale (2026-10-24 13:25)
+The shim does not clear the framebuffer, so after a reset the screen still shows the previous
+boot's log; several photos that "proved" a variant ran were probably leftovers. Only the
+ring is proof, and its own `boot-args` line says which payload was up.
+That matters for the low-base question: the ADT profile is low (verified in the .adt, the
+payload and the image), mkpayload takes phys_base/size from the ADT, loader.c patches
+/chosen with the payload's values, so xnu *should* boot at 0x80000000 - yet every run we
+could observe allocated at 0x14xxxxxxx. Two possibilities: those runs were older payloads
+seen through a stale console, or the low-base kernel dies before it can log and the visible
+text is from before.
+Decisive next step (no guessing): flash variant aq via fastboot, then **wait for the phone to
+return to recovery by itself** and read the ring; its first lines contain
+`rmtfs: chosen dram <base>+<size>` and `rmtfs: buffer pa <pa>`. If the phone does not come
+back, add a late heartbeat log that prints dram-base so it is on screen at freeze time.
+The phone was restored to variant af via fastboot.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
