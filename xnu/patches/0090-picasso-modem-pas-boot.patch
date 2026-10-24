@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3570 @@
+@@ -0,0 +1,3576 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1028,7 +1028,7 @@
 +	{
 +		static unsigned int q_dbg;
 +
-+		if (q_dbg < 48) {
++		if (modem_dbg && q_dbg < 200) {
 +			q_dbg++;
 +			LOG("t=%u ms: rx#%u type %u port %x->%x size %u len %u", g_ms, q_dbg,
 +			    type, src_port, dst_port, size, len);
@@ -1589,6 +1589,7 @@
 +}
 +
 +static unsigned pd_full;
++static uint32_t modem_dbg;
 +static uint32_t rmtfs_on = 1;
 +
 +/*
@@ -2839,7 +2840,7 @@
 +					memcpy(rmtfs_va + (e[1] - rmtfs_pa),
 +					    efs_cache[caller - 1].data + (uint64_t)e[0] * 512,
 +					    (size_t)bytes);
-+					if (rmtfs_reads < 64) {
++					if (modem_dbg) {
 +						LOG("t=%u ms: iovec#%u caller %u read e0=%x e1=%x e2=%x "
 +						    "copied", g_ms, rmtfs_reads, caller, e[0], e[1], e[2]);
 +					}
@@ -2891,9 +2892,13 @@
 +		qm_result(&m, false);
 +		break;
 +	}
-+	LOG("t=%u ms: rmtfs reply msg %u -> qm_send", g_ms, msg);
++	if (modem_dbg) {
++		LOG("t=%u ms: rmtfs reply msg %u -> qm_send", g_ms, msg);
++	}
 +	qm_send(&m, PORT_RMTFS, node, port);
-+	LOG("t=%u ms: rmtfs reply msg %u sent", g_ms, msg);
++	if (modem_dbg) {
++		LOG("t=%u ms: rmtfs reply msg %u sent", g_ms, msg);
++	}
 +}
 +
 +/* ---------------------------------------------------------------- service dispatch */
@@ -3417,6 +3422,7 @@
 +
 +	(void)PE_parse_boot_argn("modem_watch", &watch, sizeof(watch));
 +	(void)PE_parse_boot_argn("modem_pdm", &pd_full, sizeof(pd_full));
++	(void)PE_parse_boot_argn("modem_dbg", &modem_dbg, sizeof(modem_dbg));
 +	(void)PE_parse_boot_argn("modem_rmtfs", &rmtfs_on, sizeof(rmtfs_on));
 +	{
 +		uint32_t restart = 0;
