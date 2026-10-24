@@ -2713,7 +2713,6 @@
 +			ok = part_io(rmtfs_parts[i].part, 0, probe, sizeof(probe), false) == 0;
 +		}
 +		if (ok) {
-+			rmtfs_load_efs();       /* the first IOVEC follows within ms */
 +			rmtfs_init_buf();       /* best effort: ALLOC replies with it */
 +		}
 +		LOG("t=%u ms: rmtfs open \"%s\" -> %s", g_ms, path, ok ? rmtfs_parts[i].part : "FAILED");
@@ -3210,6 +3209,7 @@
 +		mb();
 +		m->release();
 +	}
++	rmtfs_load_efs();                       /* before the modem can ask */
 +	LOG("segments loaded");
 +	IOFree(mdt, (vm_size_t)mdt_size);
 +
