@@ -921,6 +921,16 @@ userspace. Next session: instrument glink_start (hwlock/SMEM/FIFO steps) with `u
 so a stall is visible within a second.
 The phone was restored to variant af.
 
+### glink_start instrumentation ready (2026-10-24 14:05, 16b0541)
+Variant at (md5 620ba5f8af4d3a329c3b8b83feca38cf) = pool 0xE0000000 + `ufslogsecs=1` (ring
+flushes every second) + four step logs inside glink_start (`start`, `desc present/missing`,
+`desc alloc`, `tx fifo alloc`). Flashed, but the phone went dark before the ring could be
+read; next session should flash it again (or just power-cycle) and read
+`tools/sweet-log-pull.sh -p darwin out.txt` for those four lines plus `modem is up`.
+Context: with the pool the kernel reaches iOS userspace, PAS ret 0, MODEM READY, and the
+modem thread then stops with no glink log at all, so the stall is inside
+smem_get/smem_alloc for the glink descriptor or TX FIFO.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
