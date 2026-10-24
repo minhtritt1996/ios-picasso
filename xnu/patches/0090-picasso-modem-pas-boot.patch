@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3527 @@
+@@ -0,0 +1,3550 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2636,13 +2636,36 @@
 +	if (rmtfs_pa != 0) {
 +		return;
 +	}
-+	if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
-+	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS || va == 0) {
-+		LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
-+		return;
++	{
++		/* The modem keeps the ALLOC_BUFF address in a 32-bit field, so the
++		 * buffer must live below 4 GiB or its IOVEC points somewhere else
++		 * entirely (writing there hung the GLINK thread in XPU). Ask the
++		 * DMA allocator first: it hands out low, physically contiguous
++		 * memory. */
++		void *p = NULL;
++		uint64_t pa = 0;
++
++		p = IOMallocContiguous(RMTFS_BUF_SIZE, PAGE_SIZE, &pa);
++		if (p != NULL && pa != 0) {
++			rmtfs_va = (uint8_t *)p;
++			rmtfs_pa = pa;
++		} else {
++			vm_offset_t v = 0;
++
++			if (kmem_alloc_contig(kernel_map, &v, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++			    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) == KERN_SUCCESS &&
++			    v != 0) {
++				rmtfs_va = (uint8_t *)v;
++				rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)v));
++			}
++		}
++		if (rmtfs_pa == 0) {
++			LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
++			return;
++		}
++		LOG("rmtfs: buffer source %s pa %llx", p != NULL ? "IOContig" : "kmem",
++		    rmtfs_pa);
 +	}
-+	rmtfs_va = (uint8_t *)va;
-+	rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
 +	{
 +		static const uint32_t vm[1] = { VMID_MSS_MSA };
 +
