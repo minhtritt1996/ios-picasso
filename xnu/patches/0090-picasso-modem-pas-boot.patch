@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3550 @@
+@@ -0,0 +1,3551 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -3493,6 +3493,7 @@
 +			LOG("wlan MSA: cannot map");
 +		}
 +	}
++	rmtfs_init_buf();                       /* DMA pool: must be low memory */
 +	smem_map = map_phys(SMEM_PA, SMEM_SIZE, true);
 +	if (smem_map == NULL) {
 +		LOG("cannot map SMEM at 0x%llx", SMEM_PA);
