@@ -787,7 +787,7 @@
 +extern "C" unsigned sweet_log_started_g;
 +extern "C" uint64_t sweet_log_base_g, sweet_log_nblocks_g, sweet_log_position(void);
 +extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t blocks, uint64_t off,
-+    void *buf, uint32_t len);
++    const void *buf, uint32_t len);
 +extern "C" int sweet_ufs_part(const char *name, uint64_t *first, uint64_t *blocks, uint32_t *lun);
 +/* the modem's SMP2P entry, read by modem_alive_check() further down */
 +static volatile uint32_t *g_slave_kernel;
