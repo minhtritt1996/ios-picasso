@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3837 @@
+@@ -0,0 +1,3854 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -781,7 +781,9 @@
 +static unsigned q_srv_count, g_rx_msgs, g_tx_msgs, q_resumes;
 +/* last QRTR message, so the one-line tick shows where the modem went quiet */
 +static uint32_t g_last_dport, g_last_len, g_last_ms, g_last_qmi, g_last_src_port;
-+static unsigned g_tftp_wrq;
++static unsigned g_tftp_wrq, pdr_rx_logs;
++extern "C" uint64_t sweet_log_total_g;
++extern "C" unsigned sweet_log_seq_g, sweet_log_fails_g;
 +static unsigned g_ms;                           /* watch time, for the log */
 +
 +static uint32_t
@@ -2657,6 +2659,20 @@
 +static bool
 +pdr_rx(uint32_t node, uint32_t port, const uint8_t *d, uint32_t len)
 +{
++	if (pdr_rx_logs++ < 10) {
++		char hx[3 * 24 + 1];
++		uint32_t n = MIN(len, 24u), k = 0;
++
++		for (uint32_t i = 0; i < n; i++) {
++			static const char h[] = "0123456789abcdef";
++
++			hx[k++] = h[d[i] >> 4];
++			hx[k++] = h[d[i] & 15];
++			hx[k++] = ' ';
++		}
++		hx[k] = 0;
++		LOG("t=%u ms: PDR rx type %02x len %u: %s", g_ms, d[0], len, hx);
++	}
 +	if (d[0] != QMI_RESP) {
 +		return true;
 +	}
@@ -3792,10 +3808,11 @@
 +				g_watch = 1;
 +				for (unsigned ms = 0; ms < glink_ms; ms++) {
 +					if (ms != 0 && (ms % 1000) == 0) {
-+						LOG("tick %u ms: alive, tx %u rx %u drops %u | efs r %u w %u err %u | tftp %u | last port %x qmi %x len %u at %u ms",
++						LOG("tick %u ms: alive, tx %u rx %u drops %u | efs r %u w %u err %u | tftp %u | pdr %u | last port %x qmi %x len %u at %u ms | log %llu/%u/%u",
 +						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops,
 +						    rmtfs_reads, rmtfs_writes, rmtfs_err, g_tftp_wrq,
-+						    g_last_dport, g_last_qmi, g_last_len, g_last_ms);
++						    pdr_rx_logs, g_last_dport, g_last_qmi, g_last_len, g_last_ms,
++						    sweet_log_total_g, sweet_log_seq_g, sweet_log_fails_g);
 +					}
 +					g_beat++;
 +					glink_poll(part, ms);

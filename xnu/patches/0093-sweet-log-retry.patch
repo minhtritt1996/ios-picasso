@@ -1,6 +1,16 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -918,6 +918,7 @@
+@@ -860,6 +860,9 @@
+ static char sweet_log_ring[SWEET_LOG_SIZE];
+ static uint64_t _Atomic sweet_log_total;
+ static int sweet_log_chan;
++/* readable from other drivers: is the flush thread moving at all? */
++uint64_t sweet_log_total_g;
++unsigned sweet_log_seq_g, sweet_log_fails_g;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
+ 
+ /* Called for all console output, any context: never blocks. */
+@@ -918,6 +921,7 @@
  {
  	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
  	uint64_t flushed = 0, seq = 0;
@@ -8,7 +18,7 @@
  	void *bounce = (void *)(su.dma + DMA_BOUNCE);
  
  	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
-@@ -956,9 +957,16 @@
+@@ -956,9 +960,20 @@
  		}
  		lck_mtx_unlock(&sweet_ufs_lock);
  		if (error) {
@@ -20,10 +30,14 @@
 +			if (++fails <= 3) {
 +				printf("SWEET LOG: write failed (%d), retrying\n", error);
 +			}
++			sweet_log_fails_g = fails;
 +			(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", MAX(1, hz / 5));
 +			continue;
  		}
 +		fails = 0;
++		sweet_log_fails_g = 0;
++		sweet_log_total_g = total;
++		sweet_log_seq_g = (unsigned)seq;
  		flushed = total;
  	}
  }
