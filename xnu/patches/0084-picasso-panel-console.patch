@@ -36,7 +36,7 @@
  	}
 --- a/osfmk/console/serial_console.c	2026-10-21 16:30:02.569069076 +0700
 +++ b/osfmk/console/serial_console.c	2026-10-21 16:32:00.979102767 +0700
-@@ -242,6 +242,81 @@
+@@ -242,6 +242,123 @@
   * @param poll Whether or not this call should poll instead of going to sleep
   *             waiting for an interrupt when the hardware device isn't ready
   */
@@ -89,16 +89,8 @@
 +}
 +
 +static void
-+sweet_panel_putc(char ch)
++sweet_panel_glyph(char ch)
 +{
-+	if (!sweet_panel_on)
-+		return;
-+	if (ch == '\r')
-+		return;
-+	if (ch == '\n') {
-+		sweet_panel_newline();
-+		return;
-+	}
 +	if (sweet_panel_x + 8 > sweet_panel_w)
 +		sweet_panel_newline();
 +	uint32_t *row = (uint32_t *)(sweet_panel_va +
@@ -112,6 +104,56 @@
 +		}
 +	}
 +	sweet_panel_x += 8;
++}
++
++/*
++ * A panic prints more than one screenful, so its reason - the first line -
++ * scrolls off the panel. On seeing the console write "panic(", clear the
++ * panel and draw again from the bottom: the reason stays readable and the
++ * stack follows under it.
++ */
++static char sweet_panel_line[8];
++static int sweet_panel_line_n;
++
++static void
++sweet_panel_clear(void)
++{
++	for (uint32_t y = 0; y < sweet_panel_h; y++) {
++		uint32_t *row = (uint32_t *)(sweet_panel_va +
++		    (uint64_t)y * sweet_panel_stride);
++
++		for (uint32_t x = 0; x < sweet_panel_w; x++)
++			row[x] = 0;
++	}
++	sweet_panel_x = 0;
++	sweet_panel_y = sweet_panel_h > 16 ? sweet_panel_h - 16 : 0;
++}
++
++static void
++sweet_panel_putc(char ch)
++{
++	if (!sweet_panel_on)
++		return;
++	if (ch == '\r')
++		return;
++	if (ch == '\n') {
++		sweet_panel_line_n = 0;
++		sweet_panel_newline();
++		return;
++	}
++	if (sweet_panel_line_n < 8)
++		sweet_panel_line[sweet_panel_line_n++] = ch;
++	if (sweet_panel_line_n == 6 &&
++	    sweet_panel_line[0] == 'p' && sweet_panel_line[1] == 'a' &&
++	    sweet_panel_line[2] == 'n' && sweet_panel_line[3] == 'i' &&
++	    sweet_panel_line[4] == 'c' && sweet_panel_line[5] == '(') {
++		sweet_panel_clear();
++		for (int i = 0; i < 6; i++)
++			sweet_panel_glyph(sweet_panel_line[i]);
++		sweet_panel_line_n = 8;
++		return;
++	}
++	sweet_panel_glyph(ch);
 +}
 +#endif
 +
