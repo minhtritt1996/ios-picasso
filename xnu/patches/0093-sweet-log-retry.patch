@@ -1,0 +1,29 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -918,6 +918,7 @@
+ {
+ 	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+ 	uint64_t flushed = 0, seq = 0;
++	unsigned fails = 0;
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+@@ -956,9 +957,16 @@
+ 		}
+ 		lck_mtx_unlock(&sweet_ufs_lock);
+ 		if (error) {
+-			printf("SWEET LOG: write failed (%d), stopping\n", error);
+-			return;
++			/* Reading the root partition at the same time makes a write
++			 * fail now and then; giving up here is what turns a bad boot
++			 * into an unreadable one, so retry the same range instead. */
++			if (++fails <= 3) {
++				printf("SWEET LOG: write failed (%d), retrying\n", error);
++			}
++			(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", MAX(1, hz / 5));
++			continue;
+ 		}
++		fails = 0;
+ 		flushed = total;
+ 	}
+ }
