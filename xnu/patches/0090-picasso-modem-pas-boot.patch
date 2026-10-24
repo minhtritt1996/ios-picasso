@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3514 @@
+@@ -0,0 +1,3515 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2493,7 +2493,7 @@
 +};
 +static uint64_t rmtfs_pa;
 +static uint8_t *rmtfs_va;
-+static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err;
++static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs;
 +
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
@@ -2686,6 +2686,9 @@
 +	if (m.b == NULL) {
 +		return;
 +	}
++	if (rmtfs_msgs++ < 12) {
++		LOG("t=%u ms: rmtfs msg %u txn %u len %u", g_ms, msg, txn, len);
++	}
 +	/* TLV 0x01 (u32 caller id) on every request except OPEN */
 +	if (msg != 1) {
 +		l = 0;
@@ -2768,15 +2771,13 @@
 +				} else {
 +					while (ok && done < bytes) {
 +						uint32_t n = (uint32_t)MIN(bytes - done, 0x40000ull);
-+						IOMemoryMap *dm = map_phys((uint64_t)e[1] + done, n, false);
++						vm_offset_t dst = ml_io_map((vm_offset_t)(e[1] + done), n);
 +
-+						if (dm == NULL) {
++						if (dst == 0) {
 +							ok = false;
 +							break;
 +						}
-+						memcpy((void *)dm->getVirtualAddress(),
-+						    efs_cache[caller - 1].data + base + done, n);
-+						dm->release();
++						memcpy((void *)dst, efs_cache[caller - 1].data + base + done, n);
 +						done += n;
 +					}
 +					rmtfs_reads++;
