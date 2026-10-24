@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3496 @@
+@@ -0,0 +1,3507 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2778,6 +2778,17 @@
 +					}
 +					rmtfs_reads++;
 +				}
++			}
++			if (ok && !write && rmtfs_reads <= 4) {
++				uint32_t e0 = 0, e1 = 0, e2 = 0;
++
++				if (iov != NULL && iovlen >= 13) {
++					memcpy(&e0, iov + 1, 4);
++					memcpy(&e1, iov + 5, 4);
++					memcpy(&e2, iov + 9, 4);
++				}
++				LOG("t=%u ms: rmtfs iovec caller %u read e0=%x e1=%x e2=%x OK",
++				    g_ms, caller, e0, e1, e2);
 +			}
 +			if (!ok && ++rmtfs_err <= 3) {
 +				uint32_t e0 = 0, e1 = 0, e2 = 0;
