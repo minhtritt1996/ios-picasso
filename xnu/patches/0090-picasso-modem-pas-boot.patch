@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3501 @@
+@@ -0,0 +1,3505 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -3470,6 +3470,10 @@
 +			ipcc = (volatile uint8_t *)ml_io_map(IPCC_BASE, 0x1000);
 +			if (glink_start(part)) {
 +				for (unsigned ms = 0; ms < glink_ms; ms++) {
++					if (ms != 0 && (ms % 5000) == 0) {
++						LOG("tick %u ms: alive, tx %u rx %u drops %u",
++						    ms, g_tx_msgs, g_rx_msgs, g_txq_drops);
++					}
 +					glink_poll(part, ms);
 +					IOSleep(1);
 +				}
