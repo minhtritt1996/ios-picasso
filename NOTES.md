@@ -931,6 +931,19 @@ Context: with the pool the kernel reaches iOS userspace, PAS ret 0, MODEM READY,
 modem thread then stops with no glink log at all, so the stall is inside
 smem_get/smem_alloc for the glink descriptor or TX FIFO.
 
+### Where the freeze is, with the pool in place (2026-10-24 14:10)
+Console of the pool boot (photo): GLINK comes up (rx#2..#21), pd-mapper serves six domains,
+rmtfs OPEN fs1/fs2, ALLOC -> e0000000, then `rmtfs msg 3 txn 1 len 38` and the console stops.
+So the modem does echo our pool address and the last thing we do is the copy into
+`rmtfs_va + (e[1] - rmtfs_pa)`. Two candidate causes, both fixable in one build:
+  a) the pool is mapped with map_phys(.., wc=true) - write-combine on unmanaged DRAM may hang;
+     use wc=false (cache inhibited) or map each IOVEC entry with ml_io_map,
+  b) the pool page is not actually backed for the AP and the write hangs like 0xBBA00000 did.
+A third, cheaper test that separates them: do not copy at all, only log and reply success -
+if the boot then reaches userspace and the link stays alive, the copy/mapping is the culprit.
+Note the flakiness: another boot with the same image reached iOS userspace with no ALLOC at
+all (modem thread stopped at glink_start), so always read the ring, not just the console.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
