@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3530 @@
+@@ -0,0 +1,3526 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2794,13 +2794,9 @@
 +			    iov != NULL && iovlen >= 1 && rmtfs_pa != 0;
 +			for (i = 0; ok && i < iov[0] && 1 + 12 * (i + 1) <= iovlen; i++) {
 +				uint32_t e[3];
-+				uint64_t bytes;
++
 +				memcpy(e, iov + 1 + 12 * i, 12);
-+				(void)psz;
-+				(void)done;
-+				(void)base;
-+				(void)bytes;
-+				(void)write;
++				(void)e;
 +				/* Writing to the address the modem names hangs the GLINK
 +				 * master (XPU, no fault) for every address we can reach,
 +				 * so refuse the request until a buffer below 4 GiB in
