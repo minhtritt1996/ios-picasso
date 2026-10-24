@@ -984,6 +984,24 @@ When the phone is next in recovery: flash aw again, and this time read the conso
 freeze is in our TX reply, in the console lock or in the copy.
 State of the chain: EFS read #1 is served (cache-inhibited pool), then the machine dies.
 
+### Freeze is one packet after the first served read (2026-10-24 15:00)
+Console of variant aw (1 s heartbeat, every IOVEC logged): the run serves exactly one read
+  rmtfs alloc ... -> e0000000
+  rmtfs msg 3 txn 1 len 38
+  iovec caller 1 read e0=1 e1=e0000200 e2=1 copied
+  rx#22 ..., rx#23 ...                then the screen stops (no second iovec#, no tick)
+so the machine dies while handling the packet(s) right after our IOVEC reply. The ring
+stops at the same moment, which means the hang is not confined to the modem thread.
+Suspects, in order: the TX path for that reply (qm_send -> glink_send -> txq_pump ->
+tx_write -> ipcc_kick), a lock shared with the console/log thread, or the modem's next
+request being one we mishandle.
+What would settle it in one boot: add LOG lines around the IOVEC reply (before qm_result,
+before qm_send, after qm_send) - if the last line is "before qm_send", the TX path is the
+culprit and the next step is making tx_write/ipcc_kick safe from this context.
+Alternatively enable the hardware UART at 0x988000 as UniXNU-picasso does
+(scripts/make-picasso-adt.py sets UART_BASE) to get a live console, which removes the
+guesswork for every future hang.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
