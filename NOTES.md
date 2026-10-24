@@ -1140,6 +1140,42 @@ refusal logging, `rmtfs_pa` logged at ALLOC) with cmdline 426 bytes, no `sweethi
 It is ready to flash with `tools/picasso-boot.sh /tmp/ci40100/kernel.development.sweet "<modem args>"`
 once the phone is in recovery; nothing has been flashed since variant bn.
 
+### variant bo did not boot: the cmdline had sweetusb=2 (2026-10-24 21:15, variant bp2)
+`variant-bo.img` (CI 40100058840 kernel) never wrote to the darwin ring - the pulled 4 MiB
+was still variant bn's (`tftp WRQ ... (writes dropped)`, `alloc -> e0000000`, one
+`boot-args 453 bytes` line). The console photo explained it: the kernel ran the in-kernel
+DWC3 bring-up (`SWEET USB: clk ahb2phy ... ep0 ... ue0 192.168.7.2/24 up (err 0)`, the RPMh
+`ldoa*` votes) and the phone then dropped to fastboot. **The cause was my command line, not
+the new code:** bn ran `sweetusb=0`, the bo payload said `sweetusb=2` (the DWC3/STARTTRANSFER
+path this port cannot survive) and was missing `sweetscan=-`.
+Also learned: the kernel's boot-args are the payload header cmdline from
+`tools/mkpayload.py --cmdline` (shim/loader.c copies `p->cmdline` into `boot_args`), the
+`mkbootimg --cmdline` field of the image is irrelevant for the payload. bn's cmdline was
+453 bytes = modem args first, then `debug=0x14e ... sweetscan=- sweethidtest=5`.
+`variant-bp2.img` (md5 `0fc459aade9494566efac409be9958d8`, 36 499 456 B) = CI 40100058840
+kernel + bn's cmdline minus ` sweethidtest=5` (438 B, `sweetusb=0 sweetscan=-`), flashed from
+fastboot with `fastboot flash boot`. The three boot helpers now default to
+`sweetusb=0 ... sweetscan=-` (commit `a961f7a`).
+
+### Phantom keys traced; ring cleared for a clean bp3 run (2026-10-24 21:20)
+The bp2 ring was a mix: the new boot's first lines (banner, `boot-args 438 bytes`,
+`rmtfs: buffer pa b0978000`, `shared buffer ... assign fffffffffffffffe`) sat on top of
+variant bn's untouched 4 MiB, so `tftp WRQ ... (writes dropped)` and
+`rmtfs alloc: ... -> e0000000` lines in it are bn's leftovers, not the new kernel's output.
+The console of the same build had already answered the alloc question:
+`rmtfs alloc pa b097b000 va ffffffe4_772b7c00` then `rmtfs alloc: caller 1 size 2097152 ->
+b097b000`, i.e. the kernel now hands the modem the kmem buffer (below 4 GiB), never
+0xE0000000.
+The phantom keys are explained too: the ring/console show
+`SWEET KEYS: key=1 down=1 pon=0x4 gpio4:c110=0` and `SWEET HID: key 0xe9 down` - the PM6150L
+GPIO2 read (SID4 0xc110) returns 0, so `keys_thread` reports Volume-Up held. `sweetkeys=0`
+now turns the whole observer off.
+Procedure used from now on: zero the ring (`dd if=/dev/zero of=.../by-name/darwin bs=4096
+seek=5242106 count=1025` from recovery), flash, boot, then pull the ring - otherwise a
+short boot's log is unreadable against the previous one.
+`variant-bp3.img` (md5 `7401c632ec04758b7840bbfae5d70db1`) = CI 40100058840 kernel, cmdline
+450 B (bn's minus `sweethidtest`, plus `sweetkeys=0`), flashed and verified.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
