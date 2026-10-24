@@ -1059,6 +1059,18 @@ new fallback, so the loader's view of the payload's placement is not what we cha
 next thing to read is loader.c around the PAYLOAD/segment copy (it may use the ADT values or
 a compile-time base for the destination) before trying more addresses.
 
+### Low-bank: the shim stalls in its own console print (2026-10-24 19:50)
+Probe screen with PHYS base=9C000000 size=1C000000 (our fallback, so the new values are in
+use; the `RAM 0x140000000 + 0xC0000000` line is a hard-coded string in shim.c:653, not a
+value). loader.c then calls board_pick_ram(), prints `RAM base` - and the screen's last line
+is exactly `RAM base 000000009C000000`; the next line (`RAM size`) never appears, so the
+stall is inside con_hex(), i.e. the shim's framebuffer console, before `COPY segments`.
+So the low-bank payload never gets copied - this is a console problem in the shim, the same
+family as the console dying inside xnu.
+Next session: either (a) move the RAM base/size prints after the copy, or log them with a
+direct framebuffer store instead of con_hex, so the copy is reached; or (b) give up on the
+shim console for this test and print only a final marker after the ADT patch.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
