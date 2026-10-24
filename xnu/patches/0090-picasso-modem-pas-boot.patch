@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3651 @@
+@@ -0,0 +1,3652 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -742,6 +742,16 @@
 +static void svc_announce(void);
 +static uint32_t pdr_restart_want;
 +static uint32_t modem_dbg;
++/* Last modem action, cheap stores only: the stall monitor dumps it. */
++static volatile uint32_t g_action;
++
++#define ACT_RX      1u
++#define ACT_IOVEC   2u
++#define ACT_REPLY   3u
++#define ACT_PDH     4u
++#define ACT_OPEN    5u
++#define ACT_ALLOC   6u
++
 +static bool pdr_restarted;
 +static void pdr_restart_pd(const char *path);
 +static void rmtfs_init_buf(void);
@@ -2121,15 +2131,6 @@
 + * on the console, stack included).
 + */
 +static volatile uint32_t g_beat;
-+/* Last modem action, cheap stores only: the stall monitor dumps it. */
-+static volatile uint32_t g_action;
-+
-+#define ACT_RX      1u          /* (type << 8) | (dst_port & 0xff) */
-+#define ACT_IOVEC   2u
-+#define ACT_REPLY   3u
-+#define ACT_PDH     4u          /* pd-mapper */
-+#define ACT_OPEN    5u
-+#define ACT_ALLOC   6u
 +
 +/* Written to misc+2 KiB before panicking: the console and the ring both die with
 + * the stall, so this is the only post-mortem witness we have without a UART. */
