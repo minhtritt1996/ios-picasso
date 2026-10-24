@@ -793,6 +793,24 @@ constraints at once: below 4 GiB (32-bit modem field) and AP-owned RAM (XPU allo
 The phone currently runs variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots
 and logs.
 
+### RAM bank vs 32-bit rmtfs address (2026-10-24 12:30, 837c106)
+Measured with the window-aware kernel: `rmtfs: adt dram 140000000+c0000000 window 0+0` - xnu
+runs in the 3 GiB bank at 0x1_40000000, so it has no RAM below 4 GiB at all, kmem allocates
+above 5 GiB, and every rmtfs buffer it hands the modem is truncated by the modem's 32-bit
+ALLOC_BUFF field. The modem does use the address we return (0x8ba00000 -> its IOVEC says
+8ba00200), it is only the AP that may not touch that carveout.
+shim/board.c: RAM_MAX only caps the *size* of the picked range, so the high bank still won.
+837c106 adds [4 GiB, 1 TiB) to the exclusion list, which should leave only the low bank
+(0x80000000 + 0x3cc00000, 972 MiB) and make low allocations possible.
+Pending experiment (one build+flash): shim 837c106 + kernel 2c3361d (the IOVEC copy path,
+which now copies from the EFS cache into our own low buffer). Expected log:
+  rmtfs: adt dram 80000000+...   buffer from ... pa < 0x100000000
+  iovec caller 1 read ... OK     tick 5000 ms: alive
+then watch for tftp RRQ / wlan_pd.
+Two earlier variants (aa/ab/ad) showed that IOMallocContiguous called from the driver kills
+the boot, so the buffer must come from kmem_alloc_contig after the low bank is in use.
+The phone was left on variant af (md5 4682a2b073c3b0b2124c85cd3c28cb68), which boots and logs.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
