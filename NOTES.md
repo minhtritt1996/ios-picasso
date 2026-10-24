@@ -742,6 +742,24 @@ logs `rmtfs: buffer source IOContig|kmem pa ...`. Variant aa was flashed
 so the low-address theory is still unverified - the next run should show either a pa
 below 4 GiB and a working IOVEC (rmtfs iovec ... OK / tick 5000 ms) or the same stall.
 
+### Truncation proven, DMA pool unusable (2026-10-24 10:55)
+Ring of variant ac (a8ed1ec):
+  rmtfs: buffer source kmem pa 144af8000
+  rmtfs alloc: caller 1 size 2097152 -> 144af8000
+  iovec parse e0=1 e1=44af8200 e2=1 bytes=512
+  iovec map 44af8200+512 -> fffffe3008b08200        (then the GLINK thread hangs)
+144af8000 -> 44af8200 is exactly a 32-bit truncation plus the 0x200 offset the modem
+added, so the modem does keep the ALLOC_BUFF address in 32 bits and the buffer must live
+below 4 GiB. IOMallocContiguous(3 MiB) returns NULL there; four IOMallocContiguous(2 MiB)
+attempts kill the boot before the first ring flush (variants ab/ad wrote nothing).
+The phone is left running variant ac (md5 21529ab58062c91669cf6f058e13f7db), which boots
+and logs.
+Next idea for the low buffer: do not allocate - take a fixed low physical range that the
+AP owns and TZ accepts. Candidates below 4 GiB in the DT: linux,cma (base unknown, size
+from alloc-ranges), pil_wlan_fw_region 0x8ba00000 (2 MiB, exactly the size the modem
+asks for, currently zeroed and unused until WLFW), smem_region 0x80900000 (in use).
+Trying the pil_wlan_fw_region as the rmtfs buffer is the cheapest next experiment.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
