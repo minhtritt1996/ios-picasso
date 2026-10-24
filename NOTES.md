@@ -724,6 +724,24 @@ re-flash variant u (kernel 5121fc3-class, no restart) or t to confirm the phone 
 returns, then retry the restart if it does.
 State of the branch: omp at af3f55d, CI green for 0856662 (run 40047608095).
 
+### Root cause of the GLINK stall: the modem truncates ALLOC_BUFF to 32 bits (2026-10-24 10:10, 7e12e0c)
+Step logs inside the rmtfs handler pinned it down exactly:
+  rmtfs msg 4 (ALLOC)  -> alloc 1461d8000
+  rmtfs msg 3 (RW_IOVEC) len 38
+  iovec parse e0=1 e1=46350200 e2=1 bytes=512 caller 1
+  iovec map 46350200+512 -> fffffe1076b14200
+  (nothing more: the memcpy into that mapping hangs the GLINK thread for good)
+0x46350200 is our own buffer seen through a 32-bit field (0x1_461d8000) plus the
+0x1a2200/0x180000-style offset inside it - the modem's IOVEC phys_offset is u32, so a
+buffer above 4 GiB cannot work. Writing to the truncated address does not fault: the AP's
+XPU denies it and the master hangs, which is why every kernel that served rmtfs stopped
+logging at t=4 ms while the rest of the kernel (ring flush, recovery BCB) kept working.
+7e12e0c allocates the buffer with IOMallocContiguous first (DMA pool, usually low) and
+logs `rmtfs: buffer source IOContig|kmem pa ...`. Variant aa was flashed
+(md5 cf3914e5b323fea386c73da8986159cc) but its ring was not written in the 160 s window,
+so the low-address theory is still unverified - the next run should show either a pa
+below 4 GiB and a working IOVEC (rmtfs iovec ... OK / tick 5000 ms) or the same stall.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
