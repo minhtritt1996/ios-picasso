@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3657 @@
+@@ -0,0 +1,3685 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2160,7 +2160,7 @@
 +		for (unsigned b = 0; b < 2; b++) {
 +			uint64_t row_pa = pa + (uint64_t)bands[b] * row;
 +			uint64_t band_pa = row_pa & ~0xfffull;
-+			vm_offset_t va = ml_io_map((vm_offset_t)band_pa, 0x10000);
++			vm_offset_t va = ml_io_map((vm_offset_t)band_pa, 0x20000);
 +
 +			if (va == 0) {
 +				continue;
@@ -2819,17 +2819,19 @@
 +		}
 +	}
 +	{
-+		/* Buffer from the fixed modem pool: unmanaged RAM below 4 GiB, so the
-+		 * modem's 32-bit address is valid and the copy goes into a real page. */
-+		IOMemoryMap *m = map_phys(MODEM_POOL_BASE, MODEM_POOL_SIZE, false);
++		/* xnu owns low RAM now (shim fallback 0x80000000), so a kernel
++		 * allocation is below 4 GiB and the modem can address it. */
++		vm_offset_t va = 0;
 +
-+		if (m == NULL) {
-+			LOG("rmtfs: cannot map the modem pool at %llx", MODEM_POOL_BASE);
++		if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
++		    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS ||
++		    va == 0) {
++			LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
 +			return;
 +		}
-+		rmtfs_va = (uint8_t *)m->getVirtualAddress();
-+		rmtfs_pa = MODEM_POOL_BASE;
-+		LOG("rmtfs: buffer from modem pool pa %llx", rmtfs_pa);
++		rmtfs_va = (uint8_t *)va;
++		rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
++		LOG("rmtfs: buffer pa %llx", rmtfs_pa);
 +	}
 +	{
 +		static const uint32_t vm[1] = { VMID_MSS_MSA };
@@ -2922,15 +2924,41 @@
 +		qm_result(&m, true);
 +		break;
 +	case 3: {                               /* RW_IOVEC */
-+			/* Refuse without touching any buffer: serving the copy has
-+			 * deadlocked the whole machine right after the first request
-+			 * in every run, so this proves the machine then lives and
-+			 * whatever the modem does next is visible. */
-+			rmtfs_err++;
-+			if (rmtfs_err <= 3) {
-+				LOG("t=%u ms: rmtfs iovec refused (%u so far)", g_ms, rmtfs_err);
++			uint32_t l2 = 0;
++			const uint8_t *dir = NULL, *iov = NULL;
++			uint32_t iovlen = 0;
++			bool write;
++
++			(void)qm_tlv_find(d, len, 0x02, &dir, &l2);
++			(void)qm_tlv_find(d, len, 0x03, &iov, &iovlen);
++			write = dir != NULL && *dir != 0;
++			ok = caller >= 1 && caller <= 4 && iov != NULL && iovlen >= 1 &&
++			    rmtfs_pa != 0 && rmtfs_va != NULL;
++			for (i = 0; ok && i < iov[0] && 1 + 12 * (i + 1) <= iovlen; i++) {
++				uint32_t e[3];
++				uint64_t bytes;
++
++				memcpy(e, iov + 1 + 12 * i, 12);
++				bytes = (uint64_t)e[2] * 512;
++				if (rmtfs_pa == 0 || e[1] < rmtfs_pa ||
++				    e[1] - rmtfs_pa + bytes > RMTFS_BUF_SIZE ||
++				    e[0] * 512ull + bytes > efs_cache[caller - 1].size) {
++					ok = false;
++					break;
++				}
++				if (write) {
++					rmtfs_writes++;
++				} else {
++					memcpy(rmtfs_va + (e[1] - rmtfs_pa),
++					    efs_cache[caller - 1].data + (uint64_t)e[0] * 512,
++					    (size_t)bytes);
++					rmtfs_reads++;
++				}
 +			}
-+			ok = false;
++			if (!ok && rmtfs_err <= 3) {
++				LOG("t=%u ms: rmtfs iovec FAILED", g_ms);
++				rmtfs_err++;
++			}
 +			break;
 +		}
 +	case 4: {                               /* ALLOC_BUFF */
