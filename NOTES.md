@@ -1084,6 +1084,17 @@ What to check in that ring: `rmtfs: chosen dram ac000000+50000000`,
 `rmtfs: buffer pa 0xac......` (below 4 GiB, RAM xnu owns), then whether `iovec` copies no
 longer deadlock (`tick` lines present) and whether `tftp RRQ`/`wlan_pd`/`svc 45` appear.
 
+### Deadlock gone: kmem rmtfs buffer in the low bank (2026-10-24 20:35, variant bn)
+Kernel from CI run 40097777527 (patch 0090 replies rmtfs_pa for ALLOC_BUFF instead of the
+fixed 0xE0000000 pool) packaged against the 0xAC000000 layout. Console: the modem link
+reports `tick 1000..29000 ms: alive, tx 84 rx 81 drops 0`, pd-mapper answers (tms/pddump),
+PDR registers/restarts wlan_pd, and the machine never hangs or reboots - the phone stayed
+in iOS. Previous builds (pool at 0xE0000000) always wedged within a second of the first
+IOVEC, so the EFS copy now runs into kernel RAM the AP owns below 4 GiB.
+Open question for the next boot: whether `rmtfs iovec` now reports success and the modem
+reaches `tftp RRQ wlanmdsp.mbn` / wlan_pd / WLFW (svc 45/49). With no USB the console is
+the only live view; the darwin ring has the same lines after a reboot to recovery.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
