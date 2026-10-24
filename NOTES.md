@@ -1,6 +1,31 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-22 19:00, latest)
+## Agent handoff / active work (2026-10-24 16:15, latest)
+### >>> UPDATE 2026-10-24 (bp7 ring is stale; status block added to stop photo-guessing) <<<
+1. **bp7 boot (commit `eda6762`, CI `40107911357`, flashed by the user) ran the modem phase to
+   `tick 148000 ms` on the console (amp2p alive, `pdr 3`, `efs r 1 w 0`, `tftp 0`), i.e. the modem
+   is up, answers SMP2P, answers EFS ALLOC + one IOVEC read, and then parks.**
+2. **The 37 KB ring pulled from `darwin` after that boot does NOT belong to it**: it contains
+   `PDR query state` / `PDR restart_pd` lines and two ticks, but zero `PDR rx type` and zero
+   `PDR response` lines, so it is the bp5-era ring (header seq 3). The eda6762 kernel's flusher
+   either never started or never flushed. Consequence: **the darwin ring cannot be trusted to
+   identify the running payload** - same trap as stale console photos.
+3. **Fix committed (`bf31dec`, CI `40110159040`)**: the modem thread itself now writes a 4 KiB
+   text status block at `(nblocks - 1026) * 512` in `darwin`, every 10 s, independent of the log
+   flusher: `SWEETSTAT 1 / ms seq tx rx drops pdr tftp efs_r efs_w efs_err last_dport last_ms
+   last_qmi last_len log_started log_total log_flushed log_seq log_fails log_base log_nblocks
+   chan txq txq_drops sk slot`. `sweet_ufs.c` (patch 0093) additionally exports
+   `sweet_log_started_g`, `sweet_log_base_g`, `sweet_log_nblocks_g`, and the flusher retries a
+   failed range up to 3 times instead of giving up.
+4. **Read it back from recovery** without any photo:
+   `adb shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=<(size/4096)-1100> count=1100" | grep -a -A24 SWEETSTAT`
+5. **EFS data check**: `modemst1` sector 0 carries an `IMAGEFS1` header (offset 0x28) and sector 1
+   (the one block the modem reads at buf+0x200) is ciphertext-looking (`e0 39 44 9a 2a 00 2f 7d
+   ...`), so the modem's EFS content is encrypted and a content comparison proves nothing. Our
+   copy is byte-identical to the partition, the reply is a plain OK result (`rmtfs_err 0`).
+6. **Open question for the next boot**: is the modem's TX path stalled (GLINK `txq` depth and
+   `chan` state in the status block) and does the flusher start at all (`log_started`,
+   `log_fails`)? Both answers come from the status block, no photo needed.
 
 ### >>> UPDATE 2026-10-22 (USB: the SMMU wall blocks both XNU and the shim) <<<
 
