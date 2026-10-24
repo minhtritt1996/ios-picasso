@@ -2708,7 +2708,7 @@
 +	{
 +		/* Buffer from the fixed modem pool: unmanaged RAM below 4 GiB, so the
 +		 * modem's 32-bit address is valid and the copy goes into a real page. */
-+		IOMemoryMap *m = map_phys(MODEM_POOL_BASE, MODEM_POOL_SIZE, true);
++		IOMemoryMap *m = map_phys(MODEM_POOL_BASE, MODEM_POOL_SIZE, false);
 +
 +		if (m == NULL) {
 +			LOG("rmtfs: cannot map the modem pool at %llx", MODEM_POOL_BASE);
@@ -2835,12 +2835,12 @@
 +				if (write) {
 +					rmtfs_writes++;
 +				} else {
-+					/* Test: acknowledge without touching the buffer, to
-+					 * separate "the link dies in the copy" from "the
-+					 * copy is fine and something later dies". */
++					memcpy(rmtfs_va + (e[1] - rmtfs_pa),
++					    efs_cache[caller - 1].data + (uint64_t)e[0] * 512,
++					    (size_t)bytes);
 +					if (rmtfs_reads < 4) {
 +						LOG("t=%u ms: iovec caller %u read e0=%x e1=%x e2=%x "
-+						    "(copy skipped)", g_ms, caller, e[0], e[1], e[2]);
++						    "copied", g_ms, caller, e[0], e[1], e[2]);
 +					}
 +					rmtfs_reads++;
 +				}
