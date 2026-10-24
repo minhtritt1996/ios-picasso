@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3979 @@
+@@ -0,0 +1,3980 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2765,6 +2765,10 @@
 +	return true;
 +}
 +
++static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs, rmtfs_iov_logs;
++/* diagnostic: refuse the modem's EFS reads, to see whether it retries */
++static unsigned g_efs_fail;
++
 +/*
 + * Somewhere to put machine-readable state that does not depend on the log
 + * flusher: one 4 KiB block just below the ring in the root partition. A boot
@@ -2840,9 +2844,6 @@
 +};
 +static uint64_t rmtfs_pa;
 +static uint8_t *rmtfs_va;
-+static unsigned rmtfs_reads, rmtfs_writes, rmtfs_err, rmtfs_msgs, rmtfs_iov_logs;
-+/* diagnostic: refuse the modem's EFS reads, to see whether it retries */
-+static unsigned g_efs_fail;
 +
 +/* Read/write len bytes at byte offset off of a GPT partition. */
 +static int
