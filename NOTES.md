@@ -1176,6 +1176,28 @@ short boot's log is unreadable against the previous one.
 `variant-bp3.img` (md5 `7401c632ec04758b7840bbfae5d70db1`) = CI 40100058840 kernel, cmdline
 450 B (bn's minus `sweethidtest`, plus `sweetkeys=0`), flashed and verified.
 
+### bp4: one EFS read served, then a panic whose reason scrolled away (2026-10-24 22:05)
+The new counters answered the rmtfs question: `bp4` (kernel 40103041374) served exactly
+**one** EFS read - `efs r 1 w 0 err 0` in every tick - and the modem then went silent
+(`tftp 0`, and the last QRTR data message is at 4 ms). So ALLOC + one IOVEC now work; what
+stops next is the modem's own follow-up, not our reply path.
+The run also ended in a panic: `panic(cpu N caller ...)` whose reason line had already
+scrolled off, followed by `Debugger synchronization timed out; waited 240000 nanoseconds`
+and `panic: cpu 5 failed to halt with error -5: halt not supported for this configuration`
+from `DebuggerXCallEnter` (osfmk/arm/model_dep.c:1046/1077 - dbgwrap cannot halt CPUs on
+this port, so the panic text is a consequence, not the cause). The modem thread keeps
+printing ticks after the panic, so "ticks keep coming" does NOT mean the boot is healthy -
+check the screen, not the ticks.
+Two observability fixes, both in the kernel now (run 40105926204):
+1. `0084`: when the console writes "panic(", the panel is cleared and drawing restarts at
+   the bottom, so the reason stays readable (`sweet_panel_clear`, `sweet_panel_glyph`).
+2. `0093` (new): the ring flush thread retries a failed write every 200 ms instead of
+   returning - it was dying at `seq=3`, which is why a bad boot had no log. Do NOT put
+   that change into `0047`: 0069 rewrites the same lines and CI silently skips the whole
+   patch ("Skipping patch ... 0069-sweet-ufs-faster.patch (patch failed:
+   bsd/dev/sweet_ufs.c:658)"), which happened once and cost a build. Patch numbering is
+   the ordering contract; add a later patch instead of editing an earlier one's loop.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
