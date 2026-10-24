@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3507 @@
+@@ -0,0 +1,3497 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1570,37 +1570,36 @@
 +	}
 +}
 +
-+/* pd-mapper: service name -> owning protection domain */
-+static const struct { const char *svc, *domain; } pd_map[] = {
-+	{ "tms/servreg",       "msm/modem/root_pd" },
-+	{ "tms/pdr_enabled",   "msm/modem/root_pd" },
-+	{ "tms/pddump_disabled", "msm/modem/root_pd" },
-+	{ "gps/gps_service",   "msm/modem/root_pd" },
-+	{ "kernel/elf_loader", "msm/modem/wlan_pd" },
-+	{ "tms/servreg",       "msm/modem/wlan_pd" },
-+	{ "wlan/fw",           "msm/modem/wlan_pd" },
-+	/* The PD names themselves: the notifier resolves "msm/modem/wlan_pd"
-+	 * through the locator, so a path that is a PD must map to that PD or
-+	 * register_listener answers INVALID_HANDLE (9). */
-+	{ "msm/modem/root_pd", "msm/modem/root_pd" },
-+	{ "msm/modem/wlan_pd", "msm/modem/wlan_pd" },
-+	{ "msm/modem/test_pd", "msm/modem/test_pd" },
-+	{ "msm/adsp/audio_pd", "msm/adsp/audio_pd" },
++/*
++ * pd-mapper database, taken verbatim from the six *.jsn files in the modem
++ * partition's image/ directory (modemr, modemuw, adspr, adsps, adspua, cdspr).
++ * Each file is one protection domain with its qmi_instance_id and the
++ * services it provides; tms/pdr_enabled answers with every domain.
++ */
++static const struct {
++	const char *domain;
++	uint32_t inst;
++	const char *svc[4];
++} pd_db[] = {
++	{ "msm/modem/root_pd",  180, { "tms/servreg", "tms/pdr_enabled", "gps/gps_service", NULL } },
++	{ "msm/modem/wlan_pd",  180, { "kernel/elf_loader", "tms/servreg", "wlan/fw", NULL } },
++	{ "msm/adsp/root_pd",    74, { "tms/servreg", NULL } },
++	{ "msm/adsp/sensor_pd",  74, { "tms/servreg", NULL } },
++	{ "msm/adsp/audio_pd",   74, { "tms/servreg", "avs/audio", NULL } },
++	{ "msm/cdsp/root_pd",    76, { "tms/servreg", NULL } },
 +};
 +
-+/* Every PD the modem firmware knows (strings in modem.b22). The vendor
-+ * pd-mapper answers "tms/pdr_enabled" with the whole domain list, which is
-+ * how the modem builds its service registry; one entry is not enough for
-+ * wlan_pd to get a handle. modem_pdm=2 serves the full list. */
-+static const struct { const char *name; uint32_t inst; } pd_domains[] = {
-+	{ "msm/modem/root_pd",  0x101 },
-+	{ "msm/modem/wlan_pd",  180 },
-+	{ "msm/modem/test_pd",  0x102 },
-+	{ "msm/adsp/audio_pd",  180 },
-+	{ "gps/gps_service",    180 },
-+};
-+static unsigned pd_full;
-+static uint32_t rmtfs_on = 1;
++static bool
++pd_provides(unsigned i, const char *svc)
++{
++	for (unsigned k = 0; k < 4 && pd_db[i].svc[k] != NULL; k++) {
++		if (strcmp(pd_db[i].svc[k], svc) == 0) {
++			return true;
++		}
++	}
++	return false;
++}
++
 +static unsigned pd_reqs;
 +
 +static void
@@ -1638,15 +1637,21 @@
 +		asc[n] = 0;
 +		LOG("t=%u ms: pd-mapper msg %x len %u: %s |%s|", g_ms, msg, len, hex, asc);
 +	}
-+	if (pd_full && strcmp(name, "tms/pdr_enabled") == 0) {
-+		for (unsigned i = 0; i < sizeof(pd_domains) / sizeof(pd_domains[0]); i++) {
-+			uint32_t dl = (uint32_t)strlen(pd_domains[i].name), inst = pd_domains[i].inst, zero = 0;
++	{
++		bool all = strcmp(name, "tms/pdr_enabled") == 0;
 +
++		for (unsigned i = 0; i < sizeof(pd_db) / sizeof(pd_db[0]); i++) {
++			uint32_t dl, inst = pd_db[i].inst, zero = 0;
++
++			if (!all && !pd_provides(i, name)) {
++				continue;
++			}
++			dl = (uint32_t)strlen(pd_db[i].domain);
 +			if (n + 1 + dl + 9 > sizeof(list)) {
 +				break;
 +			}
 +			list[n++] = (uint8_t)dl;
-+			memcpy(list + n, pd_domains[i].name, dl);
++			memcpy(list + n, pd_db[i].domain, dl);
 +			n += dl;
 +			memcpy(list + n, &inst, 4);
 +			n += 4;
@@ -1655,21 +1660,6 @@
 +			n += 4;
 +			cnt++;
 +		}
-+	}
-+	for (unsigned i = 0; !pd_full && i < sizeof(pd_map) / sizeof(pd_map[0]); i++) {
-+		if (strcmp(pd_map[i].svc, name) != 0) {
-+			continue;
-+		}
-+		uint32_t dl = (uint32_t)strlen(pd_map[i].domain), inst = 180, zero = 0;
-+		list[n++] = (uint8_t)dl;
-+		memcpy(list + n, pd_map[i].domain, dl);
-+		n += dl;
-+		memcpy(list + n, &inst, 4);
-+		n += 4;
-+		list[n++] = 0;
-+		memcpy(list + n, &zero, 4);
-+		n += 4;
-+		cnt++;
 +	}
 +	list[0] = (uint8_t)cnt;
 +	qm_result(&m, true);
