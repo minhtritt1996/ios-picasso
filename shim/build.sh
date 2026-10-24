@@ -54,7 +54,7 @@ while [ $# -gt 0 ]; do
 		# The kernel's RAM, for the same reason: the bootloader does not
 		# pass the tree in x0 here, and everything below 0x10000000 is
 		# protected. These are the banks it hands the kernel.
-		cflags="$cflags -DRAM_FALLBACK_BASE=0x9b800000UL -DRAM_FALLBACK_SIZE=0x20000000UL"
+		cflags="$cflags -DRAM_FALLBACK_BASE=0xac000000UL -DRAM_FALLBACK_SIZE=0x50000000UL"
 		# Reading an address the bootloader did not map kills the core on
 		# this board, so the shim must not go looking for the device tree:
 		# every board value is compiled in instead.
