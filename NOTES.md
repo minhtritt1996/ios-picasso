@@ -1071,6 +1071,19 @@ Next session: either (a) move the RAM base/size prints after the copy, or log th
 direct framebuffer store instead of con_hex, so the copy is reached; or (b) give up on the
 shim console for this test and print only a final marker after the ADT patch.
 
+### iOS boots with xnu at 0xAC000000 (2026-10-24 20:02, variant bm)
+After the shim finally reported `LOADER: ramdisk overlaps kernel memory` (the payload is
+staged at 0xA7C00000..0xAB9AA860), the xnu window moved past it: profile and shim fallback
+are now 0xAC000000 + 0x50000000 (ends 0xFC000000, below 4 GiB, past every DT carve-out and
+past the staged payload). That boot reached full iOS userspace - launchd boot tasks,
+`Early boot complete, continuing system boot`, many xpcproxy execs and HID events - so a
+low-bank kernel works on this port at 1.25 GiB of RAM.
+The machine then hung at that screen (userspace log), so the modem/rmtfs outcome of this
+boot is only in the darwin ring; the phone needs a power cycle into recovery to read it.
+What to check in that ring: `rmtfs: chosen dram ac000000+50000000`,
+`rmtfs: buffer pa 0xac......` (below 4 GiB, RAM xnu owns), then whether `iovec` copies no
+longer deadlock (`tick` lines present) and whether `tftp RRQ`/`wlan_pd`/`svc 45` appear.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
