@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3540 @@
+@@ -0,0 +1,3579 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -33,6 +33,8 @@
 +#if defined(SWEET)
 +#include <IOKit/IOLib.h>
 +#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IODeviceTreeSupport.h>
++#include <IOKit/IOBSD.h>
 +#include <kern/thread.h>
 +#include <pexpert/pexpert.h>
 +#include <libkern/libkern.h>
@@ -2068,6 +2070,42 @@
 +	}
 +}
 +
++/* Read-only: list the ADT's reserved-memory regions so a low, AP-owned window
++ * can be chosen for the rmtfs buffer (it must be below 4 GiB). */
++static void
++dump_reserved_memory(void)
++{
++	IORegistryEntry *rm = IORegistryEntry::fromPath("/reserved-memory", gIODTPlane);
++	OSIterator *it;
++	IORegistryEntry *e;
++
++	if (rm == NULL) {
++		LOG("adt: no /reserved-memory node");
++		return;
++	}
++	it = rm->getChildIterator(gIODTPlane);
++	if (it == NULL) {
++		rm->release();
++		return;
++	}
++	while ((e = (IORegistryEntry *)it->getNextObject()) != NULL) {
++		OSData *reg = OSDynamicCast(OSData, e->getProperty("reg"));
++		const uint32_t *c = reg != NULL ? (const uint32_t *)reg->getBytesNoCopy() : NULL;
++		uint32_t n = reg != NULL ? (uint32_t)(reg->getLength() / 4) : 0;
++		uint64_t base = 0, size = 0;
++
++		if (n >= 2 && c != NULL) {
++			base = ((uint64_t)OSSwapBigToHostInt32(c[0]) << 32) | OSSwapBigToHostInt32(c[1]);
++			if (n >= 4) {
++				size = ((uint64_t)OSSwapBigToHostInt32(c[2]) << 32) | OSSwapBigToHostInt32(c[3]);
++			}
++		}
++		LOG("adt rm: %s base %llx size %llx", e->getName(), base, size);
++	}
++	it->release();
++	rm->release();
++}
++
 +/* ---------------------------------------------------------------- WLFW client */
 +
 +/*
@@ -3249,6 +3287,7 @@
 +		m->release();
 +	}
 +	rmtfs_load_efs();                       /* before the modem can ask */
++	dump_reserved_memory();
 +	rmtfs_init_buf();                       /* DMA pool, same place as the PAS metadata */
 +	LOG("segments loaded");
 +	IOFree(mdt, (vm_size_t)mdt_size);
