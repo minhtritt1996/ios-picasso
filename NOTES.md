@@ -1095,6 +1095,37 @@ Open question for the next boot: whether `rmtfs iovec` now reports success and t
 reaches `tftp RRQ wlanmdsp.mbn` / wlan_pd / WLFW (svc 45/49). With no USB the console is
 the only live view; the darwin ring has the same lines after a reboot to recovery.
 
+### bn ring read: no deadlock, but rmtfs iovec is refused and the modem storms tftp WRQ (2026-10-24 21:20)
+Ring pulled from `darwin` after the bn boot (`/tmp/log-run21.txt`, boot-args line
+`debug=0x14e ... rmtfs_pa`), 41 194 bytes:
+
+- `rmtfs: chosen dram ac000000+50000000`, `rmtfs: buffer pa b002c000`,
+  `rmtfs: shared buffer b002c000+200000 assign fffffffffffffffe` (TZ refuses the assign,
+  as the reference port does), modem `OPEN "boot/modem_fs1"` -> four file ids.
+- Exactly **one** `rmtfs iovec FAILED`, then the modem floods
+  `tftp WRQ /readwrite/server_check.txt` every 5 ms (13 429 lines) - our server answered
+  `ERROR 2 read only` and the modem just retried with a fresh session each time.
+- The machine stayed alive: `tick 1000..29000 ms: alive, tx 94 rx 91 drops 0`, PDR
+  restarts wlan_pd, iOS runs. So the EFS copy into the kmem buffer no longer wedges
+  anything (contrast: the 0xE0000000 pool deadlocked within a second).
+- **Unresolved contradiction:** the ALLOC reply line prints `-> e0000000` although the
+  CI build tree (`xnu-buildtree` artifact of run 40097777527) does `addr = rmtfs_pa`, and
+  the CI log shows `C++ PicassoModem.cpo` compiled that file at 13:25:31. The payload in
+  `shim/out/variant-bn.img` is byte-identical to the CI kernel's payload, so the flashed
+  image was right. Either the ring carried older bytes or something moved `rmtfs_pa`.
+
+Changes made to settle both (branch `omp`, pushed to the `picasso` remote):
+- `e7aa279` tftp: accept `WRQ` into a 1 MiB RAM file per name (4 names) and answer `OACK`/
+  `ACK`, serve a later `RRQ /readwrite/...` from that RAM file. This is what rmtfs' tftp
+  does on Linux (`/readwrite/`), and it is what stops the 5 ms retry storm.
+- `05b18e1` the iovec refusal now logs caller, direction, entry count, block, address,
+  block count, `rmtfs_pa`, `rmtfs_va` and the cached file size; the ALLOC handler logs
+  `rmtfs_pa`/`rmtfs_va` right before replying.
+
+CI: `gh workflow run xnu.yml --ref omp` -> run 40100058840 (head `05b18e1`). Note the
+`picasso` remote needs a token on push (no credential helper):
+`git push https://x-access-token:$(cat /tmp/ghtoken)@github.com/minhtritt1996/ios-picasso.git omp:omp`.
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
