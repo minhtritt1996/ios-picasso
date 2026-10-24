@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3551 @@
+@@ -0,0 +1,3558 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2477,7 +2477,7 @@
 + * contiguous kernel memory handed to HLOS + MSS_MSA(15) + NAV(0x2b) through
 + * SCM hyp_assign_phys (0x0c/0x16), as the kernel's rmtfs_mem does.
 + */
-+#define RMTFS_BUF_SIZE      0x300000
++#define RMTFS_BUF_SIZE      0x200000
 +#define VMID_HLOS           3
 +#define VMID_MSS_MSA        15
 +#define VMID_NAV            0x2B
@@ -2645,11 +2645,18 @@
 +		void *p = NULL;
 +		uint64_t pa = 0;
 +
-+		p = IOMallocContiguous(RMTFS_BUF_SIZE, PAGE_SIZE, &pa);
-+		if (p != NULL && pa != 0) {
-+			rmtfs_va = (uint8_t *)p;
-+			rmtfs_pa = pa;
-+		} else {
++		for (unsigned i = 0; i < 4 && rmtfs_pa == 0; i++) {
++			pa = 0;
++			p = IOMallocContiguous(RMTFS_BUF_SIZE, PAGE_SIZE, &pa);
++			LOG("rmtfs: IOMallocContiguous try %u -> %p pa %llx", i, p, pa);
++			if (p != NULL && pa != 0 && (pa >> 32) == 0) {
++				rmtfs_va = (uint8_t *)p;
++				rmtfs_pa = pa;
++			} else if (p != NULL) {
++				IOFreeContiguous(p, RMTFS_BUF_SIZE);
++			}
++		}
++		if (rmtfs_pa == 0) {
 +			vm_offset_t v = 0;
 +
 +			if (kmem_alloc_contig(kernel_map, &v, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
