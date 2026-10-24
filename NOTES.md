@@ -715,6 +715,15 @@ clear-misc, readback verification, a proof that adb dropped, and a ring boot-arg
 `tools/sweet-log-pull.sh -p darwin out.txt` reads the ring. Variants built so far:
 h,i,j (bisect), k..u (rmtfs work), each with md5 in /tmp/bisect.log or the commit log.
 
+### Last cycle of this session (2026-10-24 08:10)
+Variant v = kernel 0856662 (PDR restart now reachable) + modem_pdr_restart=1, flashed from
+the local host with readback 4ddd9a50f81b38f753b645f016e5d5ad. The phone did **not** come
+back to recovery within 155 s and then had no USB at all, so this run is inconclusive: it
+may have hung in the restart path or the battery may have quit. Next session should first
+re-flash variant u (kernel 5121fc3-class, no restart) or t to confirm the phone still
+returns, then retry the restart if it does.
+State of the branch: omp at af3f55d, CI green for 0856662 (run 40047608095).
+
 ## Agent handoff (2026-10-22 17:45)
 
 ### >>> UPDATE 2026-10-22 (SMMU cannot be probed; low-memory DMA hypothesis; remote flashing) <<<
