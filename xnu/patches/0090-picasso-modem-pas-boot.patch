@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3569 @@
+@@ -0,0 +1,3570 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2790,8 +2790,9 @@
 +		}
 +		ok = i < sizeof(rmtfs_parts) / sizeof(rmtfs_parts[0]);
 +		if (ok) {
-+			uint8_t probe[16];
-+			ok = part_io(rmtfs_parts[i].part, 0, probe, sizeof(probe), false) == 0;
++			/* No UFS access here: the partitions are already cached and the
++			 * log thread shares the UFS lock. */
++			ok = efs_cache[i].data != NULL && efs_cache[i].size != 0;
 +		}
 +		if (ok) {
 +			rmtfs_init_buf();       /* best effort: ALLOC replies with it */
