@@ -21,8 +21,11 @@ HIGH_MEM_SIZE = 0xfcc00000
 # contiguous one that no carve-out touches is 0x14000000 + 3 GiB.
 # The low bank: xnu must run below 4 GiB for the modem's 32-bit rmtfs
 # ALLOC_BUFF address to be usable (the modem's EFS buffer lives in xnu's RAM).
-PICASSO_PHYS_BASE = 0x80000000
-PICASSO_MEM_SIZE = 0x3cc00000
+# Low bank, but past the modem carve-outs (smem 0x80900000, modem_wlan
+# 0x8c000000+0xF800000 ends at 0x9b800000) and below 4 GiB, so the modem's
+# 32-bit rmtfs ALLOC_BUFF address can reach every page xnu owns.
+PICASSO_PHYS_BASE = 0x9b800000
+PICASSO_MEM_SIZE = 0x20000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
