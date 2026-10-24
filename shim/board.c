@@ -14,7 +14,12 @@
 /* xnu maps its RAM in 32 MB blocks: a partial block would map a
  * neighbour carve-out cacheable. */
 #define RAM_ALIGN	(32UL << 20)
-#define RAM_MAX		(8ULL << 30)
+/*
+ * Keep xnu below 4 GiB: the modem keeps the rmtfs ALLOC_BUFF address in 32
+ * bits, so the shared EFS buffer has to be addressable by it, and the kernel
+ * can only hand out low pages when its own RAM is low.
+ */
+#define RAM_MAX		(4ULL << 30)
 
 /*
  * The RAM the kernel gets, when the device tree cannot be read.

@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3564 @@
+@@ -0,0 +1,3576 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2834,13 +2834,25 @@
 +				uint32_t e[3];
 +
 +				memcpy(e, iov + 1 + 12 * i, 12);
-+				(void)e;
-+				/* Writing to the address the modem names hangs the GLINK
-+				 * master (XPU, no fault) for every address we can reach,
-+				 * so refuse the request until a buffer below 4 GiB in
-+				 * AP-owned RAM exists. */
-+				rmtfs_err++;
-+				ok = false;
++				/* The modem answers with our own buffer address
++				 * (32 bits) plus the offset inside it, so serve the
++				 * copy from RAM: nothing touches UFS or a foreign
++				 * physical address. */
++				bytes = (uint64_t)e[2] * 512;
++				if (rmtfs_pa == 0 || e[1] < rmtfs_pa ||
++				    e[1] - rmtfs_pa + bytes > RMTFS_BUF_SIZE ||
++				    e[0] * 512ull + bytes > efs_cache[caller - 1].size) {
++					ok = false;
++					break;
++				}
++				if (write) {
++					rmtfs_writes++;
++				} else {
++					memcpy(rmtfs_va + (e[1] - rmtfs_pa),
++					    efs_cache[caller - 1].data + (uint64_t)e[0] * 512,
++					    (size_t)bytes);
++					rmtfs_reads++;
++				}
 +			}
 +			if (!ok && rmtfs_err <= 3) {
 +				uint32_t e0 = 0, e1 = 0, e2 = 0;
