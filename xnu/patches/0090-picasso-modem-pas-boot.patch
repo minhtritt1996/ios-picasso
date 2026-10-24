@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3500 @@
+@@ -0,0 +1,3501 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1297,6 +1297,10 @@
 +	if (chan_up() && q_hello_rx && pdr_port != 0) {
 +		if (!pdr_sent) {
 +			pdr_register();
++		} else if (pdr_restart_want && !pdr_restarted) {
++			/* One AP-initiated restart, then fall through to the retries. */
++			pdr_restarted = true;
++			pdr_restart_pd("msm/modem/wlan_pd");
 +		} else if (!pdr_ok && (ms - pdr_last_try) >= 500) {
 +			/* Android's PDR client retries: the modem answers INVALID_HANDLE
 +			 * while its service registry is still coming up. */
@@ -1308,9 +1312,6 @@
 +		} else if (pdr_restart_next < 5) {
 +			pdr_restart(pdr_tries[pdr_restart_next].name);
 +			pdr_restart_next++;
-+		} else if (pdr_restart_want && !pdr_restarted) {
-+			pdr_restarted = true;
-+			pdr_restart_pd("msm/modem/wlan_pd");
 +		} else {
 +			pdr_query();
 +		}
