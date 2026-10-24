@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3555 @@
+@@ -0,0 +1,3558 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -2517,6 +2517,11 @@
 + * SCM hyp_assign_phys (0x0c/0x16), as the kernel's rmtfs_mem does.
 + */
 +#define RMTFS_BUF_SIZE      0x200000
++/* Fixed low DDR window the kernel does not manage, below 4 GiB so the modem's
++ * 32-bit ALLOC_BUFF address can point at it (the reference topaz/sapphire port
++ * uses exactly this address for the same purpose). */
++#define MODEM_POOL_BASE     0xE0000000ull
++#define MODEM_POOL_SIZE     0x00800000ull
 +#define VMID_HLOS           3
 +#define VMID_MSS_MSA        15
 +#define VMID_NAV            0x2B
@@ -2696,19 +2701,17 @@
 +		}
 +	}
 +	{
-+		/* xnu owns the low bank now, so a plain kernel allocation lands below
-+		 * 4 GiB and the modem's 32-bit ALLOC_BUFF address can point at it. */
-+		vm_offset_t va = 0;
++		/* Buffer from the fixed modem pool: unmanaged RAM below 4 GiB, so the
++		 * modem's 32-bit address is valid and the copy goes into a real page. */
++		IOMemoryMap *m = map_phys(MODEM_POOL_BASE, MODEM_POOL_SIZE, true);
 +
-+		if (kmem_alloc_contig(kernel_map, &va, RMTFS_BUF_SIZE, PAGE_MASK, 0, 0,
-+		    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_BSD) != KERN_SUCCESS ||
-+		    va == 0) {
-+			LOG("rmtfs: cannot allocate %u bytes", (uint32_t)RMTFS_BUF_SIZE);
++		if (m == NULL) {
++			LOG("rmtfs: cannot map the modem pool at %llx", MODEM_POOL_BASE);
 +			return;
 +		}
-+		rmtfs_va = (uint8_t *)va;
-+		rmtfs_pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
-+		LOG("rmtfs: buffer pa %llx", rmtfs_pa);
++		rmtfs_va = (uint8_t *)m->getVirtualAddress();
++		rmtfs_pa = MODEM_POOL_BASE;
++		LOG("rmtfs: buffer from modem pool pa %llx", rmtfs_pa);
 +	}
 +	{
 +		static const uint32_t vm[1] = { VMID_MSS_MSA };
