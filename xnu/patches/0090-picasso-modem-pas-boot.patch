@@ -10,7 +10,7 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 --- /dev/null
 +++ b/iokit/Kernel/arm/PicassoModem.cpp
-@@ -0,0 +1,3579 @@
+@@ -0,0 +1,3530 @@
 +/*
 + * picasso (SM7250 / lito): boot the modem DSP (MPSS) through TrustZone PAS.
 + *
@@ -1305,13 +1305,14 @@
 +		svc_announce();
 +		q_announced = true;
 +	}
++	if (chan_up() && q_hello_rx && pdr_port != 0 && pdr_restart_want &&
++	    !pdr_restarted && ms >= 200) {
++		pdr_restarted = true;
++		pdr_restart_pd("msm/modem/wlan_pd");
++	}
 +	if (chan_up() && q_hello_rx && pdr_port != 0) {
 +		if (!pdr_sent) {
 +			pdr_register();
-+		} else if (pdr_restart_want && !pdr_restarted) {
-+			/* One AP-initiated restart, then fall through to the retries. */
-+			pdr_restarted = true;
-+			pdr_restart_pd("msm/modem/wlan_pd");
 +		} else if (!pdr_ok && (ms - pdr_last_try) >= 500) {
 +			/* Android's PDR client retries: the modem answers INVALID_HANDLE
 +			 * while its service registry is still coming up. */
@@ -2795,57 +2796,19 @@
 +				uint32_t e[3];
 +				uint64_t bytes;
 +				memcpy(e, iov + 1 + 12 * i, 12);
-+				uint64_t psz = 0, done = 0, base = (uint64_t)e[0] * 512;
-+
-+				bytes = (uint64_t)e[2] * 512;
-+				/*
-+				 * phys_offset is the buffer address the modem wants
-+				 * the data at (rmtfs_mem_ptr() maps it as an absolute
-+				 * physical address inside the memory device). TZ will
-+				 * not hand ordinary kernel RAM to the modem VMs, so
-+				 * write straight into the address it names instead of
-+				 * through an assigned buffer.
-+				 */
-+				if (rmtfs_msgs <= 16) {
-+					LOG("t=%u ms: iovec parse e0=%x e1=%x e2=%x bytes=%llu caller %u",
-+					    g_ms, e[0], e[1], e[2], bytes, caller);
-+				}
-+				if (e[1] < 0x40000000ull || bytes == 0 || bytes > 0x800000ull) {
-+					ok = false;
-+					break;
-+				}
-+				psz = efs_cache[caller - 1].size;
-+				if (efs_cache[caller - 1].data == NULL || base + bytes > psz) {
-+					ok = false;
-+					break;
-+				}
-+				if (write) {
-+					/* never write back to the phone's EFS */
-+					rmtfs_writes++;
-+				} else {
-+					while (ok && done < bytes) {
-+						uint32_t n = (uint32_t)MIN(bytes - done, 0x40000ull);
-+						vm_offset_t dst = ml_io_map((vm_offset_t)(e[1] + done), n);
-+
-+						if (rmtfs_msgs <= 16) {
-+							LOG("t=%u ms: iovec map %llx+%u -> %llx", g_ms,
-+							    (uint64_t)e[1] + done, n, (uint64_t)dst);
-+						}
-+						if (dst == 0) {
-+							ok = false;
-+							break;
-+						}
-+						memcpy((void *)dst, efs_cache[caller - 1].data + base + done, n);
-+						if (rmtfs_msgs <= 16) {
-+							LOG("t=%u ms: iovec copied %u bytes to %llx", g_ms, n,
-+							    (uint64_t)dst);
-+						}
-+						done += n;
-+					}
-+					rmtfs_reads++;
-+				}
++				(void)psz;
++				(void)done;
++				(void)base;
++				(void)bytes;
++				(void)write;
++				/* Writing to the address the modem names hangs the GLINK
++				 * master (XPU, no fault) for every address we can reach,
++				 * so refuse the request until a buffer below 4 GiB in
++				 * AP-owned RAM exists. */
++				rmtfs_err++;
++				ok = false;
 +			}
-+			if (ok && !write && rmtfs_reads <= 4) {
++			if (!ok && rmtfs_err <= 3) {
 +				uint32_t e0 = 0, e1 = 0, e2 = 0;
 +
 +				if (iov != NULL && iovlen >= 13) {
@@ -2853,21 +2816,9 @@
 +					memcpy(&e1, iov + 5, 4);
 +					memcpy(&e2, iov + 9, 4);
 +				}
-+				LOG("t=%u ms: rmtfs iovec caller %u read e0=%x e1=%x e2=%x OK",
-+				    g_ms, caller, e0, e1, e2);
-+			}
-+			if (!ok && ++rmtfs_err <= 3) {
-+				uint32_t e0 = 0, e1 = 0, e2 = 0;
-+
-+				if (iov != NULL && iovlen >= 13) {
-+					memcpy(&e0, iov + 1, 4);
-+					memcpy(&e1, iov + 5, 4);
-+					memcpy(&e2, iov + 9, 4);
-+				}
-+				LOG("t=%u ms: rmtfs iovec caller %u %s FAILED n=%u len=%u "
-+				    "e0=%x e1=%x e2=%x pa=%llx", g_ms, caller,
-+				    write ? "write" : "read", iov != NULL ? iov[0] : 0,
-+				    iovlen, e0, e1, e2, rmtfs_pa);
++				LOG("t=%u ms: rmtfs iovec caller %u %s REFUSED n=%u e0=%x e1=%x e2=%x",
++				    g_ms, caller, write ? "write" : "read",
++				    iov != NULL ? iov[0] : 0, e0, e1, e2);
 +			}
 +			qm_result(&m, ok);
 +			break;
