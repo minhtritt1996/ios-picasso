@@ -1,4 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 16:05 (bp36 = 0116 flashed; it panics and spins, ring must be read from recovery) <<<
+1. **bp36 built from run `40177565304`** (success; log confirms `Applying patch: .../0116-sweet-panic-report.patch`,
+   no "Skipping patch"), kernel `SWEET PANIC` string present. Payload `shim/out/payload-picasso-0116.bin`
+   (ADT `shim/out/picasso-clean.adt`), boot image 18,153,472 bytes **md5 `c182ba581a2817a9ffc31e89e6dfd2d2`**.
+   cmdline = bp35's with `ufslogsecs=1` (`/tmp/cmdline-bp36.txt`).
+2. Flashed on the **k60 host** (`tools/picasso-modem-test.sh`, readback md5 matched), rebooted 15:50:09.
+   The phone **did not come back to recovery within 240 s** - same signature as bp31/32/35. A panic now ends in
+   `panic_spin_forever()` (no auto-reboot), so this is expected for a panic; it is NOT proof of a deadlock.
+   The panic text is already in the `darwin` ring (0116 writes it from `consdebug_putc` + `panic_spin_forever`),
+   but reading it needs recovery: **hard power hold 10-15 s**, then
+   `tools/sweet-log-pull-remote.sh /tmp/ring-bp36.txt -p darwin` (phone is on k60, not local USB).
+3. **Discriminator**: `grep -a "SWEET PANIC" /tmp/ring-bp36.txt`. Present => the panic is real in this boot and
+   the reason string is on disk. Absent => the panic screen was stale and the machine deadlocked instead.
+4. **0117 committed and pushed** (`560615f`, rebased on top of the other agent's 0096-0100 line, which turned out
+   to be identical files - the rebase deduplicated them). It prints `flags`, `lr0`, `lr1`, `fp1` in
+   `__kmem_invalid_object_panic()` before the panic, i.e. the call site that passes bad kmem object flags.
+   Validated with `patch -p1 --dry-run` against the real tree `/tmp/bt35` (note: `tools/check-patch.sh` cannot
+   check it - `vm_kern.c` is not in the `xnu-buildtree` tarball because no patch had touched it before).
+5. Static reading so far: the only callers of `__kmem_object()` (the panic source) are
+   `kernel_memory_populate()`/`kernel_memory_depopulate()`; every upstream call site in `vm_kern.c`,
+   `vm_compressor*.c` passes `KMA_KOBJECT`/`KMA_COMPRESSOR`, and none of our patches call them - so the bad flags
+   are either corruption or a call site not visible in the tree; 0117's LR values settle it.
 ### >>> UPDATE 2026-10-25 15:50 (bp35 booted: panic is `__kmem_invalid_object_panic`, and panics are now symbolizable) <<<
 1. **bp35 flashed and booted** (image md5 `784581ba5c8508ce0f666d60dc05a8d0`, readback matched on the k60 host).
    It goes much further than bp34: `dill_init`, `ifnet_attach` lo0/gif0/stf0, zone map
