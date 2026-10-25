@@ -1,0 +1,67 @@
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -403,7 +403,7 @@
+ 	extern int disableConsoleOutput;
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-	extern void sweet_ufs_panic_dump(void);     /* bsd/dev/sweet_ufs.c */
++	extern int sweet_ufs_panic_dump(void);      /* bsd/dev/sweet_ufs.c */
+ 	sweet_log_append(c, size);
+ 	/*
+ 	 * A panic must not disappear into a muted console.  XNU prints it
+@@ -414,6 +414,7 @@
+ 	 */
+ 	{
+ 		static int panic_seen;
++		int err = 0, report = 0;
+ 		if (!panic_seen) {
+ 			static const char tag[] = "panic(cpu";
+ 			int i, j;
+@@ -424,7 +425,8 @@
+ 				if (tag[j] == '\0') {
+ 					panic_seen = 1;
+ 					sweet_console_muted = 0;
+-					sweet_ufs_panic_dump();
++					err = sweet_ufs_panic_dump();
++					report = 1;
+ 					break;
+ 				}
+ 			}
+@@ -432,6 +434,37 @@
+ 		if (panic_seen) {
+ 			sweet_console_muted = 0;
+ 		}
++		if (report) {
++			/*
++			 * The dump goes through a host that may have been mid-command
++			 * when the panic hit; say on the panic screen whether it wrote
++			 * (0) or which error stopped it, so the next flash is not a
++			 * guess.  _cnputc, not printf: the console lock is ours.
++			 */
++			char msg[48];
++			const char *pre = "\nSWEET PANIC DUMP err ";
++			int n = 0;
++			uint32_t v = (uint32_t)(err < 0 ? -err : err);
++			char digits[12];
++			int nd = 0;
++			for (pre = pre; *pre != '\0'; pre++) {
++				_cnputc(*pre, false);
++			}
++			if (err < 0) {
++				msg[n++] = '-';
++			}
++			do {
++				digits[nd++] = (char)('0' + v % 10);
++				v /= 10;
++			} while (v != 0);
++			while (nd > 0) {
++				msg[n++] = digits[--nd];
++			}
++			msg[n++] = '\n';
++			for (v = 0; v < (uint32_t)n; v++) {
++				_cnputc(msg[v], false);
++			}
++		}
+ 	}
+ 	if (sweet_console_muted) {
+ 		return;
