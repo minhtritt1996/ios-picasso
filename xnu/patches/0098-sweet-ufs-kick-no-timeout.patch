@@ -1,0 +1,50 @@
+sweet ufs: keep the kick line alive without kernel timeouts
+
+bp15's ring froze at the same second for all three threads the driver
+owns, while the console kept printing userland output for another six
+seconds: the heartbeat and the flusher sleep on tsleep (), and the kick
+thread did too, so they stop together the moment the kernel stops
+delivering timeouts - which is what every "console stopped" boot has
+looked like, bp11 included (its flusher froze at beats 2 with no command
+in flight).
+
+Make the kick thread spin with IODelay () instead, so it needs no
+timeouts, and print mach_absolute_time () in its line: a spin that keeps
+appending proves the machine is alive, and whether the printed time
+advances separates a dead clock from a dead wakeup path.
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1276,21 +1276,29 @@
+ {
+ 	uint32_t n = 0;
+ 
++	extern void IODelay(unsigned int);
++
+ 	for (;;) {
+-		char line[192];
++		char line[208];
+ 		uint64_t ns = 0, age = 0, last;
+ 		int len;
+ 
+-		(void)tsleep(&sweet_hb_chan, PZERO, "sweetkick", hz * 2);
++		/* Busy wait, not tsleep (): bp15 showed this thread, the heartbeat
++		 * and the flusher all stop at the same second while the console
++		 * keeps printing, i.e. every thread sleeping on a timeout freezes
++		 * together.  A spin needs no timeouts, and reading the clock here
++		 * says whether time itself stopped. */
++		IODelay(2000000);
+ 		last = sweet_log_last_g;
+ 		if (last != 0 && mach_absolute_time() > last) {
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - last, &ns);
+ 			age = ns / 1000000ull;
+ 		}
+ 		len = snprintf(line, sizeof(line),
+-		    "SWEET KICK %u: log %u seq %u beats %u fails %u ferr %d fage %llu"
++		    "SWEET KICK %u: t %llu log %u seq %u beats %u fails %u ferr %d fage %llu"
+ 		    " | cmd %u err %d x%u lk %u/%u st %u pp %u/%u\n",
+-		    ++n, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
++		    ++n, (unsigned long long)(mach_absolute_time() % 1000000000ull),
++		    (unsigned)os_atomic_load(&sweet_log_total, relaxed),
+ 		    sweet_log_seq_g, (unsigned)sweet_log_beats, sweet_log_fails_g,
+ 		    sweet_log_ferr_g, (unsigned long long)age,
+ 		    (unsigned)su.cmd_serial, su.last_err, (unsigned)su.err_serial,
