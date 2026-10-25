@@ -14,6 +14,9 @@
 #
 # Requires the phone in recovery (adb) on the flash host, and a kernel image:
 #   tools/picasso-install-shell.sh /tmp/rev13/kernel.development.sweet [CMDLINE]
+#
+# SHELL_VARIANT=signed installs the ad-hoc signed image instead (in case exec is
+# refused for unsigned code).
 set -eu
 
 kernel=${1:?usage: picasso-install-shell.sh KERNEL [CMDLINE]}
@@ -24,7 +27,7 @@ serial=${SERIAL:-f9f3d7b0}
 part=/dev/block/bootdevice/by-name/darwin
 cd "$(dirname "$0")/.."
 
-shell_bin=tools/sweetsh/sweetsh
+shell_bin=tools/sweetsh/sweetsh-${SHELL_VARIANT:-plain}
 [ -x "$shell_bin" ] || { echo "build the shell first: tools/sweetsh/build.sh" >&2; exit 1; }
 
 ssh_run() {

@@ -22,5 +22,7 @@ if $LLVM/llvm-nm sweetsh.elf | grep -qE ' [bB] '; then
 	$LLVM/llvm-nm sweetsh.elf | grep -E ' [bB] ' >&2
 	exit 1
 fi
-python3 mkmacho.py sweetsh.bin 0 sweetsh
-ls -l sweetsh
+python3 mkmacho.py sweetsh.bin sweetsh-plain
+python3 mkmacho.py sweetsh.bin sweetsh-signed --sign
+cp sweetsh-plain sweetsh
+ls -l sweetsh-plain sweetsh-signed
