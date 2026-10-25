@@ -23,6 +23,16 @@ one.
 | bp30 | 0109 | direct-DMA + heartbeat | same wedge, heartbeat shows the command never started (`sdt` = cmd age) |
 | bp31 | 0111 (0110 bootstrap: bounce path default) | bounce path only (`dma 0/0`), `libignition: … ignition sequence complete`, launchd started | panic `__kmem_invalid_object_panic` right after `shared_region … check_np … failed` |
 | bp32 | 0112 (`debug=0x146`, panic through `_cnputs`) | same stage | same panic; the ring stops mid-read, so the panic flush does not reach the disk from inside the UFS path |
+| bp33 | 0112, `sweetufstrace=0`, `modem=0`, `ufslogsecs=10` | `load_init_program` exec of launchd | panic at ~15 s; the ring (only the flusher's, no trace) ends in modem-LUN reads |
+| bp34 | 0113, `sweetufstrace=0`, `modem=1` | same | same panic, 1719 modem commands, `KICK 5` (16 s); ring = *boot* cut of the dump |
+
+Root cause of the bp31–bp34 panics (fixed in 0116): the KICK thread's timer ring
+dump wrote the ring **without** the driver lock, `memcpy()`ing into the same
+bounce buffer an in-flight read was DMA-ing into. A read completing inside that
+window returned ring text instead of file data, so the Mach-O/dyld-cache parser
+walked garbage (bp31/bp32: `zone_require` / `__kmem_invalid_object_panic`) or the
+exec itself failed (bp33/bp34: `load_init_program`). Both panic flavours therefore
+came from one bug, not from userspace memory corruption.
 
 Facts measured from these rings:
 
@@ -35,5 +45,6 @@ Facts measured from these rings:
 - `debug_log_init: Error!! gPanicBase is still not initialized` - this port has
   no panic-log region, so panics never land in the panic zone; the ring is the
   only persistent channel.
-- The remaining blocker is the `zone_require` panic during launchd start-up,
-  i.e. memory corruption or a genuine userspace UAF, not the UFS path.
+- The `zone_require` panic during launchd start-up was the unlocked timer ring
+  dump racing the boot's reads (see the root-cause note above), not a userspace
+  UAF and not the UFS path itself.
