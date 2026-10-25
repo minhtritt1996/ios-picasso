@@ -6,6 +6,19 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 18:05 (bp45: the sampler printed nothing - xpcproxy processes are gone before it runs) <<<
+1. **bp45 ring** (md5 `96ac1bd3958d4d0db9dd0629d3ae025e`, marker `sweetboot=bp45`, pulled 17:59) has **no `SMP`
+   sample at all** and ends on the same 26 `exec xpcproxy` lines as bp44. `sweetsample=xpcproxy` therefore
+   proves nothing directly: the sampler walks *live* processes, and by the time it runs there is no xpcproxy
+   left to sample. The phone also rebooted by itself (~2 min in), i.e. the AP watchdog reset the SoC - so on
+   this boot the machine really did die at the exec storm, unlike bp42/bp43 which kept ticking.
+2. Reading: launchd execs xpcproxy 26 times, each xpcproxy exits (or crashes) without ever reaching `execve`,
+   and launchd respawns. A crash loop looks exactly like a hang from the console.
+3. **Patch 0121** makes both halves visible in one boot: `SWEET EXECVE <proc> -> <path>` (boot-arg
+   `sweetexectrace=1`) prints what a trampoline asks to execute, and `SWEET EXIT <comm> pid <pid> rv <status>`
+   (first 60 exits) prints how each userland process leaves - `rv` carries the signal, so a SIGSEGV/SIGBUS
+   loop is unmistakable. bp46 = run `40187073075` with `sweetsample=-`, `sweetexectrace=1`, `modem_recovery=0`,
+   `sweetboot=bp46`.
 ### >>> UPDATE 2026-10-25 17:55 (bp44: no exec ever fails - xpcproxy is stuck before its own execve) <<<
 1. **bp44 ring** (run `40185576798`, patch 0120, md5 `2f363db5fc320cb53055cb0b173326c5`, marker
    `sweetboot=bp44`, pulled 17:55). Same sequence as bp42/bp43, and the two new observations both stay silent:
