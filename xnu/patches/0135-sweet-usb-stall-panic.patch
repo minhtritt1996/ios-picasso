@@ -1,0 +1,43 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -290,6 +290,7 @@
+ } ud;
+ 
+ static int ud_verbose;           /* sweetusbverbose=1: per-frame chatter */
++static int ud_stall_panic;       /* sweetusbstallpanic=1: panic on a stalled event thread */
+ 
+ static inline void
+ dwc_wr(uint32_t off, uint32_t v)
+@@ -1316,7 +1317,7 @@
+ 		"/sbin/launchd",
+ 	};
+ 	char out[300];
+-	int probe = 1;
++	int probe = 0;                  /* opt in: VFS from a kernel thread hangs */
+ 
+ 	ud_sleep_ms(8000);
+ 	PE_parse_boot_argn("sweetvfsprobe", &probe, sizeof(probe));
+@@ -1360,6 +1361,15 @@
+ 			    (now - ud.ev_stamp) * 1000 / ud_deadline_1s, ud.ev_ticks,
+ 			    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DSTS), dwc_rd(DCTL),
+ 			    dwc_rd(DALEPENA), dwc_rd(GCTL));
++			if (ud_stall_panic) {
++				panic("SWEET USB: event thread stalled for %llu ms "
++				    "(ticks %u pos %u rx %llu tx %llu q %u busy %d, "
++				    "GEVNTCOUNT 0x%08x DSTS 0x%08x GCTL 0x%08x)",
++				    (now - ud.ev_stamp) * 1000 / ud_deadline_1s, ud.ev_ticks,
++				    ud.evt_pos, ud.rx_frames, ud.tx_frames, ud.txq_count,
++				    (int)ud.tx_busy, dwc_rd(GEVNTCOUNT) & 0xffff,
++				    dwc_rd(DSTS), dwc_rd(GCTL));
++			}
+ 		}
+ 		lck_mtx_lock(ud.lock);
+ 		if (!ud.tx_busy) {
+@@ -1787,6 +1797,7 @@
+ 	}
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
+ 	PE_parse_boot_argn("sweetusbverbose", &ud_verbose, sizeof(ud_verbose));
++	PE_parse_boot_argn("sweetusbstallpanic", &ud_stall_panic, sizeof(ud_stall_panic));
+ 	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &ud_deadline_1s);
+ 	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
