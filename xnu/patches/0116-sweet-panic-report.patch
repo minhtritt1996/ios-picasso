@@ -10,7 +10,7 @@
 + * rate limited: writing the ring takes a few hundred ms and the panic path must
 + * not spend that per character.
 + */
-+int sweet_ufs_panic_dump(void);     /* defined below, used by both entries */
++void sweet_ufs_panic_dump(void);    /* defined below, used by both entries */
 +
 +void
 +sweet_panic_putc(char c)
