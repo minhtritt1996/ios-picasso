@@ -1,0 +1,68 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -278,6 +278,9 @@
+ 	volatile uint32_t ev_ticks;     /* event-thread progress */
+ 	volatile uint64_t ev_stamp;     /* last event-thread loop, absolute */
+ 	uint32_t    stall_prints;
++	uint32_t    ev_geo;             /* event-ring geometry prints */
++	uint32_t    rx_spurious;
++	uint32_t    tx_spurious;
+ 	uint64_t    rx_frames, tx_frames;
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+@@ -571,6 +574,13 @@
+ {
+ 	volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
+ 	ud_sync(UD_TRB_RX, 16);
++	if (t[3] & TRB_HWO) {
++		/* still owned by the controller: a spurious or duplicate completion */
++		if (ud.rx_spurious++ < 8) {
++			printf("SWEET USB: rx completion while the TRB is still armed\n");
++		}
++		return;
++	}
+ 	uint32_t len = UD_FRAME_MAX - (t[2] & 0xffffff);
+ 	ud_sync(UD_RX, UD_FRAME_MAX);
+ 	if (len > ETHER_HDR_LEN) {
+@@ -869,6 +879,13 @@
+ 	}
+ 	if (ep == EP_TX && type == 1) {
+ 		lck_mtx_lock(ud.lock);
++		if (!ud.tx_busy) {
++			if (ud.tx_spurious++ < 8) {
++				printf("SWEET USB: tx completion with nothing in flight\n");
++			}
++			lck_mtx_unlock(ud.lock);
++			return;
++		}
+ 		if (ud.tx_done++ < 8) {
+ 			printf("SWEET USB: tx done residual %u status %u\n", param0, status);
+ 		}
+@@ -927,11 +944,24 @@
+ 			 * dwords carry the parameters and are dispatched as harmless
+ 			 * noise, so the parameters are *peeked*, never consumed.
+ 			 */
+-			for (uint32_t done = 0; done < count; done += 4) {
++			/*
++			 * A DWC3 event is four dwords: [0] type/ep/status, [1] reserved,
++			 * [2] status/residual, [3] TRB pointer. Dispatching single dwords
++			 * made the parameter dwords look like endpoint events (they have
++			 * bit0 clear), so a bogus "ep2 XferComplete" re-armed the RX TRB
++			 * while DMA was in flight. Step 16 bytes when the count divides
++			 * by 16, and keep the dword stepping as a fallback for a ring that
++			 * really reports one dword per event.
++			 */
++			uint32_t step = (count % 16) == 0 ? 16 : 4;
++			if (ud.ev_geo++ < 20) {
++				printf("SWEET USB: ev ring count 0x%x step %u\n", count, step);
++			}
++			for (uint32_t done = 0; done < count; done += step) {
+ 				uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
+ 				uint32_t peek = *(volatile uint32_t *)(ud.dma + UD_EVT +
+-				    ((ud.evt_pos + 4) % UD_EVT_SIZE));
+-				ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
++				    ((ud.evt_pos + (step == 16 ? 8 : 4)) % UD_EVT_SIZE));
++				ud.evt_pos = (ud.evt_pos + step) % UD_EVT_SIZE;
+ 				if (!(ev & 1)) {
+ 					uint32_t ep = (ev >> 1) & 0x1f, type = (ev >> 6) & 0xf;
+ 					if ((type == 1 || type == 3) && ud.events++ < 200) {
