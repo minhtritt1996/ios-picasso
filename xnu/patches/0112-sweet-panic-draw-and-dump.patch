@@ -1,22 +1,32 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -404,14 +404,14 @@
- 
+@@ -405,11 +405,24 @@
  #if defined(ARM64_BOARD_CONFIG_SWEET)
  	extern void sweet_ufs_panic_dump(void);     /* bsd/dev/sweet_ufs.c */
-+	extern char *panicstr;                      /* osfmk/kern/debug.c */
  	sweet_log_append(c, size);
 -	if (panic_active()) {
-+	if (panic_active() || panicstr != NULL) {
- 		/* Muted consoles hide a panic completely: put the ring, which
+-		/* Muted consoles hide a panic completely: put the ring, which
 -		 * already holds this chunk of panic text, on the partition. */
-+		 * already holds this chunk of panic text, on the partition, then
-+		 * keep drawing so the screen shows it too. */
- 		sweet_ufs_panic_dump();
+-		sweet_ufs_panic_dump();
 -		return;
--	}
--	if (sweet_console_muted) {
-+	} else if (sweet_console_muted) {
- 		return;
++	/*
++	 * A panic must not disappear into a muted console.  XNU prints it
++	 * through this path only when debug does not contain DB_KPRT, so the
++	 * text itself is the trigger: the first chunk that carries "panic(cpu"
++	 * flushes the ring to the partition and unmutes the console, which then
++	 * draws the whole panic report.
++	 */
++	{
++		static int panic_seen;
++		if (!panic_seen && size > 0 && c[size - 1] == '\0' &&
++		    __builtin_strstr(c, "panic(cpu") != NULL) {
++			panic_seen = 1;
++			sweet_console_muted = 0;
++			sweet_ufs_panic_dump();
++		}
++		if (panic_seen) {
++			sweet_console_muted = 0;
++		}
  	}
- #endif
+ 	if (sweet_console_muted) {
+ 		return;
