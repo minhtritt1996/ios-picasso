@@ -1,5 +1,35 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### >>> UPDATE 2026-10-25 08:15 (bp14: cache fixed the 8.5 s stall, iOS reaches "Early boot
+### complete", console then freezes while the kernel lives; 0097 adds a print-free kick line) <<<
+1. **bp14 = 0094+0095+0096** (commit `22fea12`, CI run `40148165764`), same real cmdline
+   (`debug=0x14e serial=3 cpus=8 keepsyms=1 rd=ufsroot0 ... ufslogsecs=1`), flashed via
+   recovery adb (md5 `4dd56026e6847b903f0c71f0831c2092`), booted.
+2. **Result: the partition-lookup stall is gone.** Photo at 9 s shows
+   `0 Found valid part: 7427 Valid: 1`, `Cache sent to launchd successfully`,
+   `Early boot complete. Continuing system boot` at 8.9 s, then a storm of `exec xpcproxy`.
+   Ring (pulled from recovery after the 150 s reset): `total 267809 seq 3`, every probe
+   **0 ms** (`part "modemst1" probe 5: LUN 5 err 0`, `modemst2/fsc/fsg` hit LUN 5 first via
+   `part_last_lun`), heartbeat `lk 0/0 st 0 pp 5/0` -> no lock held, no lookup outstanding.
+3. **New symptom: the console stops at ~9 s** (last line `exec xpcproxy`), the ring got no
+   further flush (`seq` stays 3) and no heartbeat was appended after HB1, yet the phone
+   returned to recovery at 150 s, i.e. the modem thread's timer ran. So the kernel is alive
+   and every thread that *prints* (heartbeat, flusher error path, launchd's /dev/console
+   writes, hence `exec xpcproxy` itself) is blocked. Prime suspect: the SweetFramebuffer
+   console takes `IOLockLock(fLock)` in putc and a store/scroll inside it hangs (same class as
+   the write-combine store that used to wedge the SoC on the rmtfs pool).
+4. **Patch 0097 (`xnu/patches/0097-sweet-ufs-kick-thread.patch`, validated byte-exact against
+   the bp14 buildtree artifact):** the flusher no longer printfs on a write error (records
+   `sweet_log_ferr_g` instead), and a second thread appends a `SWEET KICK <n>: log .. seq ..
+   beats .. fails .. ferr .. fage .. | cmd .. err .. x .. lk ../.. st .. pp ../..` line every
+   2 s to the ring **without printing**. After a frozen boot the ring then answers whether the
+   disk (cmd serial), the flusher (beats/seq) and the lock kept moving while the console did
+   not. CI run `40149658204`.
+5. **Next:** flash bp15, let it run to the 150 s reset, pull the ring. KICK lines growing to
+   ~150 s with a rising `cmd` -> console wedge confirmed, then instrument the SweetFramebuffer
+   putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
+   console, the wedge is in UFS/the lock instead.
+
 ## Agent handoff / active work (2026-10-25 08:00, latest)
 ### >>> UPDATE 2026-10-25 08:00 (bp13 ring: iOS reached 8.5 s, flusher then blocked on a
 ### *partition lookup* (`lk 1/1`); 0096 caches lookups, bp14 flashing) <<<
