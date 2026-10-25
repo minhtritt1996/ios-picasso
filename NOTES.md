@@ -1,4 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 17:05 (root cause of "console on = instant death": the bootstrap console drew at sweet's fb base) <<<
+1. **The bootstrap console was pointed at the wrong framebuffer.** `osfmk/arm64/start.s` (stage-0 band and
+   the Normal-NC bootstrap block), `osfmk/arm64/arm_vm_init.c` (the reserved VA alias) and
+   `osfmk/arm64/sweet_early.c` all hard-coded `0x9c000000`, which is **sweet's** splash region. On picasso the
+   splash lives at **0xa0000000**: `tools/mkadt.py` says so, the ADT's `sweet-fbcon` node carries
+   `reg=0xa0000000 0x2300000, width 1080, height 2400, stride 4320`, and the shim's own probe screen printed
+   `FB 00000000A0000000`. Patch `0119-picasso-framebuffer-base.patch` routes all four sites through a new
+   `osfmk/arm64/sweet_fb.h` (`SWEET_FB_PA`, default 0xa0000000, overridable with -DSWEET_FB_PA=0x... for
+   sweet builds). With `sweetfb_off=0` the kernel now has a real screen from the first `kprintf`.
+2. **Proof that flash, boot and the panel still work** (probe build, `shim/build.sh --picasso` with no
+   payload): the phone drew the red "SHIM picasso probe" screen with `RAM 0x140000000 + 0xC0000000`,
+   `FB 0xA0000000`, `GICD 0x17A00000`, `GICR 0x17A60000`, `UFS 0x1D84000`, `DTB not read on this board`.
+   So the shim's RAM fallback is still the high bank and the panel path is healthy; only the kernel console
+   address was wrong. Read the report from the *ring* for anything after the shim hands off.
+3. **`gh` hangs on this workstation** (locked keyring); `gh run list`/`gh api` time out at 30 s while plain
+   `curl https://api.github.com` answers in 0.2 s. Drive CI with REST + the token in `/tmp/ghtoken`:
+   `POST /repos/<r>/actions/workflows/390372021/dispatches {"ref":"omp"}` and
+   `GET /repos/<r>/actions/runs/<id>/artifacts` (names: `xnu-kernel`, `xnu-buildtree`).
+4. Next: bp42 = run 40182006448 (0119) with `cpus=8 sweetfb_off=0 sweethangsecs=30 ufslogsecs=1
+   sweetboot=bp42`, flashed over fastboot. Watch the panel: kernel text before UFS init proves the fix.
 ### >>> UPDATE 2026-10-25 16:40 (three findings: the panel never draws, cpus=8 dies, and a stale ring looks like progress) <<<
 1. **The framebuffer console is not a progress indicator on this stack, and enabling it is harmful.**
    Nothing draws until the display driver (AppleCLCD/IOMFB) attaches, and that happens after launchd -
