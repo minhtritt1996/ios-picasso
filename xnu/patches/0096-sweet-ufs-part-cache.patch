@@ -1,0 +1,187 @@
+sweet ufs: cache partition lookups, report where a lookup blocks
+
+The modem asks sweet_ufs_part() for "misc"/"efs"/"modem" again on every
+rmtfs request, and each call probed up to eight LUNs while holding
+sweet_ufs_lock; a LUN with no device costs a SCSI timeout, and the whole
+system (HFS, the log flusher, the console queue behind them) waits for the
+lock. On bp13 a run that had flushed four times then sat at "lk 1/1 st 1"
+for a minute with no command outstanding, i.e. inside such a lookup.
+
+Cache every answer (misses too), answer the root partition from the state
+sweet_ufs_init already has, probe the LUN that answered last time first,
+and keep part_lun/part_step in the heartbeat (pp <lun>/<step>) so a lookup
+that never returns names its own LUN and stage. Probes are logged after the
+lock is dropped.
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -130,6 +130,11 @@
+ 	volatile uint32_t lock_owner;
+ 	volatile uint32_t lock_users;
+ 	volatile uint32_t flush_stage;
++	/* Where a GPT partition lookup is right now: the heartbeat prints it, so
++	 * a lookup that never returns names its own LUN and step. */
++	volatile uint32_t part_lun;
++	volatile uint32_t part_step;
++	char want[24];                          /* root partition name, boot-arg ufsroot */
+ } su;
+ 
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+@@ -415,10 +420,12 @@
+ 	int error;
+ 
+ 	su.lun = lun;
++	su.part_step = 2;
+ 	error = ufs_read_blocks(1, 1);
+ 	if (error) {
+ 		return error;
+ 	}
++	su.part_step = 3;
+ 	if (memcmp(b, "EFI PART", 8) != 0) {
+ 		su.lun = saved;
+ 		return ENXIO;
+@@ -432,6 +439,7 @@
+ 		su.lun = saved;
+ 		return ENXIO;
+ 	}
++	su.part_step = 4;
+ 	error = ufs_read_blocks(entry_lba, (nent * esz + UFS_BLOCK - 1) / UFS_BLOCK);
+ 	if (error) {
+ 		su.lun = saved;
+@@ -468,6 +476,9 @@
+ 	return ENOENT;
+ }
+ 
++/* Last LUN a partition lookup answered on; probed first. */
++static uint32_t part_last_lun = 4;
++
+ static int
+ ufs_gpt_entry(const char *want, uint64_t *first_out, uint64_t *last_out)
+ {
+@@ -487,6 +498,8 @@
+ 	}
+ 	su.first_block = first;
+ 	su.nblocks = last - first + 1;
++	strlcpy(su.want, want, sizeof(su.want));
++	part_last_lun = su.lun;
+ 	return 0;
+ }
+ 
+@@ -504,28 +517,94 @@
+ /*
+  * Find a GPT partition on any UFS LUN: on picasso "userdata" is on LUN 0
+  * but "modem" is on LUN 4, and every LUN has its own GPT.
++ *
++ * Every answer is cached, misses included: the modem asks for "misc", "efs"
++ * and the modem partition again for every rmtfs request, and probing a LUN
++ * that has no device costs a SCSI timeout each time.  A lookup that is
++ * already the root partition costs nothing at all.
+  */
++struct part_cache {
++	char name[24];
++	uint64_t first, nblocks;
++	uint32_t lun;
++	int error;
++};
++
++static struct part_cache part_cache[12];
++static unsigned part_cache_n;
++
+ int
+ sweet_ufs_part(const char *name, uint64_t *first, uint64_t *nblocks, uint32_t *lun)
+ {
+ 	if (!su.ready) {
+ 		return ENXIO;
+ 	}
++	if (su.want[0] != 0 && strncmp(name, su.want, sizeof(su.want) - 1) == 0 &&
++	    su.nblocks != 0) {
++		*first = su.first_block;
++		*nblocks = su.nblocks;
++		*lun = su.lun;
++		return 0;
++	}
++	for (unsigned i = 0; i < part_cache_n; i++) {
++		if (strncmp(part_cache[i].name, name, sizeof(part_cache[i].name) - 1) != 0) {
++			continue;
++		}
++		if (part_cache[i].error == 0) {
++			*first = part_cache[i].first;
++			*nblocks = part_cache[i].nblocks;
++			*lun = part_cache[i].lun;
++		}
++		return part_cache[i].error;
++	}
++	/* The LUN that answered last time first: probing a LUN with no device
++	 * costs a command timeout, and every other thread wanting the disk waits
++	 * for the lock while it happens. */
++	uint32_t order[8];
++	uint32_t n = 0;
++	order[n++] = part_last_lun < 8 ? part_last_lun : 0;
+ 	for (uint32_t u = 0; u < 8; u++) {
+-		uint64_t f, l;
++		if (u != order[0]) {
++			order[n++] = u;
++		}
++	}
++	int rc = ENOENT;
++	for (uint32_t i = 0; i < n; i++) {
++		uint64_t f = 0, l = 0, t0 = mach_absolute_time(), ns = 0;
+ 		int error;
+ 
++		su.part_lun = order[i];
++		su.part_step = 1;
+ 		ufs_lock(UFS_LK_PART);
+-		error = ufs_gpt_entry_lun((uint8_t)u, name, &f, &l);
++		error = ufs_gpt_entry_lun((uint8_t)order[i], name, &f, &l);
+ 		ufs_unlock();
++		su.part_step = 0;
+ 		if (error == 0) {
+ 			*first = f;
+ 			*nblocks = l - f + 1;
+-			*lun = u;
+-			return 0;
++			*lun = order[i];
++			part_last_lun = order[i];
+ 		}
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		/* Logged outside the lock: a printf under it is how a boot stops. */
++		printf("SWEET UFS: part \"%s\" probe %u: LUN %u err %d, %llu ms\n",
++		    name, i, order[i], error, ns / 1000000ull);
++		if (error == 0) {
++			rc = 0;
++			break;
++		}
+ 	}
+-	return ENOENT;
++	if (part_cache_n < sizeof(part_cache) / sizeof(part_cache[0])) {
++		struct part_cache *c = &part_cache[part_cache_n++];
++		strlcpy(c->name, name, sizeof(c->name));
++		c->error = rc;
++		if (rc == 0) {
++			c->first = *first;
++			c->nblocks = *nblocks;
++			c->lun = *lun;
++		}
++	}
++	return rc;
+ }
+ 
+ /*
+@@ -1151,14 +1230,15 @@
+ 		char line[192];
+ 		int n = snprintf(line, sizeof(line),
+ 		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
+-		    " age %u ms | err %d x%u | lk %u/%u st %u\n",
++		    " age %u ms | err %d x%u | lk %u/%u st %u pp %u/%u\n",
+ 		    ++tick, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
+ 		    sweet_log_seq_g, (unsigned)sweet_log_beats,
+ 		    (unsigned)su.cmd_serial, (unsigned long long)su.cmd_lba,
+ 		    (unsigned)su.cmd_count, (unsigned)su.cmd_lun, (unsigned)su.cmd_op,
+ 		    (unsigned)age_ms, su.last_err, (unsigned)su.err_serial,
+ 		    (unsigned)su.lock_owner, (unsigned)su.lock_users,
+-		    (unsigned)su.flush_stage);
++		    (unsigned)su.flush_stage, (unsigned)su.part_lun,
++		    (unsigned)su.part_step);
+ 		if (n > 0) {
+ 			/* Ring first: printf() can block in the framebuffer driver, and
+ 			 * then the ring is the only channel that still records progress.
