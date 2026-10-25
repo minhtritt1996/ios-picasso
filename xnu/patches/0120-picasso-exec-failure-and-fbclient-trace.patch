@@ -12,7 +12,7 @@
 +	 */
 +	if (error != 0) {
 +		printf("SWEET EXEC FAIL %s err %d flags 0x%x\n",
-+		    imgp->ip_name != NULL ? imgp->ip_name : "?", (int)error,
++		    p->p_name != NULL ? p->p_name : "?", (int)error,
 +		    (unsigned)imgp->ip_flags);
 +	}
 +#endif
