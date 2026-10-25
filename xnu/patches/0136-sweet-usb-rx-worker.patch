@@ -1,0 +1,188 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -250,6 +250,7 @@
+ #define TRBCTL_NORMAL   (1u << 4)
+ 
+ #define UD_TXQ          32
++#define UD_RXQ          32
+ 
+ static int usbstep = 99;	/* bring-up step limit, see sweet_usb_gadget_start */
+ 
+@@ -281,6 +282,13 @@
+ 	uint32_t    ev_geo;             /* event-ring geometry prints */
+ 	uint32_t    rx_spurious;
+ 	uint32_t    tx_spurious;
++	/* RX frames are queued here and handed to the stack by ud_rx_worker, so a
++	 * stack path that blocks cannot stop the event thread. */
++	uint8_t     rxq_buf[UD_RXQ][UD_FRAME_MAX];
++	uint32_t    rxq_len[UD_RXQ];
++	uint32_t    rxq_head, rxq_tail, rxq_count;
++	uint32_t    rxq_drops;
++	bool        rxq_pending;
+ 	bool        cmd_pending;
+ 	char        cmd_buf[1200];
+ 	uint8_t     cmd_dst[ETHER_ADDR_LEN];
+@@ -591,15 +599,65 @@
+ 	}
+ 	uint32_t len = UD_FRAME_MAX - (t[2] & 0xffffff);
+ 	ud_sync(UD_RX, UD_FRAME_MAX);
+-	if (len > ETHER_HDR_LEN) {
+-		const uint8_t *f = (const uint8_t *)(ud.dma + UD_RX);
+-		if (f[12] == ((UD_CTL_TYPE >> 8) & 0xff) && f[13] == (UD_CTL_TYPE & 0xff)) {
+-			static char cmd[1200];
++	if (len >= ETHER_HDR_LEN && len <= ETHER_MAX_LEN) {
++		lck_mtx_lock(ud.lock);
++		if (ud.rxq_count == UD_RXQ) {
++			ud.rxq_drops++;
++		} else {
++			uint32_t slot = ud.rxq_tail;
++			memcpy(ud.rxq_buf[slot], (const void *)(ud.dma + UD_RX), len);
++			ud.rxq_len[slot] = len;
++			ud.rxq_tail = (ud.rxq_tail + 1) % UD_RXQ;
++			ud.rxq_count++;
++			ud.rx_frames++;
++			if (!ud.rxq_pending) {
++				ud.rxq_pending = true;
++				thread_wakeup(&ud.rxq_pending);
++			}
++		}
++		lck_mtx_unlock(ud.lock);
++	}
++	ud_rx_arm();
++}
++
++/*
++ * RX worker: everything the stack does with a received frame happens here -
++ * ifnet_input, the control-channel dispatch - so that a blocking path in the
++ * network stack can never stop the USB event thread (which is what used to take
++ * the whole link down).
++ */
++static void
++ud_rx_worker(void *arg __unused, wait_result_t wr __unused)
++{
++	uint8_t frame[ETHER_MAX_LEN];
++	uint32_t len;
++	for (;;) {
++		lck_mtx_lock(ud.lock);
++		if (ud.rxq_count == 0) {
++			assert_wait(&ud.rxq_pending, THREAD_UNINT);
++			lck_mtx_unlock(ud.lock);
++			thread_block(THREAD_CONTINUE_NULL);
++			continue;
++		}
++		uint32_t slot = ud.rxq_head;
++		len = ud.rxq_len[slot];
++		memcpy(frame, ud.rxq_buf[slot], len);
++		ud.rxq_head = (ud.rxq_head + 1) % UD_RXQ;
++		ud.rxq_count--;
++		if (ud.rxq_count == 0) {
++			ud.rxq_pending = false;
++		}
++		lck_mtx_unlock(ud.lock);
++
++		if (len > ETHER_HDR_LEN && frame[12] == ((UD_CTL_TYPE >> 8) & 0xff) &&
++		    frame[13] == (UD_CTL_TYPE & 0xff)) {
++			char cmd[1200];
+ 			uint32_t n = len - ETHER_HDR_LEN;
++
+ 			if (n > sizeof(cmd) - 1) {
+ 				n = sizeof(cmd) - 1;
+ 			}
+-			memcpy(cmd, f + ETHER_HDR_LEN, n);
++			memcpy(cmd, frame + ETHER_HDR_LEN, n);
+ 			cmd[n] = 0;
+ 			char *nl = strchr(cmd, '\n');
+ 			if (nl != NULL) {
+@@ -609,60 +667,42 @@
+ 				printf("SWEET USB: ctl frame %u len %u cmd '%s'\n",
+ 				    ud.ctl_seen, n, cmd);
+ 			}
+-			/*
+-			 * Never run a command here: stat/cat/put go through the VFS and
+-			 * log takes the console lock, either of which can sleep - and
+-			 * sleeping on the event thread freezes the whole USB link.
+-			 * Hand the frame to the command thread instead.
+-			 */
+ 			lck_mtx_lock(ud.lock);
+ 			if (!ud.cmd_pending) {
+ 				memcpy(ud.cmd_buf, cmd, n + 1);
+-				memcpy(ud.cmd_dst, f + 6, ETHER_ADDR_LEN);
++				memcpy(ud.cmd_dst, frame + 6, ETHER_ADDR_LEN);
+ 				ud.cmd_pending = true;
+ 				thread_wakeup(&ud.cmd_pending);
+ 			} else {
+ 				ud.cmd_drop++;
+ 			}
+ 			lck_mtx_unlock(ud.lock);
+-			ud_rx_arm();
+-			return;
++			continue;
+ 		}
+-	}
+-	if (ud.ifp != NULL && len >= ETHER_HDR_LEN && len <= ETHER_MAX_LEN) {
+-		/*
+-		 * One mbuf with a 2 KiB cluster holds any frame. (mbuf_allocpacket
+-		 * may return a first mbuf of length 0: stripping the header from
+-		 * it panicked "Failed mbuf validity check: len -14".)
+-		 */
+-		mbuf_t m = NULL;
+-		if (mbuf_gethdr(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
+-		    mbuf_mclget(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
+-		    (mbuf_flags(m) & MBUF_EXT) && mbuf_maxlen(m) >= len) {
++		if (ud.ifp != NULL) {
++			mbuf_t m = NULL;
+ 			struct ifnet_stat_increment_param stats = {};
+-			memcpy(mbuf_data(m), (const void *)(ud.dma + UD_RX), len);
+-			mbuf_setlen(m, len);
+-			mbuf_pkthdr_setlen(m, len);
+-			void *frame_header = mbuf_data(m);
+-			mbuf_pkthdr_setrcvif(m, ud.ifp);
+-			mbuf_pkthdr_setheader(m, frame_header);
+-			mbuf_pkthdr_adjustlen(m, -ETHER_HDR_LEN);
+-			(void)mbuf_setdata(m, (char *)mbuf_data(m) + ETHER_HDR_LEN, mbuf_len(m) - ETHER_HDR_LEN);
+-			stats.packets_in = 1;
+-			stats.bytes_in = len;
+-			ud.rx_frames++;
+-			int ierr = ifnet_input(ud.ifp, m, &stats);
+-			if (ud_verbose && ud.rx_seen++ < 6) {
+-				const uint8_t *f = (const uint8_t *)(ud.dma + UD_RX);
+-				printf("SWEET USB: rx %u len %u dst %02x:%02x:%02x:%02x:%02x:%02x type 0x%02x%02x input %d\n",
+-				    ud.rx_seen, len, f[0], f[1], f[2], f[3], f[4], f[5],
+-				    f[12], f[13], ierr);
++
++			if (mbuf_gethdr(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
++			    mbuf_mclget(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
++			    (mbuf_flags(m) & MBUF_EXT) && mbuf_maxlen(m) >= len) {
++				memcpy(mbuf_data(m), frame, len);
++				mbuf_setlen(m, len);
++				mbuf_pkthdr_setlen(m, len);
++				void *hdr = mbuf_data(m);
++				mbuf_pkthdr_setrcvif(m, ud.ifp);
++				mbuf_pkthdr_setheader(m, hdr);
++				mbuf_pkthdr_adjustlen(m, -ETHER_HDR_LEN);
++				(void)mbuf_setdata(m, (char *)mbuf_data(m) + ETHER_HDR_LEN,
++				    mbuf_len(m) - ETHER_HDR_LEN);
++				stats.packets_in = 1;
++				stats.bytes_in = len;
++				(void)ifnet_input(ud.ifp, m, &stats);
++			} else if (m != NULL) {
++				mbuf_freem(m);
+ 			}
+-		} else if (m != NULL) {
+-			mbuf_freem(m);
+ 		}
+ 	}
+-	ud_rx_arm();
+ }
+ 
+ /* Start the next queued frame if the IN endpoint is idle. ud.lock held. */
+@@ -1802,6 +1842,9 @@
+ 	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	if (kernel_thread_start(ud_rx_worker, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ 	if (kernel_thread_start(ud_vfs_probe_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
