@@ -456,7 +456,64 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-26, latest)
+## Agent handoff / active work (2026-10-26, later)
+### >>> 2026-10-26 (picasso): USB TX path wedges the link; shell ready but launchd
+### refuses the boot-task route <<<
+**Where the bring-up stands.** Everything except a *stable* USB link works:
+the driver inits correctly (`ue0 192.168.7.2/24 up (err 0)`, SMMU `sid 0xe0 ->
+smr 4 s2cr 0x3 (translate)`, `ECM endpoints configured`, `configured (1)`), RX
+works (`rx 10` frames), the control channel answers early (`info` with
+`configured 1 rx 10 tx 0 busy 0`), and the kernel keeps running for minutes
+(heartbeat `SWEET KICK` to t≈220 s, iOS boots to SpringBoard). Then the DWC3
+event thread stops.
+**Measured pattern (rings rev6..rev17, photos):** the event thread prints
+`ev alive` with `busy 1` and a growing TX queue, stops 5-10 s after the first
+bulk-IN transactions, exactly around `exec SpringBoard`. It stops between two
+register reads: no panic, no event, no error line. With `sweetusblog=0` (no log
+thread) the link still dies, so the UDP log thread is not the trigger; the TX
+counter shows the frames it managed before dying.
+**Patches landed for this (all pushed, CI green):**
+- `0130` DWC3 events are four dwords (one-dword dispatch made parameter dwords
+  look like endpoint events and re-armed the RX TRB mid-DMA) + HWO guard;
+- `0131` control commands run on a worker thread (VFS sleeps froze the link);
+- `0132`/`0135` boot VFS probe, off by default (VFS from a kernel thread hangs);
+- `0133` `ringpos`/`logback <n>` - walk the whole ring over USB;
+- `0134` per-frame chatter gated behind `sweetusbverbose=1`;
+- `0136` received frames handed to the stack by `ud_rx_worker`, so a blocking
+  stack path cannot stop the event thread;
+- `0137` stall timer fixed (`clock_interval_to_deadline` returns a deadline, not
+  an interval - the detector never fired) + `usb30_prim` GDSC/clock re-vote and
+  register read on stall;
+- `0138` unconditional probe-thread heartbeat every 10 s with the measured
+  silence, the threshold and the event thread's last stamp.
+**Reproduce (needs the phone in recovery to flash):**
+`tools/picasso-boot-remote.sh /tmp/rev17/kernel.development.sweet` with
+`sweetusb=2 sweetusblog=0 sweetusbsmmu=1 sweetusbprobe=1 sweetvfsprobe=0
+sweetusbstallpanic=1` - then read the ring from recovery; the probe heartbeat
+and the `STALL` lines say whether the event thread is stuck and whether the
+DWC3 registers still answer.
+**Shell (`tools/sweetsh`, 9,128 B; signed variant 9,336 B):** freestanding arm64
+Mach-O, binds TCP 4444, UDP beacons to 192.168.7.1:5140, builtins
+ls/cat/echo/cd/rm/mkdir, execs iOS binaries.
+- An added entry in `/System/Library/xpc/launchd.plist` is **not spawned**
+  (launchd drops entries whose plist file is missing).
+- Replacing `/usr/libexec/launchd_cache_loader` makes **launchd panic**:
+  "boot task is not a platform binary (launchd_cache_loader) handshake not
+  initialized" - boot tasks must be genuine Apple platform binaries.
+- Replacing a normal daemon (`/System/Library/CoreServices/OTACrashCopier`,
+  cached job with `RunAtLoad`, program exists) is the remaining route; it is
+  installed now (md5 `038edcf1`) and boots with the shell present, but with the
+  link dead within seconds it could not be verified.
+**Rootfs state on the phone:** `/bin/ps` original, `/System/Library/xpc/
+launchd.plist` original, `launchd_cache_loader` original, `OTACrashCopier` = the
+shell. Backups of every region in `dump/backup/` on the workstation.
+**OpenSSH:** cannot be built here (needs the Apple SDK/libSystem; CI runners are
+Linux). The realistic path to real SSH is a prebuilt rootless arm64 iOS
+`openssh-server` (the rootfs already has `/var/jb`-style dangling links) placed
+under `/private/var/jb` plus a launchd job - but only after the link and launchd
+exec work.
+
+## Agent handoff / previous (2026-10-26)
 ### >>> 2026-10-26 (picasso): USB data path FIXED, rootfs read/written from the PC, shell
 ### built and installed; launchd does not spawn it yet <<<
 **Fixed for good: the DWC3 event thread died ~25-45 s after configure.**
