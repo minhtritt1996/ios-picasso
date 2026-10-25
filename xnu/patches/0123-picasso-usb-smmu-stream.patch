@@ -10,7 +10,7 @@
  bsd/dev/unix_startup.c			standard
 --- /dev/null
 +++ b/bsd/dev/sweet_smmu.c
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,292 @@
 +/*
 + * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
 + * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
@@ -45,6 +45,7 @@
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++extern ppnum_t pmap_find_phys_nofault(pmap_t pmap, addr64_t va);
 +int sweet_smmu_map_sid(unsigned sid);
 +
 +#define SMMU_PA         0x15000000u     /* apps_smmu */
@@ -166,13 +167,20 @@
 +		return ENOMEM;
 +	}
 +	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)l1v);
++	uint64_t l1_pa = pn ? ptoa_64(pn) : 0;
++	printf("SWEET SMMU: page table va 0x%llx pmap_find_phys %u pa 0x%llx\n",
++	    (uint64_t)l1v, (unsigned)pn, l1_pa);
 +	if (!pn) {
-+		printf("SWEET SMMU: page table at 0x%llx has no phys page\n",
-+		    (uint64_t)l1v);
-+		smmu_cb = -1;
-+		return ENOMEM;
++		/* a wired allocation may live where pmap_find_phys() cannot see it */
++		ppnum_t pn2 = pmap_find_phys_nofault(kernel_pmap, (addr64_t)l1v);
++		if (pn2 == 0) {
++			printf("SWEET SMMU: no phys page for the page table\n");
++			smmu_cb = -1;
++			return ENOMEM;
++		}
++		l1_pa = ptoa_64(pn2);
++		printf("SWEET SMMU: page table via nofault 0x%llx\n", l1_pa);
 +	}
-+	uint64_t l1_pa = ptoa_64(pn);
 +	volatile uint64_t *l1 = (volatile uint64_t *)l1v;
 +	for (unsigned i = 2; i < 10; i++) {
 +		l1[i] = (uint64_t)i << 30 | 1u << 10 | 2u << 8 | 1u << 6 | 1;
