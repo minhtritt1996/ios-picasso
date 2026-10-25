@@ -1,0 +1,6 @@
+# Cost control: this project's sessions reached 800k-token contexts, and
+# every turn re-bills the whole prompt (river/DeepSeek prefix cache, 95.7% hit).
+# Compact at 150k so per-request prompt cost stays ~5x lower.
+compaction:
+  thresholdTokens: 150000
+  keepRecentTokens: 20000
