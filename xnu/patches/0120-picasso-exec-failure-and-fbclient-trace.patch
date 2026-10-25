@@ -1,0 +1,60 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -2076,6 +2076,18 @@
+ bad:
+ 	/* If we hit this, we likely would have leaked an exit reason */
+ 	assert(exec_failure_reason == OS_REASON_NULL);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * sweet: a failing exec is otherwise silent, and on this port userland
++	 * stopped while launchd was spawning services through xpcproxy. Say which
++	 * image failed and why, once per failure, so the ring shows the culprit.
++	 */
++	if (error != 0) {
++		printf("SWEET EXEC FAIL %s err %d flags 0x%x\n",
++		    imgp->ip_name != NULL ? imgp->ip_name : "?", (int)error,
++		    (unsigned)imgp->ip_flags);
++	}
++#endif
+ 	return error;
+ }
+ 
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -166,6 +166,7 @@
+ 	    IOExternalMethodDispatch *dispatch, OSObject *target,
+ 	    void *reference) APPLE_KEXT_OVERRIDE;
+ 	void notify(uint32_t type, const uint64_t *values, uint32_t count);
++	task_t clientTask(void);
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
+@@ -299,9 +300,15 @@
+ void
+ AppleCLCD::addClient(IOMobileFramebufferUserClient *client)
+ {
++	static int logged;
+ 	IOLockLock(fLock);
+ 	fClients->setObject(client);
+ 	IOLockUnlock(fLock);
++	/* sweet: the GUI path starts with a userland client opening this device. */
++	if (logged < 4) {
++		logged++;
++		IOLog("SWEET FB: client %d opened (task %p)\n", logged, client->clientTask());
++	}
+ }
+ 
+ void
+@@ -450,6 +457,12 @@
+ 	return true;
+ }
+ 
++task_t
++IOMobileFramebufferUserClient::clientTask(void)
++{
++	return fTask;
++}
++
+ bool
+ IOMobileFramebufferUserClient::start(IOService *provider)
+ {
