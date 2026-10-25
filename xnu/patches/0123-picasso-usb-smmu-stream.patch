@@ -10,7 +10,7 @@
  bsd/dev/unix_startup.c			standard
 --- /dev/null
 +++ b/bsd/dev/sweet_smmu.c
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,284 @@
 +/*
 + * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
 + * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
@@ -124,7 +124,8 @@
 +	uint32_t used[8] = { 0 };
 +	for (unsigned i = 0; i < smmu_nsmr && i < 128; i++) {
 +		uint32_t smr = smmu_rd(0x800 + 4 * i), s2cr = smmu_rd(0xc00 + 4 * i);
-+		if ((smr & (1u << 31)) && ((s2cr >> 16) & 3) == 0) {
++		if ((smr & (1u << 31)) && ((s2cr >> 16) & 3) == 0 &&
++		    (s2cr & 0xff) < 64) {
 +			used[(s2cr & 0xff) / 32] |= 1u << ((s2cr & 0xff) % 32);
 +		}
 +	}
@@ -142,7 +143,11 @@
 +			continue;
 +		}
 +		uint32_t cbar = smmu_rd(cb0 + (c << pgshift));
-+		if ((used[c / 32] & (1u << (c % 32))) || (cbar & 1)) {
++		int taken = (used[c / 32] & (1u << (c % 32))) != 0 || (cbar & 1) != 0;
++		printf("SWEET SMMU: bank %u cbar 0x%08x sctlr 0x%08x %s\n", c, cbar,
++		    smmu_rd(cb0 + ((uint32_t)c << pgshift) + 0x0),
++		    taken ? "taken" : "free");
++		if (taken) {
 +			continue;
 +		}
 +		smmu_cb = (int)c;
@@ -162,6 +167,8 @@
 +	}
 +	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)l1v);
 +	if (!pn) {
++		printf("SWEET SMMU: page table at 0x%llx has no phys page\n",
++		    (uint64_t)l1v);
 +		smmu_cb = -1;
 +		return ENOMEM;
 +	}
@@ -195,7 +202,8 @@
 +		smmu_cb = -1;
 +		return EIO;
 +	}
-+	printf("SWEET SMMU: context bank %d, identity map, ttbr0 0x%llx\n", smmu_cb, l1_pa);
++	printf("SWEET SMMU: context bank %d, identity map, ttbr0 0x%llx (l1 0x%llx)\n",
++	    smmu_cb, l1_pa, (uint64_t)l1v);
 +	return 0;
 +}
 +
@@ -205,7 +213,9 @@
 +{
 +	int error = EIO;
 +
++	printf("SWEET SMMU: map sid 0x%x (cb %d)\n", sid, smmu_cb);
 +	if (__atomic_exchange_n(&smmu_lock, 1, __ATOMIC_ACQUIRE)) {
++		printf("SWEET SMMU: map sid 0x%x busy\n", sid);
 +		return EBUSY;
 +	}
 +	if (smmu_base == 0) {
@@ -279,6 +289,9 @@
 +	error = (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? 0 : EIO;
 +out:
 +	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
++	if (error) {
++		printf("SWEET SMMU: map sid 0x%x failed %d\n", sid, error);
++	}
 +	return error;
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
