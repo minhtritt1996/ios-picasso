@@ -1,4 +1,19 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 15:35 (bp35 packaged: 0115 lock fix in the kernel; 0114 was SKIPPED by CI, replaced by a validated 0116) <<<
+1. **CI silently skipped 0114** (`Skipping patch ... 0114-sweet-panic-capture-all-paths.patch ... error: patch failed: bsd/dev/sweet_ufs.c:1436`):
+   it had been generated against my scratch tree instead of the post-0113 tree. 0115 (the lock fix) did apply.
+   Consequence: the run-40176132871 kernel has the lock fix but **no** panic-reason capture.
+2. 0114 deleted; `0116-sweet-panic-report.patch` generated against the real `xnu-buildtree` of run 40176132871
+   (post-0115) and validated with `tools/check-patch.sh` ("OK: applies cleanly"). It adds `sweet_panic_putc()`
+   (from `consdebug_putc`), `sweet_panic_report()` (from `panic_spin_forever`, called with `debugger_panic_str`)
+   and the prototype of `sweet_ufs_panic_dump()` that the earlier version was missing.
+3. **bp35 packaged and ready to flash**: kernel = run 40176132871 (`kernel.development.sweet`, md5 in
+   `SHA256SUMS` of the artifact), payload `shim/out/payload-picasso-0115.bin` (md5 `51d94cd4...`),
+   boot image `shim/out/shim-boot.img` **md5 `784581ba5c8508ce0f666d60dc05a8d0`** (36,499,456 bytes,
+   payload verified byte-for-byte at image offset 0x41000). cmdline = bp34's with `sweetufstrace=0`
+   (`/tmp/cmdline-bp35.txt`, copy in the flash command).
+4. Device state at packaging time: not on USB at all (running the bp34 payload, which cannot enumerate), so a
+   manual 10-15 s power+volume hold into recovery/fastboot is needed before flashing.
 ### >>> UPDATE 2026-10-25 15:20 (ROOT CAUSE of the load_init_program / kmem panics: the timer ring dump raced the boot's reads) <<<
 1. **`sweet_ufs_emergency_dump()` (the KICK thread, every ~10 s) wrote the ring with NO driver lock**: it
    `memcpy()`s into the same 64 KiB bounce buffer that an in-flight read is DMA-ing into and rings
