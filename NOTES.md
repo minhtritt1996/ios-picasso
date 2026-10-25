@@ -1,4 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 16:40 (three findings: the panel never draws, cpus=8 dies, and a stale ring looks like progress) <<<
+1. **The framebuffer console is not a progress indicator on this stack, and enabling it is harmful.**
+   Nothing draws until the display driver (AppleCLCD/IOMFB) attaches, and that happens after launchd -
+   exactly where this port stops. So the panel stays on the bootloader's Mi logo for a healthy boot too.
+   The "red screen" that used to appear after the Mi logo comes from `shim/usbprobe.c:168
+   con_clear(0xff0000a0U)`, i.e. only from a `SWEET_USB_DMA_PROBE` shim build, never from the normal one.
+   Worse, with `sweetfb_off=0` (console enabled) the kernel dies **before the UFS driver flushes anything**:
+   bp38 and bp39 (only difference from bp36 = console on) produced no ring at all (see 2).
+2. **How to tell a stale ring from a fresh one**: the ring has no boot id, but its KICK/HB lines carry
+   timing (`t ...`, `age ...`), so two different boots can never hash equal. bp36/bp38/bp39 rings were all
+   md5 `e194ec1391b2cab978e0d1cad5aac251` - identical, i.e. bp38 and bp39 wrote nothing and what we read was
+   still bp36's ring. Check the md5 before believing an "it stopped here" conclusion.
+3. **`cpus=8` dies before the console/ring exist** (bp37 stayed on the Mi logo, no ring). Every ring we have
+   from bp29 onwards is `cpus=1`. Older good rings (`/tmp/ring-bp2.txt`, SpringBoard + backboardd) were
+   `cpus=8`, so this is a regression in the current patch stack, not a property of the port.
+4. **bp36/bp38-progress point**: launchd reaches `ignition sequence complete`, then prints
+   `shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() failed` and the machine wedges
+   (no further KICK/HB, so the busy-wait thread stops too - a whole-kernel wedge, not a stalled driver).
+   `/tmp/ring-bp2.txt` (good era) continues at that exact point with `PicassoModem: rmtfs: EFS cached ...
+   scm assign ... ret=-2 ... shared buffer ... segments loaded` and then maps the dyld shared cache.
+5. Next measurement: bp40 = same kernel, `cpus=1 sweetfb_off=1 modem=0 sweetufstrace=1` (md5
+   `9d3a21b85f1a392552d838e663164968`) to decide whether the modem/rmtfs path or the shared-cache mapping
+   is the thing that wedges right after that line.
 ### >>> UPDATE 2026-10-25 16:05 (bp36 = 0116 flashed; it panics and spins, ring must be read from recovery) <<<
 1. **bp36 built from run `40177565304`** (success; log confirms `Applying patch: .../0116-sweet-panic-report.patch`,
    no "Skipping patch"), kernel `SWEET PANIC` string present. Payload `shim/out/payload-picasso-0116.bin`
