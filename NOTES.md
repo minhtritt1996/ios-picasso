@@ -1,4 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 11:20 (bp19/0101: direct DMA works - 1.09 GB read - then a command stalls; 0102) <<<
+1. **bp19 = 0101 (direct DMA into the caller's buffer) is a real advance**: the heartbeat read
+   `dma 1517/1095884800` - **1.09 GB served with no bounce copy**, i.e. the whole dyld cache
+   read went through, and the boot got past the point where bp17/bp18 stopped at ~8.5 s.
+2. **New stop, same moment in the boot (~8 s), different command**: `cmd 6819 lba 0x1acc82f
+   n 56 op 0x28 age 5049654 ms` = a 224 KiB read at absolute LBA 0x1acc82f (115 GB, inside the
+   partition: first_block 0x17e0747, so the strategy range check let it through). The lock stayed
+   with t247 while t217 waited (`ss 1`, and t217's sv/sc - a waiter overwrote the holder's
+   breadcrumbs). `err 0 x0` after **84 minutes** proves the thread is NOT in the completion wait
+   (that loop has a 5 s deadline): it is inside `ufs_rd(REG_UTRLDBR)` or inside thread_block.
+   The machine stays alive (HB ticks every 2 s, HB 2524 at age 5049 s), so this is a wedged UFS
+   master/register access, not a dead SoC.
+3. **0102** adds three things: (a) `pi` = turns of the completion poll in the heartbeat (growing =
+   the controller never completes, frozen = a register read or the sleep is stuck), (b) on timeout
+   clear the doorbell (`REG_UTRLCLR`) and re-arm the request list (`ufs_take_over_host`) so a
+   latched slot cannot hold the driver forever and the strategy returns EIO instead, (c) cache
+   invalidation of the destination after a direct transfer, plus `hr` (host resets) and
+   `pt <first_block>/<nblocks>` in the heartbeat.
+4. Also: the strategy now publishes strat_* **after** taking the lock, so a waiter can no longer
+   overwrite the stuck holder's breadcrumbs (bp19 printed ss 1 with the waiter's sv).
+5. **A wedge now costs a manual reset**: the independent `recovery_thread` writes the BCB into
+   misc, which needs the very lock that is stuck, so the 150 s timer never resets the phone.
 ### >>> UPDATE 2026-10-25 09:30 (bp18 booted but stopped the same way; 0101 removes the copy) <<<
 1. **bp18 (0100 + badge) flashed, booted to `Early boot complete`, then stopped**: photo at
    ~9 s, no heartbeat visible yet (the console tail was still launchd tasks), and after 450 s

@@ -1,0 +1,100 @@
+sweet ufs: recover a stalled command, and publish the poll counter
+
+bp19 served 1.09 GB through the direct DMA path and then stopped on a
+56 block read: the UFS lock stayed with one thread for 84 minutes with
+"age 5049 s ... err 0 x0", so the completion wait (which has a 5 s
+deadline) is not where it sits - either the register read or the sleep
+never returns, or the controller never completes and nothing notices.
+
+Count the turns of the completion poll (pi in the heartbeat): a growing
+count means the controller is not completing, a frozen one means the
+thread is inside the register read or the block.  On timeout, clear the
+doorbell and re-arm the request list instead of leaving the slot latched,
+so the next command can go through and the boot can report an I/O error
+instead of sitting there forever.  Also drop stale cache lines after a
+direct transfer (the destination is the caller's memory now), and publish
+the strategy breadcrumbs only under the lock, since a waiter was
+overwriting the stuck holder's values.
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -148,6 +148,8 @@
+ 	volatile uint64_t strat_blk;
+ 	volatile uint32_t strat_count;
+ 	volatile uint32_t strat_tid;
++	volatile uint64_t poll_iters;           /* turns of the completion poll */
++	volatile uint32_t host_resets;          /* stalled commands recovered */
+ 	volatile uint32_t direct_reads;         /* reads that skipped the bounce copy */
+ 	volatile uint64_t direct_bytes;
+ 	char want[24];                          /* root partition name, boot-arg ufsroot */
+@@ -232,6 +234,8 @@
+  * Cache maintenance for a transfer buffer that is ordinary kernel memory
+  * (see ufs_read_blocks_dma), by physical address, page by page.
+  */
++static int ufs_take_over_host(void);
++
+ static void
+ ufs_dma_sync_buf(const void *buf, uint32_t len, bool write)
+ {
+@@ -351,8 +355,14 @@
+ 	}
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+ 		uint64_t now = mach_absolute_time();
++		su.poll_iters++;
+ 		if (now > deadline) {
++			/* A slot the controller latched but never fetched or
++			 * completed leaves the doorbell set for good; re-arming
++			 * the request list lets the next command through. */
+ 			ufs_wr(REG_UTRLCLR, ~1u);
++			su.host_resets++;
++			(void)ufs_take_over_host();
+ 			su.last_err = ETIMEDOUT;
+ 			su.err_serial++;
+ 			return ETIMEDOUT;
+@@ -377,7 +387,9 @@
+ 	} else {
+ 		dma_sync(DMA_UCD, sizeof(*ucd));
+ 	}
+-	if (len && !(su.cache && write)) {
++	if (len && dst != NULL) {
++		ufs_dma_sync_buf(dst, len, false);
++	} else if (len && !(su.cache && write)) {
+ 		dma_sync(DMA_BOUNCE, len);
+ 	}
+ 
+@@ -891,6 +903,10 @@
+ 		goto done;
+ 	}
+ 
++	ufs_lock(UFS_LK_STRATEGY);
++	/* Published only while holding the lock: a thread that is merely
++	 * waiting for it would otherwise overwrite the stuck holder's
++	 * breadcrumbs (bp19 showed ss 1 with sv/sc from the waiter). */
+ 	su.strat_blk = (uint64_t)buf_blkno(bp);
+ 	su.strat_count = count;
+ 	su.strat_tid = (uint32_t)thread_tid(current_thread());
+@@ -898,7 +914,6 @@
+ 	su.strat_done = 0;
+ 	su.strat_t0 = mach_absolute_time();
+ 	su.strat_step = 1;
+-	ufs_lock(UFS_LK_STRATEGY);
+ 	for (uint32_t done = 0; done < count;) {
+ 		su.strat_step = 2;
+ 		uint64_t pos = off + done;
+@@ -1396,7 +1411,7 @@
+ 		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
+ 		    " age %u ms | err %d x%u | lk %u/%u t%u st %u pp %u/%u ss %u"
+ 		    " sb 0x%llx sc %u st%u sd %u sv 0x%llx sdt %llu | dma %u/%llu"
+-		    " fails %u fage %llu\n",
++		    " pi %llu hr %u pt %llu/%llu fails %u fage %llu\n",
+ 		    ++tick, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
+ 		    sweet_log_seq_g, (unsigned)sweet_log_beats,
+ 		    (unsigned)su.cmd_serial, (unsigned long long)su.cmd_lba,
+@@ -1410,6 +1425,8 @@
+ 		    (unsigned)su.strat_tid, (unsigned)su.strat_done,
+ 		    (unsigned long long)su.strat_vaddr, (unsigned long long)sdt,
+ 		    (unsigned)su.direct_reads, (unsigned long long)su.direct_bytes,
++		    (unsigned long long)su.poll_iters, (unsigned)su.host_resets,
++		    (unsigned long long)su.first_block, (unsigned long long)su.nblocks,
+ 		    sweet_log_fails_g,
+ 		    (unsigned long long)fage);
+ 		if (n > 0) {
