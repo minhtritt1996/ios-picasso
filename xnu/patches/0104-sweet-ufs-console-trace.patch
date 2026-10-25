@@ -1,0 +1,69 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -114,6 +114,7 @@
+ 	bool writable;                          /* boot-arg ufsrw=1 */
+ 	bool cache;                             /* boot-arg ufscache=1 */
+ 	bool wait;                              /* boot-arg ufswait=1 */
++	bool trace;                             /* boot-arg sweetufstrace=1 */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
+@@ -343,6 +344,11 @@
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 
++	if (su.trace) {
++		printf("SWEET UFS gd: op 0x%02x lba 0x%llx n %u len %u prdt %u\n",
++		    cdb[0], (unsigned long long)su.cmd_lba, su.cmd_count, len,
++		    (unsigned)(len ? (utrd->prdt & 0xffff) : 0));
++	}
+ 	ufs_wr(REG_UTRLDBR, 1);
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+@@ -381,6 +387,11 @@
+ 		}
+ 	}
+ 	__builtin_arm_dsb(0xf);
++	if (su.trace) {
++		printf("SWEET UFS cd: op 0x%02x lba 0x%llx ocs %u it %llu\n",
++		    cdb[0], (unsigned long long)su.cmd_lba, utrd->dw2 & 0xff,
++		    (unsigned long long)su.poll_iters);
++	}
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
+ 
+ 	dma_sync(DMA_UTRL, sizeof(*utrd));
+@@ -916,6 +927,10 @@
+ 	su.strat_done = 0;
+ 	su.strat_t0 = mach_absolute_time();
+ 	su.strat_step = 1;
++	if (su.trace) {
++		printf("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
++		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
++	}
+ 	for (uint32_t done = 0; done < count;) {
+ 		su.strat_step = 2;
+ 		uint64_t pos = off + done;
+@@ -969,6 +984,11 @@
+ 	buf_unmap(bp);
+ 
+ done:
++	if (su.trace) {
++		printf("SWEET UFS out: %c lba 0x%llx ss %u err %d done %u\n",
++		    rd ? 'R' : 'W', (unsigned long long)buf_blkno(bp),
++		    (unsigned)su.strat_step, error, (unsigned)su.strat_done);
++	}
+ 	if (error) {
+ 		buf_seterror(bp, error);
+ 	}
+@@ -1112,6 +1132,11 @@
+ 	PE_parse_boot_argn("ufswait", &wait, sizeof(wait));
+ 	su.cache = (cache == 1);
+ 	su.wait = (wait == 1);
++	{
++		uint32_t trace = 0;
++		PE_parse_boot_argn("sweetufstrace", &trace, sizeof(trace));
++		su.trace = (trace == 1);
++	}
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
