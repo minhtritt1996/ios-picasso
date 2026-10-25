@@ -27,15 +27,23 @@ typedef unsigned int u32;
 #define SYS_getpid   20
 #define SYS_execve   59
 #define SYS_dup2     90
+#define SYS_connect  98
 #define SYS_socket   97
 #define SYS_bind     104
 #define SYS_listen   106
 #define SYS_accept   30
 #define SYS_setsockopt 105
 
+#define SYS_unlink   10
+#define SYS_reboot   55
+#define SYS_mkdir    136
+#define SYS_getdirentries64 344
+
 #define AF_INET      2
 #define SOCK_STREAM  1
+#define SOCK_DGRAM   2
 #define O_WRONLY     1
+#define O_DIRECTORY  0x00100000
 #define SOL_SOCKET   0xffff
 #define SO_REUSEADDR 0x0004
 
@@ -205,6 +213,58 @@ struct sockaddr_in {
 	char pad[8];
 };
 
+static void
+beacon(const char *msg)
+{
+	struct sockaddr_in sa;
+	i64 fd = sys3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
+
+	if (fd < 0) {
+		return;
+	}
+	for (int i = 0; i < (int)sizeof(sa); i++) {
+		((char *)&sa)[i] = 0;
+	}
+	sa.sin_len = sizeof(sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = (unsigned short)((5140 >> 8) | ((5140 & 0xff) << 8));
+	sa.sin_addr = ((192u << 24) | (168u << 16) | (7u << 8) | 1u);   /* 192.168.7.1 */
+	if (sys3(SYS_connect, fd, (i64)&sa, sizeof(sa)) == 0) {
+		sys3(SYS_write, fd, (i64)msg, (i64)strlen_(msg));
+	}
+	sys3(SYS_close, fd, 0, 0);
+}
+
+static void
+beacon_num(const char *tag, i64 v)
+{
+	char buf[64];
+	int i = 0;
+
+	while (*tag && i < 40) {
+		buf[i++] = *tag++;
+	}
+	buf[i++] = ' ';
+	if (v < 0) {
+		buf[i++] = '-';
+		v = -v;
+	}
+	char digits[16];
+	int d = 0;
+	if (v == 0) {
+		digits[d++] = '0';
+	}
+	while (v > 0 && d < 15) {
+		digits[d++] = '0' + (int)(v % 10);
+		v /= 10;
+	}
+	while (d > 0 && i < 60) {
+		buf[i++] = digits[--d];
+	}
+	buf[i++] = 0;
+	beacon(buf);
+}
+
 static int
 listen_4444(void)
 {
@@ -224,11 +284,14 @@ listen_4444(void)
 	sa.sin_family = AF_INET;
 	sa.sin_port = (unsigned short)((4444 >> 8) | ((4444 & 0xff) << 8));   /* htons */
 	sa.sin_addr = 0;                                                      /* INADDR_ANY */
-	if (sys3(SYS_bind, fd, (i64)&sa, sizeof(sa)) != 0) {
+	i64 berr = sys3(SYS_bind, fd, (i64)&sa, sizeof(sa));
+	if (berr != 0) {
+		beacon_num("sweetsh: bind err", berr);
 		console("sweetsh: bind 4444 failed (in use?)\r\n");
 		sys3(SYS_close, fd, 0, 0);
 		return -1;
 	}
+	beacon("sweetsh: bound 4444\n");
 	if (sys3(SYS_listen, fd, 4, 0) != 0) {
 		console("sweetsh: listen failed\r\n");
 		return -1;
@@ -240,8 +303,72 @@ static void
 banner(void)
 {
 	puts_("\r\nsweetsh - picasso XNU port, freestanding arm64 static binary\r\n"
-	    "builtins: exit, cd <dir>, help; anything else is exec'd from PATH-less\r\n"
-	    "names (/bin/dd, /bin/df, /bin/ps, /usr/libexec/<tool>) or a full path.\r\n\r\n");
+	    "builtins: ls [dir], cat <file>, echo, cd <dir>, rm, mkdir, help, exit\r\n"
+	    "anything else is exec'd as /bin, /sbin, /usr/bin, /usr/libexec or a path.\r\n\r\n");
+}
+
+/* struct dirent (64-bit ino): d_ino(8) d_reclen(2) d_type(1) d_namlen(1) name */
+static void
+ls_(const char *path)
+{
+	char buf[1024];
+	i64 fd = sys3(SYS_open, (i64)(path ? path : "."), O_RDONLY | O_DIRECTORY, 0);
+	i64 pos = 0;
+
+	if (fd < 0) {
+		puts_("ls: cannot open ");
+		puts_(path ? path : ".");
+		puts_("\r\n");
+		return;
+	}
+	for (;;) {
+		i64 n = sys4(SYS_getdirentries64, fd, (i64)buf, sizeof(buf), (i64)&pos);
+
+		if (n <= 0) {
+			break;
+		}
+		for (i64 off = 0; off < n;) {
+			unsigned short reclen = *(unsigned short *)(buf + off + 8);
+			unsigned char type = (unsigned char)buf[off + 10];
+			unsigned char namlen = (unsigned char)buf[off + 11];
+			const char *name = buf + off + 12;
+
+			if (reclen == 0) {
+				break;
+			}
+			if (!(namlen == 1 && name[0] == '.') &&
+			    !(namlen == 2 && name[0] == '.' && name[1] == '.')) {
+				puts_(type == 4 ? "d " : (type == 8 ? "f " : "? "));
+				sys3(SYS_write, 1, (i64)name, namlen);
+				puts_("\r\n");
+			}
+			off += reclen;
+		}
+	}
+	sys3(SYS_close, fd, 0, 0);
+}
+
+static void
+cat_(const char *path)
+{
+	char buf[1024];
+	i64 fd = sys3(SYS_open, (i64)path, O_RDONLY, 0);
+
+	if (fd < 0) {
+		puts_("cat: cannot open ");
+		puts_(path);
+		puts_("\r\n");
+		return;
+	}
+	for (;;) {
+		i64 n = sys3(SYS_read, fd, (i64)buf, sizeof(buf));
+
+		if (n <= 0) {
+			break;
+		}
+		sys3(SYS_write, 1, (i64)buf, n);
+	}
+	sys3(SYS_close, fd, 0, 0);
 }
 
 static int
@@ -259,6 +386,40 @@ run(char *line)
 	}
 	if (streq(argv[0], "help")) {
 		banner();
+		return 0;
+	}
+	if (streq(argv[0], "ls")) {
+		ls_(argc > 1 ? argv[1] : 0);
+		return 0;
+	}
+	if (streq(argv[0], "cat")) {
+		if (argc < 2) {
+			puts_("usage: cat <path>\r\n");
+		} else {
+			cat_(argv[1]);
+		}
+		return 0;
+	}
+	if (streq(argv[0], "echo")) {
+		for (int i = 1; i < argc; i++) {
+			if (i > 1) {
+				puts_(" ");
+			}
+			puts_(argv[i]);
+		}
+		puts_("\r\n");
+		return 0;
+	}
+	if (streq(argv[0], "rm")) {
+		if (argc > 1 && sys3(SYS_unlink, (i64)argv[1], 0, 0) != 0) {
+			puts_("rm: failed\r\n");
+		}
+		return 0;
+	}
+	if (streq(argv[0], "mkdir")) {
+		if (argc > 1 && sys3(SYS_mkdir, (i64)argv[1], 0755, 0) != 0) {
+			puts_("mkdir: failed\r\n");
+		}
 		return 0;
 	}
 	if (streq(argv[0], "cd")) {
@@ -335,8 +496,10 @@ void
 _start(void)
 {
 	/* launchd may hand us a socket on fd 0 (inetd style): then just serve it. */
+	beacon("sweetsh: start\n");
 	i64 lfd = listen_4444();
 
+	beacon_num("sweetsh: listen fd", lfd);
 	console("sweetsh: up, listening on 4444\r\n");
 	if (lfd < 0) {
 		repl();
@@ -345,8 +508,10 @@ _start(void)
 		i64 cfd = sys3(SYS_accept, lfd, 0, 0);
 
 		if (cfd < 0) {
+			beacon_num("sweetsh: accept err", cfd);
 			continue;
 		}
+		beacon("sweetsh: client connected\n");
 		i64 pid = sys3(SYS_fork, 0, 0, 0);
 		if (pid == 0) {
 			sys3(SYS_close, lfd, 0, 0);

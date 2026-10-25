@@ -501,6 +501,14 @@ allowed on a DEVELOPMENT kernel), no LC_LOAD_DYLINKER. It binds TCP 4444 itself
 (socket/bind/listen/accept/fork/dup2), writes a marker to /dev/console, and its
 REPL forks/execs `/bin/*`, `/sbin/*`, `/usr/bin/*`, `/usr/libexec/*`.
 
+**Shell self-reporting (`2026-10-26`):** sweetsh now (a) writes a start marker to
+/dev/console, (b) sends UDP beacons to `192.168.7.1:5140` - the port the kernel
+log thread already uses - for each step (`start`, `bind err <n>`, `bound 4444`,
+`listen fd <n>`, `accept err <n>`, `client connected`), and (c) has builtins
+`ls`, `cat`, `echo`, `rm`, `mkdir` next to `cd`/`exit` (so it can inspect the
+rootfs without dyld). So a single boot tells us whether launchd exec'd it and
+where it stopped: `python3 /tmp/plainlog.py /tmp/sh.log 20` on the flash host.
+
 **Where it is stuck:** launchd loads the cache, but neither an added entry
 (path missing on disk) nor a replaced existing entry (`OTACrashCopier`, whose
 binary was swapped for the shell) produced a listener on 4444, and the ring
