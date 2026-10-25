@@ -1,6 +1,6 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -405,11 +405,24 @@
+@@ -405,11 +405,33 @@
  #if defined(ARM64_BOARD_CONFIG_SWEET)
  	extern void sweet_ufs_panic_dump(void);     /* bsd/dev/sweet_ufs.c */
  	sweet_log_append(c, size);
@@ -18,11 +18,20 @@
 +	 */
 +	{
 +		static int panic_seen;
-+		if (!panic_seen && size > 0 && c[size - 1] == '\0' &&
-+		    __builtin_strstr(c, "panic(cpu") != NULL) {
-+			panic_seen = 1;
-+			sweet_console_muted = 0;
-+			sweet_ufs_panic_dump();
++		if (!panic_seen) {
++			static const char tag[] = "panic(cpu";
++			int i, j;
++			/* c is not NUL-terminated: stay inside size bytes. */
++			for (i = 0; i + (int)sizeof(tag) - 1 <= size; i++) {
++				for (j = 0; tag[j] != '\0' && c[i + j] == tag[j]; j++) {
++				}
++				if (tag[j] == '\0') {
++					panic_seen = 1;
++					sweet_console_muted = 0;
++					sweet_ufs_panic_dump();
++					break;
++				}
++			}
 +		}
 +		if (panic_seen) {
 +			sweet_console_muted = 0;
