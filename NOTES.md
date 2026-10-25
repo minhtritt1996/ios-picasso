@@ -456,7 +456,69 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-25, latest)
+## Agent handoff / active work (2026-10-26, latest)
+### >>> 2026-10-26 (picasso): USB data path FIXED, rootfs read/written from the PC, shell
+### built and installed; launchd does not spawn it yet <<<
+**Fixed for good: the DWC3 event thread died ~25-45 s after configure.**
+Root cause: a DWC3 event is **four dwords**; the driver dispatched every dword as
+an event, so parameter dwords (bit0 clear, type field often 1) became bogus
+"ep2 XferComplete" events, and each one called `ud_rx_done()` and re-armed the RX
+TRB while DMA was in flight. Patch `0130` steps 16 bytes when the event count
+divides by 16 (dword stepping kept as fallback), logs the first 20 counts, and
+ignores an RX completion whose TRB still has HWO set and a TX completion with
+`tx_busy` clear. After that the link survives: `info` answered every poll for
+84 s+ with `busy 0`, `count 0x0`.
+Remaining wedge: heavy IP traffic from the host (ICMP/DHCP) still stops the
+device after ~45 s, right at an RX completion, while pure L2 traffic does not.
+
+**Control channel (private EtherType 0x88b6, below IP - no sockets, no ARP):**
+`info`, `log`, `logback <n>`, `ringpos`, `probe 0|1`, `reboot`, `stat/cat/put`.
+Commands run on a worker thread (`0131`): running VFS on the event thread froze
+the whole link. `stat/cat/put` are still unusable - **VFS from a kernel thread
+hangs** (it takes the console/UFS locks with it); the rootfs is read and written
+from the PC instead. `logback`/`ringpos` (`0133`) let the host walk the whole
+ring over USB (`tools/ringwalk.py`).
+
+**Facts measured about the rootfs (HFSX, block 4096, from `tools/hfsplus-tool.py`):**
+- `/bin/sh` -> `/var/jb/bin/sh` (14 B), `/bin/bash` -> `/var/jb/bin/bash`,
+  and `/private/var/jb` does **not** exist: the shells are dangling links.
+- No sshd anywhere (`/usr/libexec`, `/usr/sbin`).
+- `/System/Library/xpc/launchd.plist` = 791,729 B binary plist (top keys
+  AppExtensions, AppRemovalServices, LaunchDaemons(522), Symlinks,
+  SystemLibraryTreeState, VersionNumber) at block 1966687 x 194; it is the
+  "unsecure cache" the loader sends to launchd and it **is** accepted
+  ("Cache sent to launchd successfully").
+- All 522 cached daemon plist paths exist on disk.
+- In-place, same-size editing works: patch the 194-block plist region and/or a
+  binary's blocks, write with `dd ... conv=notrunc`, verify md5. Backups of every
+  touched region are in `dump/backup/` (on the workstation, not in git).
+
+**Shell: `tools/sweetsh` (6,872 B).** Freestanding arm64 Mach-O, no libc:
+syscalls from bsd/kern/syscalls.master through `svc #0x80`, `_start` at
+0x100001000, single `__TEXT` segment (a `.bss` global would land past the image
+and fault - `build.sh` refuses that now), LC_UNIXTHREAD (static binaries are
+allowed on a DEVELOPMENT kernel), no LC_LOAD_DYLINKER. It binds TCP 4444 itself
+(socket/bind/listen/accept/fork/dup2), writes a marker to /dev/console, and its
+REPL forks/execs `/bin/*`, `/sbin/*`, `/usr/bin/*`, `/usr/libexec/*`.
+
+**Where it is stuck:** launchd loads the cache, but neither an added entry
+(path missing on disk) nor a replaced existing entry (`OTACrashCopier`, whose
+binary was swapped for the shell) produced a listener on 4444, and the ring
+shows nothing about the job. Booted kernels were rev12 (up to `0132`).
+**Next step (one recovery session needed, phone must be in recovery to write):**
+```
+tools/picasso-install-shell.sh /tmp/rev13/kernel.development.sweet "<cmdline>"
+```
+It backs up and replaces `/usr/libexec/launchd_cache_loader` (block 2111537 x 18,
+72,336 B, mode 0755, exec'd by launchd every boot as pid 22) with the shell,
+then flashes and boots rev13. Then, from the flash host:
+`python3 tools/ringwalk.py | grep -i -e sweetsh -e launchd` and
+`nc 192.168.7.2 4444`. If launchd still refuses to exec the binary, the next
+suspects are code signing (add an adhoc LC_CODE_SIGNATURE) and entitlements.
+The cmdline used for rev12 (keep it, add `sweetboot=rev13sh`):
+`debug=0x14e serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_keepon=1 sweettouch=0 sweetusb=2 sweetusblog=1 sweetusbsmmu=1 sweetusbprobe=1 sweetscan=- cs_enforcement_disable=1 sweetvfsprobe=0`
+
+## Agent handoff / previous (2026-10-25)
 ### >>> 2026-10-25 (picasso): ECM LINK WORKS END-TO-END; UDP command channel added <<<
 **State: rev4 boots iOS with a working USB CDC-ECM device on the phone.**
 - Boot `sweetboot=rev4` (`payload-picasso-214625.bin`), cmdline
