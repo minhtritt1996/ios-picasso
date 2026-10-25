@@ -6,6 +6,36 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 22:05 (SMMU ATTACH WORKS: USB enumerates on picasso for the first time) <<<
+1. **Boot test `sweetboot=smmu1`** (kernel from run `40193345254`, md5 of ring
+   `64353225c7f4944f840ddd846e14d8c4`) proves the SMMU theory: the ring prints
+   `SWEET USB: SMMU IDR0 0x00220406 IDR1 0x00000000 CR0 0x4c017e51 GBPA 0x00000000 SMRs 6`
+   then `SWEET SMMU: context bank 3, identity map, ttbr0 0xafa80000` and
+   `SWEET SMMU: sid 0xe0 -> smr 4 s2cr 0x3 (translate)`, i.e. the hypervisor accepted a
+   stage-1 translating bank for the USB stream. Consequences, all measured on the k60 host:
+   `lsusb` shows `1209:0001 ... iProduct "Sweet iOS (USB Ethernet)"`, CDC-ECM bound,
+   `usb0` carrier 1, MAC 02:00:5e:77:ee:01. **ep0, descriptors and enumeration are done.**
+2. **The data path is half there**: the ring ends with `SWEET USB: ue0 rx 20 tx 0 frames`, so
+   the RX endpoint (ep2, bulk OUT) receives and delivers to `ifnet_input`, but **TX never
+   starts at all** - there is not one `start xfer ep3` line, `ud_if_output` was never entered
+   (tx_frames is only incremented inside `ud_tx_kick_locked`). Host side: ping to 192.168.7.2
+   is 100 % loss, no ARP reply, TCP 22 closed. So the next question is why the stack never
+   calls the driver's output routine, not the controller.
+3. **The old SMMU code read the wrong identification registers** (`0x20`/`0x24` instead of
+   `0x0`/`0x4`), so `nsmr` came from CR0 (81 instead of 6) and the context-bank count/base
+   from an unrelated register; it happened to land on bank 3 at the standard `0x8000` array.
+   0123 now reads IDR0/IDR1 correctly, falls back to banks 1..7 when IDR1 is 0 (picasso
+   returns 0), never takes bank 0 and skips banks whose CBAR.C or SCTLR.M is set.
+4. **0123 now carries the diagnostics for the TX question**: the first 6 incoming frames
+   (len, dst MAC, ethertype), the first 6 `ud_if_output` calls (len, type, configured, busy,
+   queue) and a heartbeat with `calls/drops/q/busy`, so one boot distinguishes "stack never
+   transmits" from "ep3 refuses the TRB".
+5. Next boot must use `BOOT_CMDLINE=... sweetusb=2 sweetusbsmmu=1 sweetusblog=1
+   sweetboot=smmu2` (`tools/picasso-boot-remote.sh` now honours `BOOT_CMDLINE`; XNU takes the
+   *first* occurrence of a boot arg, so appending to the base line could never override
+   `sweetusb=0`). `sweetusblog=1` makes the kernel itself transmit every 100 ms, which proves
+   the TX path without waiting for userland.
+
 ### >>> UPDATE 2026-10-25 21:10 (Bergamota study: USB needs the SMMU, patch 0123 written) <<<
 1. **The "USB is impossible on picasso" conclusion is retracted.** It rested on probes that read S2CR/SMR
    with the stream ID used as an *array index* (`0xc00 + 4*0xe0` = `0xc380`, `0x800+4*0xe0` = `0xb80`), i.e.

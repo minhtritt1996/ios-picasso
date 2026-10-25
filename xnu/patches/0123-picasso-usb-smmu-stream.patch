@@ -10,7 +10,7 @@
  bsd/dev/unix_startup.c			standard
 --- /dev/null
 +++ b/bsd/dev/sweet_smmu.c
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,261 @@
 +/*
 + * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
 + * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
@@ -100,11 +100,24 @@
 +static int
 +smmu_bank_create(void)
 +{
-+	uint32_t id0 = smmu_rd(0x20), id1 = smmu_rd(0x24);
++	uint32_t id0 = smmu_rd(0x0), id1 = smmu_rd(0x4);
 +	unsigned pgshift = (id1 >> 31) ? 16 : 12;
++	/*
++	 * picasso reads IDR0 = 0x00220406 (6 mapping groups, 4 KiB granule) and
++	 * IDR1 = 0, i.e. the second identification register carries nothing
++	 * usable here. Bank 0 is never free (the hypervisor uses it), so fall
++	 * back to scanning banks 1..7 for one whose CBAR.C is clear.
++	 */
 +	unsigned ncb = id1 & 0xff, ns2cb = (id1 >> 16) & 0xff;
++	if (ncb == 0) {
++		ncb = 8;
++		ns2cb = 1;
++	}
++	printf("SWEET SMMU: IDR0 0x%08x IDR1 0x%08x groups %u banks %u..%u\n",
++	    id0, id1, id0 & 0xff, ns2cb, ncb - 1);
 +	uint32_t gr1 = 1u << pgshift;
-+	uint32_t cb0 = (1u << (((id1 >> 28) & 7) + 1)) << pgshift;
++	uint32_t cb0 = ((id1 >> 28) & 7) ? (1u << (((id1 >> 28) & 7) + 1)) << pgshift
++	    : 0x8000;   /* default context-bank array offset (SMMU-500) */
 +	smmu_nsmr = id0 & 0xff;
 +
 +	/* context banks already in use by a translating stream match group */
@@ -115,11 +128,14 @@
 +			used[(s2cr & 0xff) / 32] |= 1u << ((s2cr & 0xff) % 32);
 +		}
 +	}
-+	for (unsigned c = ns2cb; c < ncb && smmu_cb < 0; c++) {
-+		if (!(used[c / 32] & (1u << (c % 32))) &&
-+		    !(smmu_rd(cb0 + (c << pgshift)) & 1)) {
-+			smmu_cb = (int)c;
++	for (unsigned c = ns2cb ? ns2cb : 1; c < ncb && smmu_cb < 0; c++) {
++		uint32_t cbar = smmu_rd(cb0 + (c << pgshift));
++		/* the hypervisor uses bank 0: never take it, and never take a bank
++		 * whose CBAR is already valid or whose SCTLR.M is set */
++		if (c == 0 || (used[c / 32] & (1u << (c % 32))) || (cbar & 1)) {
++			continue;
 +		}
++		smmu_cb = (int)c;
 +	}
 +	if (smmu_cb < 0) {
 +		printf("SWEET SMMU: no free context bank\n");
@@ -266,7 +282,54 @@
  
  #define GCC_PA                  0x00100000
  #define GCC_SIZE                0x00090000
-@@ -1010,40 +1011,41 @@
+@@ -268,6 +269,7 @@
+ 	unsigned    txq_head, txq_count;
+ 	bool        tx_busy;
+ 	uint64_t    rx_frames, tx_frames;
++	uint32_t    rx_seen, tx_calls, tx_drops;   /* diagnostics, capped prints */
+ } ud;
+ 
+ static inline void
+@@ -572,6 +574,12 @@
+ 			stats.packets_in = 1;
+ 			stats.bytes_in = len;
+ 			ud.rx_frames++;
++			if (ud.rx_seen++ < 6) {
++				const uint8_t *f = (const uint8_t *)(ud.dma + UD_RX);
++				printf("SWEET USB: rx %u len %u dst %02x:%02x:%02x:%02x:%02x:%02x type 0x%02x%02x\n",
++				    ud.rx_seen, len, f[0], f[1], f[2], f[3], f[4], f[5],
++				    f[12], f[13]);
++			}
+ 			ifnet_input(ud.ifp, m, &stats);
+ 		} else if (m != NULL) {
+ 			mbuf_freem(m);
+@@ -610,7 +618,14 @@
+ ud_if_output(ifnet_t ifp, mbuf_t m)
+ {
+ 	lck_mtx_lock(ud.lock);
++	if (ud.tx_calls++ < 6) {
++		const uint8_t *f = (const uint8_t *)mbuf_data(m);
++		printf("SWEET USB: tx call %u len %u type 0x%02x%02x configured %d busy %d q %u\n",
++		    ud.tx_calls, (unsigned)mbuf_pkthdr_len(m), f ? f[12] : 0, f ? f[13] : 0,
++		    (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
++	}
+ 	if (ud.txq_count == UD_TXQ || !ud.configured) {
++		ud.tx_drops++;
+ 		lck_mtx_unlock(ud.lock);
+ 		mbuf_freem(m);
+ 		ifnet_stat_increment_out(ifp, 0, 0, 1);
+@@ -844,7 +859,9 @@
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+ 		if ((++ticks % 30000) == 0) {
+-			printf("SWEET USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
++			printf("SWEET USB: ue0 rx %llu tx %llu frames, calls %u drops %u q %u busy %d\n",
++			    ud.rx_frames, ud.tx_frames, ud.tx_calls, ud.tx_drops, ud.txq_count,
++			    (int)ud.tx_busy);
+ 		}
+ 		ud_sleep_ms(1);
+ 	}
+@@ -1010,39 +1027,40 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -319,23 +382,22 @@
 +				uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
 +				if (!(smr & (1u << 31))) {
 +					continue;
-+				}
+ 				}
+-				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
+-				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
 +				uint32_t mask = (smr >> 16) & 0x7fff;
 +				if (((smr ^ 0xe0) & ~mask & 0x7fff) == 0) {
 +					printf("SWEET USB: SMMU smr %u 0x%08x s2cr 0x%08x matches sid 0xe0\n",
 +					    i, smr, usb_rd(smmu, 0xc00 + 4 * i));
 +					shown++;
- 				}
--				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
--				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
- 			}
++				}
++			}
 +			if (!shown) {
 +				printf("SWEET USB: SMMU no SMR matches sid 0xe0 (unmatched stream)\n");
-+			}
+ 			}
  		}
  	}
- 
-@@ -1162,6 +1164,23 @@
+@@ -1162,6 +1180,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  
