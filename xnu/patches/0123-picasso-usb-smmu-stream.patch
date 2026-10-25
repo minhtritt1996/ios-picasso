@@ -10,7 +10,7 @@
  bsd/dev/unix_startup.c			standard
 --- /dev/null
 +++ b/bsd/dev/sweet_smmu.c
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,271 @@
 +/*
 + * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
 + * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
@@ -128,11 +128,21 @@
 +			used[(s2cr & 0xff) / 32] |= 1u << ((s2cr & 0xff) % 32);
 +		}
 +	}
-+	for (unsigned c = ns2cb ? ns2cb : 1; c < ncb && smmu_cb < 0; c++) {
++	/*
++	 * Pick the bank deterministically: bank 3 is the one the successful run
++	 * (CI 40193345254) attached the USB stream to and the host enumerated
++	 * the phone with. Scanning from bank 1 instead picked a bank the
++	 * hypervisor owns, and enumeration stalled after the first port reset,
++	 * so only fall back to the scan when 3 is taken.
++	 */
++	static const unsigned prefer[] = { 3, 4, 5, 6, 7, 1, 2 };
++	for (size_t i = 0; i < sizeof(prefer) / sizeof(prefer[0]) && smmu_cb < 0; i++) {
++		unsigned c = prefer[i];
++		if (c >= ncb) {
++			continue;
++		}
 +		uint32_t cbar = smmu_rd(cb0 + (c << pgshift));
-+		/* the hypervisor uses bank 0: never take it, and never take a bank
-+		 * whose CBAR is already valid or whose SCTLR.M is set */
-+		if (c == 0 || (used[c / 32] & (1u << (c % 32))) || (cbar & 1)) {
++		if ((used[c / 32] & (1u << (c % 32))) || (cbar & 1)) {
 +			continue;
 +		}
 +		smmu_cb = (int)c;
