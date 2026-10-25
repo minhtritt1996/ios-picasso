@@ -1,0 +1,124 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -281,6 +281,10 @@
+ 	uint32_t    ev_geo;             /* event-ring geometry prints */
+ 	uint32_t    rx_spurious;
+ 	uint32_t    tx_spurious;
++	bool        cmd_pending;
++	char        cmd_buf[1200];
++	uint8_t     cmd_dst[ETHER_ADDR_LEN];
++	uint32_t    cmd_drop;
+ 	uint64_t    rx_frames, tx_frames;
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+@@ -566,8 +570,7 @@
+ 
+ /* Control channel (see ud_cmd_exec below). */
+ #define UD_CTL_TYPE     0x88b6
+-static uint8_t ud_ctl_dst[ETHER_ADDR_LEN];
+-static void ud_cmd_exec(char *buf);
++static void ud_cmd_exec(char *buf, const uint8_t *dst);
+ 
+ static void
+ ud_rx_done(void)
+@@ -597,17 +600,26 @@
+ 			if (nl != NULL) {
+ 				*nl = 0;
+ 			}
+-			memcpy(ud_ctl_dst, f + 6, ETHER_ADDR_LEN);
+ 			if (ud.ctl_seen++ < 20) {
+ 				printf("SWEET USB: ctl frame %u len %u cmd '%s'\n",
+ 				    ud.ctl_seen, n, cmd);
+ 			}
+-			ud_cmd_exec(cmd);
+-			if (strcmp(cmd, "reboot") == 0) {
+-				ud_sleep_ms(300);
+-				printf("SWEET USB: reboot requested over the control channel\n");
+-				reboot_kernel(RB_AUTOBOOT, NULL);
++			/*
++			 * Never run a command here: stat/cat/put go through the VFS and
++			 * log takes the console lock, either of which can sleep - and
++			 * sleeping on the event thread freezes the whole USB link.
++			 * Hand the frame to the command thread instead.
++			 */
++			lck_mtx_lock(ud.lock);
++			if (!ud.cmd_pending) {
++				memcpy(ud.cmd_buf, cmd, n + 1);
++				memcpy(ud.cmd_dst, f + 6, ETHER_ADDR_LEN);
++				ud.cmd_pending = true;
++				thread_wakeup(&ud.cmd_pending);
++			} else {
++				ud.cmd_drop++;
+ 			}
++			lck_mtx_unlock(ud.lock);
+ 			ud_rx_arm();
+ 			return;
+ 		}
+@@ -1144,7 +1156,7 @@
+ 
+ 
+ static void
+-ud_cmd_exec(char *buf)
++ud_cmd_exec(char *buf, const uint8_t *dst)
+ {
+ 	char out[1300];
+ 
+@@ -1196,7 +1208,7 @@
+ 		    "commands: log | info | probe 0|1 | reboot | stat <path> | "
+ 		    "cat <path> [len] | put <path> <off> <b64>\n");
+ 	}
+-	ud_ctl_reply(ud_ctl_dst, out, (uint32_t)strlen(out));
++	ud_ctl_reply(dst, out, (uint32_t)strlen(out));
+ }
+ 
+ /* Queue one control frame to the sender. Called from the event thread. */
+@@ -1239,6 +1251,39 @@
+ }
+ 
+ /*
++ * Command worker: every control frame the event thread receives is executed
++ * here, so a blocking command (VFS, console lock) can never freeze the USB
++ * event thread. Replies are queued on the normal TX path.
++ */
++static void
++ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static char cmd[1200];
++	uint8_t dst[ETHER_ADDR_LEN];
++
++	for (;;) {
++		lck_mtx_lock(ud.lock);
++		if (!ud.cmd_pending) {
++			assert_wait(&ud.cmd_pending, THREAD_UNINT);
++			lck_mtx_unlock(ud.lock);
++			thread_block(THREAD_CONTINUE_NULL);
++			continue;
++		}
++		memcpy(cmd, ud.cmd_buf, sizeof(cmd));
++		memcpy(dst, ud.cmd_dst, ETHER_ADDR_LEN);
++		ud.cmd_pending = false;
++		lck_mtx_unlock(ud.lock);
++
++		ud_cmd_exec(cmd, dst);
++		if (strcmp(cmd, "reboot") == 0) {
++			ud_sleep_ms(300);
++			printf("SWEET USB: reboot requested over the control channel\n");
++			reboot_kernel(RB_AUTOBOOT, NULL);
++		}
++	}
++}
++
++/*
+  * TX self-test: a frame the kernel sends on its own every two seconds, so a
+  * host capture proves the bulk IN path end to end without depending on what
+  * the iOS stack decides to transmit.
+@@ -1693,6 +1738,9 @@
+ 	}
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
+ 	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &ud_deadline_1s);
++	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ 	if (ud_probe_on) {
+ 		if (kernel_thread_start(ud_tx_probe_thread, NULL, &thread) == KERN_SUCCESS) {
+ 			thread_deallocate(thread);
