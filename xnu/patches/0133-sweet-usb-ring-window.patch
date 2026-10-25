@@ -1,0 +1,30 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1170,6 +1170,18 @@
+ 		    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u\n",
+ 		    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
+ 		    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count);
++	} else if (strcmp(buf, "ringpos") == 0) {
++		snprintf(out, sizeof(out), "ringpos %llu\n", sweet_log_position());
++	} else if (strncmp(buf, "logback ", 8) == 0) {
++		/* logback <bytes>: read the ring that far behind the write position,
++		 * so the whole boot log is reachable over the link, not just its tail. */
++		uint64_t back = (uint64_t)ud_atoll(buf + 8);
++		uint64_t pos = sweet_log_position();
++		if (back > 4194304) {
++			back = 4194304;
++		}
++		pos = pos > back ? pos - back : 0;
++		sweet_log_copy(&pos, out, 1200);
+ 	} else if (strncmp(buf, "probe ", 6) == 0) {
+ 		ud_probe_on = (buf[6] != '0');
+ 		snprintf(out, sizeof(out), "probe %d\n", ud_probe_on);
+@@ -1205,7 +1217,7 @@
+ 		snprintf(out, sizeof(out), "rebooting\n");
+ 	} else {
+ 		snprintf(out, sizeof(out),
+-		    "commands: log | info | probe 0|1 | reboot | stat <path> | "
++		    "commands: log | logback <n> | ringpos | info | probe 0|1 | reboot | stat <path> | "
+ 		    "cat <path> [len] | put <path> <off> <b64>\n");
+ 	}
+ 	ud_ctl_reply(dst, out, (uint32_t)strlen(out));
