@@ -1,0 +1,47 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -274,6 +274,13 @@
+ 		ppnum_t pn = pmap_find_phys(kernel_pmap, va);
+ 
+ 		if (pn == 0) {
++			/* Silent before bp31: an unmapped page in a physio buffer
++			 * makes the direct path refuse and, one level up, makes
++			 * this function stop syncing without a word. */
++			if (su.trace) {
++				sweet_tracef("SWEET UFS g5: sync buf unmapped va 0x%llx off %u len %u\n",
++				    (unsigned long long)va, done, len);
++			}
+ 			return;
+ 		}
+ 		if (write) {
+@@ -343,6 +350,10 @@
+ 			return EINVAL;
+ 		}
+ 		utrd->prdt = (1024u / 4) << 16 | n;
++		if (su.trace && len >= 65536) {
++			sweet_tracef("SWEET UFS g1: prdt %u len %u dst 0x%llx\n", n, len,
++			    (unsigned long long)(uintptr_t)dst);
++		}
+ 	}
+ 
+ 	if (su.cache) {
+@@ -357,6 +368,9 @@
+ 		dma_sync(DMA_UTRL, sizeof(*utrd));
+ 		dma_sync(DMA_UCD, sizeof(*ucd));
+ 	}
++	if (su.trace && len >= 65536) {
++		sweet_tracef("SWEET UFS g2: descriptors synced len %u\n", len);
++	}
+ 	if (len) {
+ 		if (dst != NULL) {
+ 			ufs_dma_sync_buf(dst, len, write);
+@@ -367,6 +381,9 @@
+ 		}
+ 	}
+ 	__builtin_arm_dsb(0xf);
++	if (su.trace && len >= 65536) {
++		sweet_tracef("SWEET UFS g3: dsb done len %u\n", len);
++	}
+ 
+ 	if (su.trace) {
+ 		sweet_tracef("SWEET UFS gd: op 0x%02x lba 0x%llx n %u len %u prdt %u\n",
