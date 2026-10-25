@@ -1,0 +1,37 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1647,12 +1647,23 @@
+  * UFS layer is doing and how long the outstanding command has been running.
+  */
+ static int sweet_hb_chan;
++/*
++ * The heartbeat line is long (about five console rows), so a few seconds of it
++ * scroll every userland message off the screen - which is exactly the output a
++ * bring-up boot needs.  Ring first, console only while this is set:
++ * sweetufshb=0 keeps the heartbeat in the ring and leaves the screen readable.
++ */
++static int sweet_hb_console = 1;
+ 
+ static void
+ sweet_ufs_watchdog(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	uint32_t tick = 0;
++	uint32_t hb_console = 1;
+ 
++	PE_parse_boot_argn("sweetufshb", &hb_console, sizeof(hb_console));
++	sweet_hb_console = hb_console ? 1 : 0;
++
+ 	for (;;) {
+ 		(void)tsleep(&sweet_hb_chan, PZERO, "sweethb", hz * 2);
+ 		uint64_t start = su.cmd_start, age_ms = 0, fage = 0;
+@@ -1704,7 +1715,9 @@
+ 			 * The console hook appends the same text again; a duplicated
+ 			 * heartbeat line is cheaper than a lost one. */
+ 			sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
+-			printf("%s", line);
++			if (sweet_hb_console) {
++				printf("%s", line);
++			}
+ 		}
+ 	}
+ }
