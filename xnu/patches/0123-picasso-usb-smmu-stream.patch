@@ -290,19 +290,21 @@
  } ud;
  
  static inline void
-@@ -572,6 +574,12 @@
+@@ -572,7 +574,13 @@
  			stats.packets_in = 1;
  			stats.bytes_in = len;
  			ud.rx_frames++;
+-			ifnet_input(ud.ifp, m, &stats);
++			int ierr = ifnet_input(ud.ifp, m, &stats);
 +			if (ud.rx_seen++ < 6) {
 +				const uint8_t *f = (const uint8_t *)(ud.dma + UD_RX);
-+				printf("SWEET USB: rx %u len %u dst %02x:%02x:%02x:%02x:%02x:%02x type 0x%02x%02x\n",
++				printf("SWEET USB: rx %u len %u dst %02x:%02x:%02x:%02x:%02x:%02x type 0x%02x%02x input %d\n",
 +				    ud.rx_seen, len, f[0], f[1], f[2], f[3], f[4], f[5],
-+				    f[12], f[13]);
++				    f[12], f[13], ierr);
 +			}
- 			ifnet_input(ud.ifp, m, &stats);
  		} else if (m != NULL) {
  			mbuf_freem(m);
+ 		}
 @@ -610,7 +618,14 @@
  ud_if_output(ifnet_t ifp, mbuf_t m)
  {
@@ -329,7 +331,7 @@
  		}
  		ud_sleep_ms(1);
  	}
-@@ -1010,39 +1027,40 @@
+@@ -1010,40 +1027,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -382,21 +384,22 @@
 +				uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
 +				if (!(smr & (1u << 31))) {
 +					continue;
- 				}
--				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
--				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
++				}
 +				uint32_t mask = (smr >> 16) & 0x7fff;
 +				if (((smr ^ 0xe0) & ~mask & 0x7fff) == 0) {
 +					printf("SWEET USB: SMMU smr %u 0x%08x s2cr 0x%08x matches sid 0xe0\n",
 +					    i, smr, usb_rd(smmu, 0xc00 + 4 * i));
 +					shown++;
-+				}
-+			}
+ 				}
+-				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
+-				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
+ 			}
 +			if (!shown) {
 +				printf("SWEET USB: SMMU no SMR matches sid 0xe0 (unmatched stream)\n");
- 			}
++			}
  		}
  	}
+ 
 @@ -1162,6 +1180,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
