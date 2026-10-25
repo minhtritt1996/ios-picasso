@@ -513,6 +513,26 @@ where it stopped: `python3 /tmp/plainlog.py /tmp/sh.log 20` on the flash host.
 (path missing on disk) nor a replaced existing entry (`OTACrashCopier`, whose
 binary was swapped for the shell) produced a listener on 4444, and the ring
 shows nothing about the job. Booted kernels were rev12 (up to `0132`).
+**State at 2026-10-26 00:45 (user asleep):** phone is **in XNU** (boot `rev12sh5`,
+kernel rev12 = patches <= 0132), so nothing can be written until it is back in
+recovery - there is no way to reach the bootloader from XNU. Prepared overnight,
+all validated locally:
+- `tools/sweetsh/build.sh` builds `sweetsh-plain` (9,128 B) and
+  `sweetsh-signed` (9,336 B, ad-hoc SuperBlob + LC_CODE_SIGNATURE, page hashes
+  verified) - the signed one is the fallback if exec is refused for unsigned code;
+- `tools/picasso-install-shell.sh KERNEL [CMDLINE]` (+ `SHELL_VARIANT=signed`)
+  backs up and replaces `/usr/libexec/launchd_cache_loader` (block 2111537 x 18,
+  72,336 B, exec'd by launchd every boot as pid 22) with the shell, then flashes
+  and boots;
+- patch `0134` (CI 40217620815) makes the per-frame USB prints opt-in
+  (`sweetusbverbose=1`), so the console ring is readable again and its tail is no
+  longer all USB chatter - that noise is what hid launchd's verdict;
+- `tools/ringwalk.py` + `logback`/`ringpos` (`0133`) walk the whole ring over USB;
+- the shell sends UDP beacons to `192.168.7.1:5140` for every step
+  (`sweetsh: start`, `bind err <n>`, `bound 4444`, `listen fd <n>`,
+  `accept err <n>`, `client connected`), so one boot shows where it stops:
+  `python3 /tmp/plainlog.py /tmp/sh.log 20` on the flash host.
+
 **Next step (one recovery session needed, phone must be in recovery to write):**
 ```
 tools/picasso-install-shell.sh /tmp/rev13/kernel.development.sweet "<cmdline>"
