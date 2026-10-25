@@ -1,4 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 15:20 (ROOT CAUSE of the load_init_program / kmem panics: the timer ring dump raced the boot's reads) <<<
+1. **`sweet_ufs_emergency_dump()` (the KICK thread, every ~10 s) wrote the ring with NO driver lock**: it
+   `memcpy()`s into the same 64 KiB bounce buffer that an in-flight read is DMA-ing into and rings
+   controller slot 0. A read that completes in that window returns ring text instead of file data, and a
+   ring write can be issued while another command is in flight. bp34 (16 s of life, 1719 modem reads,
+   KICK 5) died in `load_init_program()`; bp31/bp32 died at the same instant with
+   `__kmem_invalid_object_panic` / `zone_require` - i.e. one root cause, two panic flavours (a page-cache
+   page filled with ring text while the Mach-O/dyld-cache parser walked its headers).
+2. Fix (0116): `sweet_ufs_emergency_dump()` now `lck_mtx_try_lock()`s the driver lock and dumps inside it;
+   it only goes lock-free when the lock is already stuck (the case the KICK thread exists for). Also the
+   partition cache now publishes `part_cache_n` before the name, so a concurrent rmtfs lookup cannot see a
+   half-filled entry.
+3. Panic text capture (0114, regenerated): `_cnputs` -> `sweet_panic_putc` (consdebug path), `consdebug_putc`
+   hook (the `debugger_panic_str` `_doprnt` path) and `panic_spin_forever()` -> `sweet_panic_report(
+   debugger_panic_str)`. The last one is the only path that always runs and always has the formatted
+   reason: the console print of it is gated on `PE_i_can_has_debugger()`/`panicDebugging`, and the
+   paniclog has no region on this port, so the reason was invisible on screen before.
+4. Audit of the other bounce-buffer users: `part`/`pwrite`/`pread`/`strategy`/`sync`/flusher all hold the
+   lock; `ufs_scsi()`'s PRDT splits at page boundaries and falls back to the bounce if a page is unmapped,
+   and `ufs_dma_sync_buf()` invalidates (read) / cleans (write) per page, so the DMA path itself is sound.
 ### >>> UPDATE 2026-10-25 11:55 (ring pulled from recovery: geometry, direct DMA works; console pause explained) <<<
 1. **`sweetfb_noconsole=1` is why bp20's screen froze at "Early boot complete"**: the kernel console
    is paused when the GUI takes the framebuffer, so a still screen is NOT evidence of a wedge (and a
