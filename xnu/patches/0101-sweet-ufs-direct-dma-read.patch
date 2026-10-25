@@ -2,16 +2,15 @@ sweet ufs: read straight into the caller's buffer, no bounce copy
 
 bp17/bp18 stop with the UFS lock held, no command outstanding, and "ss 3"
 for a minute: the strategy path sits between a 272 KiB read and the copy
-out of the bounce buffer.  bp18 publishes the copy cursor (sd), the
-destination (sv) and the time spent, but the data is already in the
-buffer when the read returns, so the copy is pure overhead in the common
-case: file I/O is block aligned and the buffer is page aligned.
+out of the bounce buffer.  The data is already in the buffer when the read
+returns, so the copy is pure overhead in the common case: file I/O is
+block aligned and the buffer is page aligned.
 
 Program the PRDT with one entry per page of the destination and let the
 engine write DRAM directly, with cache maintenance by physical address.
 EINVAL (a page not mapped) falls back to the bounce path, and partial
 blocks still read-merge-write through it.  Heartbeat gains dma <n>/<bytes>
-so the boot proves which path served the dyld cache read.
+so a boot proves which path served the dyld cache read.
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -75,7 +75,9 @@
@@ -121,21 +120,19 @@ so the boot proves which path served the dyld cache read.
  			dma_clean(DMA_BOUNCE, len);
  		} else {
  			dma_sync(DMA_BOUNCE, len);
-@@ -352,7 +406,38 @@
+@@ -352,7 +406,7 @@
  		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
  		0, (uint8_t)(count >> 8), (uint8_t)count, 0
  	};
 -	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false);
 +	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false, NULL);
-+	su.cmd_start = 0;
-+	if (error) {
-+		su.last_err = error;
-+		su.err_serial++;
-+	}
-+	return error;
-+}
-+
-+/*
+ 	su.cmd_start = 0;
+ 	if (error) {
+ 		su.last_err = error;
+@@ -362,6 +416,37 @@
+ }
+ 
+ /*
 + * READ(10) straight into dst (a page-aligned kernel buffer), skipping the
 + * copy out of the bounce buffer.  bp17 stopped inside that copy for a
 + * minute with the UFS lock held (272 KiB, "ss 3", no command outstanding),
@@ -158,9 +155,18 @@ so the boot proves which path served the dyld cache read.
 +		0, (uint8_t)(count >> 8), (uint8_t)count, 0
 +	};
 +	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false, dst);
- 	su.cmd_start = 0;
- 	if (error) {
- 		su.last_err = error;
++	su.cmd_start = 0;
++	if (error) {
++		su.last_err = error;
++		su.err_serial++;
++	}
++	return error;
++}
++
++/*
+  * WRITE(10) of count device blocks from the bounce buffer to lba. The range
+  * must lie inside the partition: this is the only place data goes out.
+  */
 @@ -384,7 +469,7 @@
  		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
  		0, (uint8_t)(count >> 8), (uint8_t)count, 0
@@ -221,6 +227,15 @@ so the boot proves which path served the dyld cache read.
  			}
  		} else {
  			/* Partial device blocks at either end: read, merge, write back. */
+@@ -1016,7 +1115,7 @@
+ 	if (!error) {
+ 		static const uint8_t tur[6] = { 0x00 };
+ 		/* The first command after the bootloader may report a unit attention. */
+-		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false, NULL)); i++) {
+ 		}
+ 	}
+ 	if (!error) {
 @@ -1296,7 +1395,8 @@
  		int n = snprintf(line, sizeof(line),
  		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
