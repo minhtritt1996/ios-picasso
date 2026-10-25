@@ -1,0 +1,56 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -786,14 +786,20 @@
+ 		}
+ 	}
+ 	if (part_cache_n < sizeof(part_cache) / sizeof(part_cache[0])) {
+-		struct part_cache *c = &part_cache[part_cache_n++];
+-		strlcpy(c->name, name, sizeof(c->name));
++		/*
++		 * linux and the modem ask for partitions from different threads.
++		 * Publish the name last: a reader that finds its name already filled
++		 * in then sees a complete entry, never first/nblocks == 0.
++		 */
++		struct part_cache *c = &part_cache[part_cache_n];
+ 		c->error = rc;
+ 		if (rc == 0) {
+ 			c->first = *first;
+ 			c->nblocks = *nblocks;
+ 			c->lun = *lun;
+ 		}
++		__atomic_store_n(&part_cache_n, part_cache_n + 1, __ATOMIC_RELEASE);
++		strlcpy(c->name, name, sizeof(c->name));
+ 	}
+ 	return rc;
+ }
+@@ -1422,9 +1428,30 @@
+ 	return error;
+ }
+ 
++/*
++ * The kick thread runs this on a timer.  When the driver is healthy the ring
++ * must be written under the same lock as every other command: without it the
++ * dump memcpy()s into the bounce buffer and rings slot 0 while a read is in
++ * flight, and that read then returns ring text instead of file data (bp34 died
++ * in load_init_program() that way).  Only when the lock is already stuck - the
++ * case this thread exists for - write without it.
++ */
+ int
+ sweet_ufs_emergency_dump(void)
+ {
++	int error;
++
++	if (lck_mtx_try_lock(&sweet_ufs_lock)) {
++		su.lock_owner = UFS_LK_FLUSH;
++		su.lock_users++;
++		su.lock_tid = (uint32_t)thread_tid(current_thread());
++		error = sweet_ufs_dump_ring(true);
++		su.lock_users--;
++		su.lock_owner = 0;
++		su.lock_tid = 0;
++		lck_mtx_unlock(&sweet_ufs_lock);
++		return error;
++	}
+ 	return sweet_ufs_dump_ring(false);
+ }
+ 
