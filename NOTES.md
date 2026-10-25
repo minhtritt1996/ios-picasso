@@ -1,6 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-25 07:40, latest)
+## Agent handoff / active work (2026-10-25 07:45, latest)
+### >>> UPDATE 2026-10-25 07:45 (bp12's "early hang" was MY packaging: `mkpayload.py` without
+### `--cmdline` falls back to `debug=0xc serial=3 cpus=1 keepsyms=1`. bp13 = same kernel with the
+### real cmdline, flashing now) <<<
+1. **`tools/mkpayload.py` has a default cmdline**: `debug=0xc serial=3 cpus=1 keepsyms=1`. The
+   payload is what carries the kernel's boot-args (608-byte field at offset 0x48), *not* the shim's
+   `--extra` - that only reaches the bootloader. bp12 and the first bp13 were built without
+   `--cmdline`, so the kernel booted **1 CPU** with no `ufsroot=darwin`/`ufsrw` and stopped dead at
+   `kdp_core zlib memory` just before the root mount (the two photos show exactly that:
+   `SWEET CPU: requested=1 selected=1`, `mcache: 1 CPU(s)`). Nothing was wrong with 0095.
+   Always pack with `python3 tools/mkpayload.py KERNEL ADT OUT --cmdline "$(cat /tmp/cmdline-*.txt)"`
+   and, before booting, check the payload: `python3 -c "d=open(P,'rb').read();print(d[0x48:0x48+608].split(b'\0')[0])"`.
+2. **bp13** (`/tmp/variant-bp13.img`, md5 `e0ea7d56f0027fb7d1bbb3a7793cf845`) = kernel `0bb3800`
+   (0095) + bp9's exact cmdline (438 bytes, `modem_watch` left at its 60 s default) - i.e. the
+   direct A/B against bp10, changing only the 0095 fix. Flashed with `fastboot flash boot` (the
+   device was sitting in fastboot at the 1-CPU screen) and rebooted at 07:44.
+3. If bp13 gets past the 8.4 s point and the heartbeat shows `lk 0/0 st 0` with growing `log`/
+   `beats`, 0095 is clean; then the next variable is starting GLINK early (`modem_watch=3`).
+
 ### >>> UPDATE 2026-10-25 07:40 (bp12 flashed; it hangs EARLIER - screen stops at "core zlib
 ### memory 0x0000", no recovery return in 450 s. Work stopped by the user at this point) <<<
 1. **bp12 = run `40145839716`, commit `0bb3800`** (patch 0095 applied - verified in the CI log and
