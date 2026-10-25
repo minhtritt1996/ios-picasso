@@ -1,4 +1,11 @@
-# iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+# iOS 16 on picasso (Redmi K30 5G, SM7250) - working notes
+
+Target device: **Redmi K30 5G, codename picasso, Qualcomm SM7250 (lito)**. Everything built, flashed and
+measured below is for that phone, from the shared XNU arm64 tree in this repo (CI builds it, `shim/` packs
+the boot image). `sweet*` names in it are historical (the port started on the Redmi Note 10 Pro / SM7150), and
+"sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
+0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
+both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 ### >>> UPDATE 2026-10-25 17:05 (root cause of "console on = instant death": the bootstrap console drew at sweet's fb base) <<<
 1. **The bootstrap console was pointed at the wrong framebuffer.** `osfmk/arm64/start.s` (stage-0 band and
    the Normal-NC bootstrap block), `osfmk/arm64/arm_vm_init.c` (the reserved VA alias) and
