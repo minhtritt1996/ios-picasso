@@ -1,6 +1,32 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-25 07:45, latest)
+## Agent handoff / active work (2026-10-25 08:00, latest)
+### >>> UPDATE 2026-10-25 08:00 (bp13 ring: iOS reached 8.5 s, flusher then blocked on a
+### *partition lookup* (`lk 1/1`); 0096 caches lookups, bp14 flashing) <<<
+1. **bp13 (kernel `0bb3800`, real cmdline) ring**: `total 267883 seq 3`, last iOS line
+   `exec launchd_cache_loader` at 8.48 s - so iOS got as far as in bp9/bp10, the log flusher
+   wrote three times and then stopped, and everything after that (heartbeats to HB38 on the
+   screen) was never persisted. Screen showed `lk 1/1 st 1` in every heartbeat: the lock was
+   held by **owner 1 = `UFS_LK_PART`**, i.e. inside `sweet_ufs_part()`'s LUN probes, with
+   `age 0 ms` (no command in flight at any 2 s sample) - so it is a *lookup* that never ends,
+   not a hung SCSI command.
+2. **Why**: `sweet_ufs_part()` probes up to eight LUNs and is called by the modem for
+   `misc`/`efs`/`modem` *on demand* (`PicassoModem.cpp:2288, 2830, 2931, 3360, 3735`), each call
+   taking `sweet_ufs_lock`. A LUN with no device costs a SCSI timeout, and everything else that
+   wants the disk (HFS, the log flusher, and the console queue behind them) waits.
+3. **Patch 0096 (`22fea12`)**: cache every lookup result including misses, answer the root
+   partition straight from `su.first_block/nblocks/lun` (`su.want`), probe the LUN that answered
+   last time first (`part_last_lun`), log each probe *after* dropping the lock, and put
+   `part_lun`/`part_step` in the heartbeat (`pp <lun>/<step>`, steps 1 taken/2 header/3 header
+   read/4 entry table) so a lookup that never returns names its own LUN and stage.
+4. **bp14** = run `40148165764` (commit `22fea12`) + bp9's cmdline (438 B, `modem_watch` 60 s
+   default), image `/tmp/variant-bp14.img` md5 `4dd56026e6847b903f0c71f0831c2092`, flashed and
+   booted at 07:59.
+5. **Operational trap found**: `modem_recovery=1 modem_recovery_after=150000` did **not** bring
+   bp13 back - that timer lives in the modem thread, which was itself blocked on the UFS lock.
+   A boot that wedges on UFS therefore needs a hand-held power cycle. Fix later with a dedicated
+   reset thread that touches no UFS.
+
 ### >>> UPDATE 2026-10-25 07:45 (bp12's "early hang" was MY packaging: `mkpayload.py` without
 ### `--cmdline` falls back to `debug=0xc serial=3 cpus=1 keepsyms=1`. bp13 = same kernel with the
 ### real cmdline, flashing now) <<<
