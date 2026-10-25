@@ -1,0 +1,86 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -289,6 +289,8 @@
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+ 
++static int ud_verbose;           /* sweetusbverbose=1: per-frame chatter */
++
+ static inline void
+ dwc_wr(uint32_t off, uint32_t v)
+ {
+@@ -368,8 +370,10 @@
+ 		ud_sync(buf, len);
+ 	}
+ 	uint64_t tpa = ud.dma_pa + trb;
+-	printf("SWEET USB: start xfer ep%u trb 0x%llx buf 0x%llx len %u ctl 0x%x\n",
+-	    ep, tpa, bpa, len, ctl);
++	if (ud_verbose) {
++		printf("SWEET USB: start xfer ep%u trb 0x%llx buf 0x%llx len %u ctl 0x%x\n",
++		    ep, tpa, bpa, len, ctl);
++	}
+ 	int error = ud_epcmd(ep, DEPCMD_STARTTRANSFER, (uint32_t)(tpa >> 32), (uint32_t)tpa, 0);
+ 	uint32_t depcmd = dwc_rd(DEPCMD(ep));
+ 	if (error || ((depcmd >> 12) & 0xf)) {
+@@ -647,7 +651,7 @@
+ 			stats.bytes_in = len;
+ 			ud.rx_frames++;
+ 			int ierr = ifnet_input(ud.ifp, m, &stats);
+-			if (ud.rx_seen++ < 6) {
++			if (ud_verbose && ud.rx_seen++ < 6) {
+ 				const uint8_t *f = (const uint8_t *)(ud.dma + UD_RX);
+ 				printf("SWEET USB: rx %u len %u dst %02x:%02x:%02x:%02x:%02x:%02x type 0x%02x%02x input %d\n",
+ 				    ud.rx_seen, len, f[0], f[1], f[2], f[3], f[4], f[5],
+@@ -694,7 +698,7 @@
+ ud_if_output(ifnet_t ifp, mbuf_t m)
+ {
+ 	lck_mtx_lock(ud.lock);
+-	if (ud.tx_calls++ < 6) {
++	if (ud_verbose && ud.tx_calls++ < 6) {
+ 		const uint8_t *f = (const uint8_t *)mbuf_data(m);
+ 		printf("SWEET USB: tx call %u len %u type 0x%02x%02x configured %d busy %d q %u\n",
+ 		    ud.tx_calls, (unsigned)mbuf_pkthdr_len(m), f ? f[12] : 0, f ? f[13] : 0,
+@@ -880,7 +884,7 @@
+ 	unsigned type = (ev >> 6) & 0xf;
+ 	unsigned status = (ev >> 12) & 0xf;
+ 
+-	if (ep >= EP_RX && type != 1 && ud.ev_other++ < 12) {
++	if (ud_verbose && ep >= EP_RX && type != 1 && ud.ev_other++ < 12) {
+ 		printf("SWEET USB: ep%u event type %u status %u (%u bytes)\n",
+ 		    ep, type, status, param0);
+ 	}
+@@ -898,7 +902,7 @@
+ 			lck_mtx_unlock(ud.lock);
+ 			return;
+ 		}
+-		if (ud.tx_done++ < 8) {
++		if (ud_verbose && ud.tx_done++ < 8) {
+ 			printf("SWEET USB: tx done residual %u status %u\n", param0, status);
+ 		}
+ 		ud.tx_busy = false;
+@@ -976,7 +980,7 @@
+ 				ud.evt_pos = (ud.evt_pos + step) % UD_EVT_SIZE;
+ 				if (!(ev & 1)) {
+ 					uint32_t ep = (ev >> 1) & 0x1f, type = (ev >> 6) & 0xf;
+-					if ((type == 1 || type == 3) && ud.events++ < 200) {
++					if (ud_verbose && (type == 1 || type == 3) && ud.events++ < 200) {
+ 						printf("SWEET USB: ev ep%u type %u status %u param0 "
+ 						    "0x%08x\n", ep, type, (ev >> 12) & 0xf, peek);
+ 					}
+@@ -1342,7 +1346,7 @@
+ 		if (!ud.configured || !ud_probe_on) {
+ 			continue;
+ 		}
+-		if (ud.probe_seen++ < 20) {
++		if (ud_verbose && ud.probe_seen++ < 20) {
+ 			printf("SWEET USB: probe round %u configured %d busy %d q %u\n",
+ 			    ud.probe_seen, (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
+ 		}
+@@ -1782,6 +1786,7 @@
+ 		thread_deallocate(thread);
+ 	}
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
++	PE_parse_boot_argn("sweetusbverbose", &ud_verbose, sizeof(ud_verbose));
+ 	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &ud_deadline_1s);
+ 	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
