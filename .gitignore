@@ -10,3 +10,6 @@ xnu/out-*/
 __pycache__/
 logs/*.bin
 logs/*.raw
+
+# CI buildtree extraction (xnu sources come from xnu/patches)
+build/

@@ -6,6 +6,30 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 21:10 (Bergamota study: USB needs the SMMU, patch 0123 written) <<<
+1. **The "USB is impossible on picasso" conclusion is retracted.** It rested on probes that read S2CR/SMR
+   with the stream ID used as an *array index* (`0xc00 + 4*0xe0` = `0xc380`, `0x800+4*0xe0` = `0xb80`), i.e.
+   out of range for 128 entries; the resulting bus hang says nothing about the SMMU. Everything else stands
+   (ep0 SETEPCONFIG works, the first DEPCMD_STARTTRANSFER wedges).
+2. **New patch `xnu/patches/0123-picasso-usb-smmu-stream.patch`** adds `bsd/dev/sweet_smmu.c` (adapted from
+   anonbeat1/ios-sweet 0091 via ry-diffusion/Bergamota 0094) and calls `sweet_smmu_map_sid(0xe0)` in
+   `sweet_usb_gadget_start()` right before the event buffer, i.e. before the first DMA. Shape: one shared
+   **S1 translate + S2 bypass** context bank (the hypervisor forces S2 writes to FAULT), identity map of
+   `0x80000000..0x27fffffff` in 1 GiB blocks, Normal-NC, S2CR written before the SMR, then S2CR read back and
+   printed as `translate`/`REFUSED`. CR0/GBPA are never written (hypervisor-owned, writes dropped).
+   Validated with `patch -p1` against the pre-patch files: all three files reproduce byte-for-byte.
+3. **Cache maintenance matters**: `flush_dcache64()` is a bare `dsb sy` under `__ARM_COHERENT_IO__`
+   (`osfmk/arm64/loose_ends.c:96`), so the page table was invisible to the SMMU. `sweet_smmu.c` now does
+   `dc civac` over `CTR_EL0.DminLine` before enabling the bank. The USB TRBs still need the same treatment
+   (Bergamota patch 0102 `sweet_dma_sync_va()`, not in our series) - next if TRBs complete but nothing
+   enumerates.
+4. **`tools/xnu-local.py` can now build on Linux without CI round-trips**: it recovers compile commands the
+   log lost from the generated per-component Makefiles (`CFILES=`/`CXXFILES=`/`SFILES=`, idea from
+   `ry-diffusion/Bergamota tools/xnu-cc.py`), normalises `-I.` to the component dir, and has `--file SRC` to
+   compile a file the CI log never mentions. 1100 commands total.
+5. Full write-up, what transfers and what does not: **`docs/BERGAMOTA_RESEARCH.md`**. Next action: CI-build
+   0123 (`gh workflow run xnu.yml`) and boot it with `sweetusbsmmu=1`, then read the SMMU lines from the ring.
+
 ### >>> UPDATE 2026-10-25 18:20 (bp46 traces were never in the kernel - CI skipped 0121 again) <<<
 1. **bp46 ring** (md5 `df8272680ba3cd2bb6a6de66bc9d91de`, marker `sweetboot=bp46`) contains neither
    `SWEET EXECVE` nor `SWEET EXIT`, and neither does the kernel it booted: `strings` on

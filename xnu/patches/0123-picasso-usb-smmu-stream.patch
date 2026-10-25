@@ -1,0 +1,345 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/sweet_smmu.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+--- /dev/null
++++ b/bsd/dev/sweet_smmu.c
+@@ -0,0 +1,245 @@
++/*
++ * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
++ * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
++ *
++ * Taken from anonbeat1/ios-sweet (Nothing Phone (1), SM7325) patch 0091 via
++ * ry-diffusion/Bergamota patch 0094 (Poco F1, SDM845). apps_smmu is at
++ * 0x15000000 on every one of these SoCs, including picasso (SM7250), and the
++ * behaviour is the same: under the Qualcomm hypervisor an unmatched stream
++ * faults (sCR0.USFCFG=1), a written S2CR bypass reads back as fault, and an
++ * unidentified-stream fault during a live transfer resets the SoC. So each
++ * master's stream ID is mapped by a free SMR to one stage-1 context bank
++ * (CBAR type 1: the hypervisor's own stage 2 sits behind it) that maps DRAM
++ * 0x80000000..0x27fffffff 1:1 in 1 GiB blocks, Normal non-cacheable.
++ * IOVA == PA, so drivers keep using physical addresses and clean/invalidate
++ * their own buffers.
++ *
++ * CR0 and GBPA are deliberately never written: they belong to the
++ * hypervisor, every write from non-secure is dropped, and none is needed.
++ *
++ * The bank and its page table are built on the first sweet_smmu_map_sid();
++ * later calls reuse them and only add an SMR.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++int sweet_smmu_map_sid(unsigned sid);
++
++#define SMMU_PA         0x15000000u     /* apps_smmu */
++#define SMMU_SIZE       0x100000u
++#define L1_SIZE         0x1000u         /* one 512-entry level-1 table */
++
++static vm_offset_t smmu_base;
++static int smmu_cb = -1;                /* shared translating context bank */
++static unsigned smmu_nsmr;
++static int smmu_next_smr;               /* first free SMR to try next */
++static volatile uint32_t smmu_lock;
++
++static uint32_t
++smmu_rd(uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(smmu_base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++smmu_wr(uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(smmu_base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++/* Clean+invalidate by kernel VA: flush_dcache64() is a no-op when the kernel
++ * is built with __ARM_COHERENT_IO__, and the SMMU walks this table itself. */
++static void
++smmu_sync_va(vm_offset_t va, vm_size_t size)
++{
++	uint64_t ctr;
++	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
++	vm_size_t line = 4u << ((ctr >> 16) & 0xf);
++	__asm__ volatile("dsb sy" ::: "memory");
++	for (vm_offset_t p = va; p < va + size; p += line) {
++		__asm__ volatile("dc civac, %0" :: "r"(p) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static void
++smmu_wr64(uint32_t off, uint64_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint64_t *)(smmu_base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++/* Build the shared context bank with an identity map of DRAM. Returns 0 or errno. */
++static int
++smmu_bank_create(void)
++{
++	uint32_t id0 = smmu_rd(0x20), id1 = smmu_rd(0x24);
++	unsigned pgshift = (id1 >> 31) ? 16 : 12;
++	unsigned ncb = id1 & 0xff, ns2cb = (id1 >> 16) & 0xff;
++	uint32_t gr1 = 1u << pgshift;
++	uint32_t cb0 = (1u << (((id1 >> 28) & 7) + 1)) << pgshift;
++	smmu_nsmr = id0 & 0xff;
++
++	/* context banks already in use by a translating stream match group */
++	uint32_t used[8] = { 0 };
++	for (unsigned i = 0; i < smmu_nsmr && i < 128; i++) {
++		uint32_t smr = smmu_rd(0x800 + 4 * i), s2cr = smmu_rd(0xc00 + 4 * i);
++		if ((smr & (1u << 31)) && ((s2cr >> 16) & 3) == 0) {
++			used[(s2cr & 0xff) / 32] |= 1u << ((s2cr & 0xff) % 32);
++		}
++	}
++	for (unsigned c = ns2cb; c < ncb && smmu_cb < 0; c++) {
++		if (!(used[c / 32] & (1u << (c % 32))) &&
++		    !(smmu_rd(cb0 + (c << pgshift)) & 1)) {
++			smmu_cb = (int)c;
++		}
++	}
++	if (smmu_cb < 0) {
++		printf("SWEET SMMU: no free context bank\n");
++		return ENODEV;
++	}
++
++	/* identity map DRAM 0x80000000..0x27fffffff, level-1 1 GiB blocks, Normal NC, RW */
++	vm_offset_t l1v = 0;
++	if (kmem_alloc_contig(kernel_map, &l1v, L1_SIZE, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET SMMU: no page-table memory\n");
++		smmu_cb = -1;
++		return ENOMEM;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)l1v);
++	if (!pn) {
++		smmu_cb = -1;
++		return ENOMEM;
++	}
++	uint64_t l1_pa = ptoa_64(pn);
++	volatile uint64_t *l1 = (volatile uint64_t *)l1v;
++	for (unsigned i = 2; i < 10; i++) {
++		l1[i] = (uint64_t)i << 30 | 1u << 10 | 2u << 8 | 1u << 6 | 1;
++	}
++	smmu_sync_va(l1v, L1_SIZE);
++
++	uint32_t cb = cb0 + ((uint32_t)smmu_cb << pgshift);
++	unsigned asid = (unsigned)smmu_cb;
++	smmu_wr(cb + 0x0, 0);                                    /* SCTLR off while programming */
++	smmu_wr(cb + 0x58, 0xffffffffu);                        /* FSR clear */
++	smmu_wr(gr1 + 0x800 + 4 * (unsigned)smmu_cb, 1);        /* CBA2R VA64 */
++	smmu_wr(gr1 + 4 * (unsigned)smmu_cb, 1u << 16 | 0xfu << 12 | 3u << 8); /* CBAR S1+S2 bypass WB NSH */
++	smmu_wr(cb + 0x10, 7u << 15 | 2);                       /* TCR2: SEP upstream, PA 40-bit */
++	smmu_wr(cb + 0x30, 25 | 1u << 23);                      /* TCR: T0SZ 25, 4K, NC walks, EPD1 */
++	smmu_wr(cb + 0x34, asid);                               /* CONTEXTIDR */
++	smmu_wr64(cb + 0x20, l1_pa | (uint64_t)asid << 48);     /* TTBR0 */
++	smmu_wr64(cb + 0x28, 0);
++	smmu_wr(cb + 0x38, 0x44);                               /* MAIR0 attr0 Normal NC */
++	smmu_wr(cb + 0x618, 0);                                 /* TLBIALL */
++	smmu_wr(cb + 0x7f0, 0);                                 /* TLBSYNC */
++	for (int t = 0; t < 100000 && (smmu_rd(cb + 0x7f4) & 1); t++) {
++		delay(1);
++	}
++	smmu_wr(cb + 0x0, 1u << 6 | 1u << 5 | 1u << 2 | 1u << 1 | 1); /* CFIE CFRE AFE TRE M */
++	if (!(smmu_rd(cb + 0x0) & 1)) {
++		printf("SWEET SMMU: context bank %d did not enable\n", smmu_cb);
++		smmu_cb = -1;
++		return EIO;
++	}
++	printf("SWEET SMMU: context bank %d, identity map, ttbr0 0x%llx\n", smmu_cb, l1_pa);
++	return 0;
++}
++
++/* Map one stream ID to the shared translating bank. Idempotent per SID. */
++int
++sweet_smmu_map_sid(unsigned sid)
++{
++	int error = EIO;
++
++	if (__atomic_exchange_n(&smmu_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	if (smmu_base == 0) {
++		smmu_base = ml_io_map(SMMU_PA, SMMU_SIZE);
++		if (smmu_base == 0) {
++			printf("SWEET SMMU: map failed\n");
++			goto out;
++		}
++	}
++	if (smmu_cb < 0) {
++		error = smmu_bank_create();
++		if (error) {
++			goto out;
++		}
++	}
++
++	/*
++	 * Look for a valid SMR that already matches sid (id compared under its
++	 * mask). A second matching SMR would be a stream-match conflict, a
++	 * global fault on the first transfer. Masters ABL itself uses (the USB
++	 * controller, for fastboot) can arrive with such an entry.
++	 */
++	int free_smr = -1, match = -1;
++	for (unsigned i = 0; i < smmu_nsmr && i < 128; i++) {
++		uint32_t smr = smmu_rd(0x800 + 4 * i);
++		if (!(smr & (1u << 31))) {
++			if (free_smr < 0 && (int)i >= smmu_next_smr) {
++				free_smr = (int)i;
++			}
++			continue;
++		}
++		uint32_t mask = (smr >> 16) & 0x7fff;
++		if (((smr ^ sid) & ~mask & 0x7fff) == 0 && match < 0) {
++			match = (int)i;
++		}
++	}
++	if (match >= 0) {
++		uint32_t smr = smmu_rd(0x800 + 4 * (unsigned)match);
++		uint32_t s2cr = smmu_rd(0xc00 + 4 * (unsigned)match);
++		printf("SWEET SMMU: sid 0x%x already matched by smr %d (smr 0x%x s2cr 0x%x)\n",
++		    sid, match, smr, s2cr);
++		if ((s2cr & 0xff) == (uint32_t)smmu_cb && ((s2cr >> 16) & 3) == 0) {
++			error = 0;      /* an earlier call mapped it */
++			goto out;
++		}
++		if ((smr >> 16) & 0x7fff) {
++			/* masked entry covers other streams too: do not repoint it */
++			printf("SWEET SMMU: smr %d is masked; leaving it alone\n", match);
++			error = EEXIST;
++			goto out;
++		}
++		/* exact entry: point its S2CR at our bank instead of adding a duplicate */
++		smmu_wr(0xc00 + 4 * (unsigned)match, (uint32_t)smmu_cb);
++		s2cr = smmu_rd(0xc00 + 4 * (unsigned)match);
++		printf("SWEET SMMU: sid 0x%x smr %d s2cr now 0x%x (%s)\n", sid, match, s2cr,
++		    (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? "translate" : "REFUSED");
++		error = (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? 0 : EIO;
++		goto out;
++	}
++	if (free_smr < 0) {
++		printf("SWEET SMMU: no free SMR for sid 0x%x\n", sid);
++		error = ENOSPC;
++		goto out;
++	}
++	smmu_wr(0xc00 + 4 * (unsigned)free_smr, (uint32_t)smmu_cb);  /* S2CR translate -> cb */
++	smmu_wr(0x800 + 4 * (unsigned)free_smr, 1u << 31 | (sid & 0x7fff)); /* SMR valid, mask 0 */
++	smmu_next_smr = free_smr + 1;
++	uint32_t s2cr = smmu_rd(0xc00 + 4 * (unsigned)free_smr);
++	printf("SWEET SMMU: sid 0x%x -> smr %d s2cr 0x%x (%s)\n", sid, free_smr, s2cr,
++	    (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? "translate" : "REFUSED");
++	error = (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? 0 : EIO;
++out:
++	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -41,6 +41,7 @@
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++extern int sweet_smmu_map_sid(unsigned sid);
+ 
+ #define GCC_PA                  0x00100000
+ #define GCC_SIZE                0x00090000
+@@ -1010,40 +1011,23 @@
+ 	}
+ 
+ 	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
+-	/* Optional: report the apps SMMU global state (sweetusbsmmu=1). */
++	/*
++	 * apps SMMU (0x15000000): report the state ABL handed us. Layout is the
++	 * ARM SMMU-500 one: IDR0 0x0, IDR1 0x4, CR0 0x20, GBPA 0x44,
++	 * SMR(n) 0x800 + 4n, S2CR(n) 0xc00 + 4n, context banks from 0x1000
++	 * (CBAR array at 0x1000 + 4n). Stream 0xE0 is the USB controller's
++	 * (DT iommus = <&apps_smmu 0xe0>). CR0 and GBPA are read only once:
++	 * every write from non-secure is dropped and the hypervisor owns them.
++	 */
+ 	int smmu_probe = 0;
+ 	PE_parse_boot_argn("sweetusbsmmu", &smmu_probe, sizeof(smmu_probe));
+ 	if (smmu_probe) {
+ 		vm_offset_t smmu = ml_io_map(0x15000000, 0x10000);
+ 		if (smmu != 0) {
+-			/*
+-			 * ARM SMMU-500 layout: IDR0 0x0, CR0 0x20, GBPA 0x44,
+-			 * S2CR(n) 0x8000 + 8n, CBAR(n) 0x6000 + 4n. Stream 0xE0 is
+-			 * the one the USB controller uses (DT iommus = <0x18 0xe0>).
+-			 */
+-			printf("SWEET USB: SMMU IDR0 0x%08x CR0 0x%08x GBPA 0x%08x S2CR(e0) 0x%08x CBAR(0) 0x%08x\n",
+-			    usb_rd(smmu, 0x0000), usb_rd(smmu, 0x0020), usb_rd(smmu, 0x0044),
+-			    usb_rd(smmu, 0x8000 + (0xe0 << 3)), usb_rd(smmu, 0x6000));
+-			/*
+-			 * sweetusbsmmu=2: put the USB stream into BYPASS so the
+-			 * controller's DMA uses physical addresses. S2CR.TYPE is
+-			 * bits[3:0] of the word (0 fault, 1 bypass, 2 translate);
+-			 * GBPA bit0 UPDATE lets a bypass take effect unless bit1
+-			 * ABORT is set.
+-			 */
+-			if (smmu_probe >= 2) {
+-				uint32_t s2off = 0x8000 + (0xe0 << 3);
+-				uint32_t s2 = usb_rd(smmu, s2off);
+-				uint32_t gbpa = usb_rd(smmu, 0x0044);
+-				*(volatile uint32_t *)(smmu + s2off) = (s2 & ~0x3fu) | 1u;
+-				__asm__ volatile ("dsb sy" ::: "memory");
+-				if (gbpa & 2u) {	/* ABORT: allow bypass again */
+-					*(volatile uint32_t *)(smmu + 0x0044) = gbpa & ~2u;
+-					__asm__ volatile ("dsb sy" ::: "memory");
+-				}
+-				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
+-				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
+-			}
++			printf("SWEET USB: SMMU IDR0 0x%08x IDR1 0x%08x CR0 0x%08x GBPA 0x%08x SMR(e0) 0x%08x S2CR(e0) 0x%08x CBAR(0) 0x%08x\n",
++			    usb_rd(smmu, 0x0000), usb_rd(smmu, 0x0004), usb_rd(smmu, 0x0020),
++			    usb_rd(smmu, 0x0044), usb_rd(smmu, 0x800 + (0xe0 << 2)),
++			    usb_rd(smmu, 0xc00 + (0xe0 << 2)), usb_rd(smmu, 0x1000));
+ 		}
+ 	}
+ 
+@@ -1162,6 +1146,23 @@
+ 		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
+ 	}
+ 
++	/*
++	 * 6b. Attach the USB stream to a stage-1 identity context bank. Under
++	 *     the hypervisor an unmatched stream faults, and an unidentified
++	 *     fault during a live transfer resets the SoC -- this is the first
++	 *     DMA (event buffer), so it has to happen before the device is
++	 *     started. sweetusbsmmu=0 skips it for an A/B boot.
++	 */
++	int smmu_attach = 1;
++	PE_parse_boot_argn("sweetusbsmmu", &smmu_attach, sizeof(smmu_attach));
++	if (smmu_attach) {
++		int se = sweet_smmu_map_sid(0xe0);
++		printf("SWEET USB: apps_smmu sid 0xe0 -> %d\n", se);
++		if (se != 0) {
++			printf("SWEET USB: stream not attached; the first transfer will fault\n");
++		}
++	}
++
+ 	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
+ 	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
+ 	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
