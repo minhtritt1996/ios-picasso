@@ -1,0 +1,30 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -280,6 +280,7 @@
+ 	bool        tx_busy;
+ 	uint32_t    ev_live;            /* event-thread liveness prints */
+ 	uint32_t    probe_seen;         /* probe-thread prints */
++	uint32_t    probe_hb;           /* probe-thread heartbeat */
+ 	uint32_t    ctl_seen;           /* control-frame prints */
+ 	uint32_t    dev_ev;             /* device-event prints */
+ 	volatile uint32_t ev_ticks;     /* event-thread progress */
+@@ -1423,6 +1424,19 @@
+ 			printf("SWEET USB: probe round %u configured %d busy %d q %u\n",
+ 			    ud.probe_seen, (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
+ 		}
++		/* Unconditional heartbeat: this thread is the only one that can report
++		 * on a stalled event thread, so say every 10 s that it is alive and
++		 * what it sees, even when the stall test itself does not fire. */
++		if ((ud.probe_hb++ % 5) == 0) {
++			uint64_t now_hb = mach_absolute_time();
++			uint64_t quiet = ud.ev_stamp ? now_hb - ud.ev_stamp : 0;
++			uint64_t qns = 0;
++			absolutetime_to_nanoseconds(quiet, &qns);
++			printf("SWEET USB: probe alive silent %llu ms threshold %llu ticks "
++			    "stamp %llu ticks %u pos %u busy %d q %u\n",
++			    qns / 1000000, ud_stall_ticks, ud.ev_stamp, ud.ev_ticks,
++			    ud.evt_pos, (int)ud.tx_busy, ud.txq_count);
++		}
+ 		uint64_t now = mach_absolute_time();
+ 		uint64_t silent = ud.ev_stamp ? now - ud.ev_stamp : 0;
+ 		if (ud.ev_stamp != 0 && silent > ud_stall_ticks) {
