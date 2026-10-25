@@ -1,0 +1,51 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1590,11 +1590,15 @@
+ 	uint32_t n = 0, dump_every = 0;
+ 	uint64_t last_dump = 0;
+ 
+-	extern void IODelay(unsigned int);
++	extern void nanoseconds_to_absolutetime(uint64_t, uint64_t *);
++	uint64_t period = 0;
++
++	/* Two seconds in absolute-time ticks, computed once. */
++	nanoseconds_to_absolutetime(2000000000ull, &period);
+ 
+ 	for (;;) {
+ 		char line[208];
+-		uint64_t ns = 0, age = 0, last;
++		uint64_t ns = 0, age = 0, last, t0;
+ 		int len;
+ 
+ 		/* Busy wait, not tsleep (): bp15 showed this thread, the heartbeat
+@@ -1602,7 +1606,14 @@
+ 		 * keeps printing, i.e. every thread sleeping on a timeout freezes
+ 		 * together.  A spin needs no timeouts, and reading the clock here
+ 		 * says whether time itself stopped. */
+-		IODelay(2000000);
++		/* Raw spin on the clock, deliberately not IODelay (): if
++		 * IODelay or the lock paths it shares park on wfe/wfi, this loop
++		 * must not.  A kick line that stops now means the CPU itself
++		 * stopped running this thread. */
++		t0 = mach_absolute_time();
++		while (mach_absolute_time() - t0 < period) {
++			;
++		}
+ 		last = sweet_log_last_g;
+ 		if (last != 0 && mach_absolute_time() > last) {
+ 			absolutetime_to_nanoseconds(mach_absolute_time() - last, &ns);
+@@ -1622,12 +1633,12 @@
+ 			sweet_log_append(line, MIN(len, (int)sizeof(line) - 1));
+ 		}
+ 		sweet_kick_n++;
+-		/* Every ten spins (~20 s) put the ring on the partition, without the
++		/* Every five spins (~10 s) put the ring on the partition, without the
+ 		 * driver lock and without any timeout sleep: this thread keeps
+ 		 * running when the console write path, the flusher and every
+ 		 * tsleep/IOSleep in the kernel are stuck (bp26/bp27 froze before the
+ 		 * hang watchdog could fire, so nothing else writes the log). */
+-		if (++dump_every >= 10) {
++		if (++dump_every >= 5) {
+ 			dump_every = 0;
+ 			if (os_atomic_load(&sweet_log_total, relaxed) != last_dump) {
+ 				int de = sweet_ufs_emergency_dump();
