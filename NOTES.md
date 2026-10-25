@@ -1,4 +1,21 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 09:30 (bp18 booted but stopped the same way; 0101 removes the copy) <<<
+1. **bp18 (0100 + badge) flashed, booted to `Early boot complete`, then stopped**: photo at
+   ~9 s, no heartbeat visible yet (the console tail was still launchd tasks), and after 450 s
+   neither adb nor fastboot answered - the independent `recovery_thread` (modem_recovery_after,
+   IOSleep + BCB write in misc + PSCI) could not finish because its BCB write needs the same
+   `sweet_ufs_lock`. So a wedge now costs a manual 15 s power hold; do not expect the timer.
+2. **Decision: stop investigating the copy, delete it.** File I/O is block aligned and HFS
+   buffers are page aligned, so the bounce copy is pure overhead. 0101 programs the PRDT with
+   one entry per destination page (PRDT_MAX now BOUNCE_SIZE/UFS_BLOCK = 256, still inside the
+   0x1000..0x4000 UCD window) and lets the engine write DRAM directly, with cache maintenance
+   by physical address (ufs_dma_sync_buf). EINVAL (page not mapped, or skip != 0, or a short
+   tail) falls back to the bounce path, so nothing is lost.
+3. `ufs_read_blocks_dma()` marks `ss 6` and counts `su.direct_reads/direct_bytes`, printed as
+   `dma <n>/<bytes>` in the heartbeat: if the boot passes the dyld cache read, the heartbeat
+   shows dma > 0 and the copy was indeed the wedge.
+4. Patch validated: applies cleanly against run 40152816412's buildtree and the patched file
+   is byte-identical to the one compiled here.
 
 ### >>> UPDATE 2026-10-25 09:00 (bp16/bp17: the boot stops inside the *copy out* of a HFS
 ### read while holding the UFS lock; not the controller, not the console, not timeouts) <<<

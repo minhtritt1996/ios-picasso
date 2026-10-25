@@ -1,0 +1,241 @@
+sweet ufs: read straight into the caller's buffer, no bounce copy
+
+bp17/bp18 stop with the UFS lock held, no command outstanding, and "ss 3"
+for a minute: the strategy path sits between a 272 KiB read and the copy
+out of the bounce buffer.  bp18 publishes the copy cursor (sd), the
+destination (sv) and the time spent, but the data is already in the
+buffer when the read returns, so the copy is pure overhead in the common
+case: file I/O is block aligned and the buffer is page aligned.
+
+Program the PRDT with one entry per page of the destination and let the
+engine write DRAM directly, with cache maintenance by physical address.
+EINVAL (a page not mapped) falls back to the bounce path, and partial
+blocks still read-merge-write through it.  Heartbeat gains dma <n>/<bytes>
+so the boot proves which path served the dyld cache read.
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -75,7 +75,9 @@
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+-#define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK)
++/* The bounce path needs one entry per 256 KiB; a direct transfer into a
++ * buffer needs one per page, so the table is sized for the worse case. */
++#define PRDT_MAX        (BOUNCE_SIZE / UFS_BLOCK)
+ #define CMD_TIMEOUT_NS  (5ull * NSEC_PER_SEC)
+ #define CMD_SPIN_NS     (50ull * NSEC_PER_USEC)
+ #define CMD_SLEEP_NS    (200ull * NSEC_PER_USEC)
+@@ -146,6 +148,8 @@
+ 	volatile uint64_t strat_blk;
+ 	volatile uint32_t strat_count;
+ 	volatile uint32_t strat_tid;
++	volatile uint32_t direct_reads;         /* reads that skipped the bounce copy */
++	volatile uint64_t direct_bytes;
+ 	char want[24];                          /* root partition name, boot-arg ufsroot */
+ } su;
+ 
+@@ -224,8 +228,34 @@
+ 	}
+ }
+ 
++/*
++ * Cache maintenance for a transfer buffer that is ordinary kernel memory
++ * (see ufs_read_blocks_dma), by physical address, page by page.
++ */
++static void
++ufs_dma_sync_buf(const void *buf, uint32_t len, bool write)
++{
++	uint32_t done = 0;
++
++	while (done < len) {
++		addr64_t va = (addr64_t)(uintptr_t)((const char *)buf + done);
++		uint32_t chunk = MIN(len - done, (uint32_t)(PAGE_SIZE - (va & PAGE_MASK)));
++		ppnum_t pn = pmap_find_phys(kernel_pmap, va);
++
++		if (pn == 0) {
++			return;
++		}
++		if (write) {
++			clean_dcache64(ptoa_64(pn) + (va & PAGE_MASK), chunk, TRUE);
++		} else {
++			flush_dcache64(ptoa_64(pn) + (va & PAGE_MASK), chunk, TRUE);
++		}
++		done += chunk;
++	}
++}
++
+ static int
+-ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write, void *dst)
+ {
+ 	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+@@ -252,13 +282,35 @@
+ 	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
+ 	utrd->resp = (512u / 4) << 16 | (512u / 4);
+ 	if (len) {
+-		uint32_t n = 0;
+-		for (uint32_t done = 0; done < len; done += PRDT_CHUNK, n++) {
++		uint32_t n = 0, done = 0;
++
++		while (done < len) {
+ 			uint32_t chunk = MIN(PRDT_CHUNK, len - done);
+-			ucd->prdt[n].addr_lo = (uint32_t)(bounce_pa + done);
+-			ucd->prdt[n].addr_hi = (uint32_t)((bounce_pa + done) >> 32);
++			uint64_t pa;
++
++			if (dst == NULL) {
++				pa = bounce_pa + done;
++			} else {
++				addr64_t va = (addr64_t)(uintptr_t)((const char *)dst + done);
++				ppnum_t pn;
++
++				/* One entry per page: a PRDT entry may not cross one. */
++				chunk = MIN(chunk, (uint32_t)(PAGE_SIZE - (va & PAGE_MASK)));
++				pn = pmap_find_phys(kernel_pmap, va);
++				if (pn == 0 || n >= PRDT_MAX) {
++					return EINVAL;      /* caller falls back to the bounce */
++				}
++				pa = ptoa_64(pn) + (va & PAGE_MASK);
++			}
++			ucd->prdt[n].addr_lo = (uint32_t)pa;
++			ucd->prdt[n].addr_hi = (uint32_t)(pa >> 32);
+ 			ucd->prdt[n].dbc = chunk - 1;
++			n++;
++			done += chunk;
+ 		}
++		if (!n) {
++			return EINVAL;
++		}
+ 		utrd->prdt = (1024u / 4) << 16 | n;
+ 	}
+ 
+@@ -275,7 +327,9 @@
+ 		dma_sync(DMA_UCD, sizeof(*ucd));
+ 	}
+ 	if (len) {
+-		if (su.cache && write) {
++		if (dst != NULL) {
++			ufs_dma_sync_buf(dst, len, write);
++		} else if (su.cache && write) {
+ 			dma_clean(DMA_BOUNCE, len);
+ 		} else {
+ 			dma_sync(DMA_BOUNCE, len);
+@@ -352,7 +406,38 @@
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false, NULL);
++	su.cmd_start = 0;
++	if (error) {
++		su.last_err = error;
++		su.err_serial++;
++	}
++	return error;
++}
++
++/*
++ * READ(10) straight into dst (a page-aligned kernel buffer), skipping the
++ * copy out of the bounce buffer.  bp17 stopped inside that copy for a
++ * minute with the UFS lock held (272 KiB, "ss 3", no command outstanding),
++ * and the boot never got past the dyld cache read; the engine writing DRAM
++ * itself does not go through the CPU's view of the destination at all.
++ * Returns EINVAL when a page is not mapped, so the caller can fall back.
++ */
++static int
++ufs_read_blocks_dma(uint64_t lba, uint32_t count, void *dst)
++{
++	if (lba > UINT32_MAX || count > BOUNCE_SIZE / UFS_BLOCK) {
++		return EINVAL;
++	}
++	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x28; su.cmd_lun = su.lun;
++	su.cmd_serial++;
++	su.cmd_start = mach_absolute_time();
++	uint8_t cdb[10] = {
++		0x28, 0,
++		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
++		0, (uint8_t)(count >> 8), (uint8_t)count, 0
++	};
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false, dst);
+ 	su.cmd_start = 0;
+ 	if (error) {
+ 		su.last_err = error;
+@@ -384,7 +469,7 @@
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true, NULL);
+ 	su.cmd_start = 0;
+ 	if (error) {
+ 		su.last_err = error;
+@@ -410,7 +495,7 @@
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true, NULL);
+ 	su.cmd_start = 0;
+ 	if (error) {
+ 		su.last_err = error;
+@@ -423,7 +508,7 @@
+ ufs_sync_cache(void)
+ {
+ 	static const uint8_t cdb[10] = { 0x35 };       /* SYNCHRONIZE CACHE(10), whole LUN */
+-	return ufs_scsi(cdb, sizeof(cdb), 0, false);
++	return ufs_scsi(cdb, sizeof(cdb), 0, false, NULL);
+ }
+ 
+ /*
+@@ -823,12 +908,26 @@
+ 		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
+ 		void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 		if (rd) {
+-			error = ufs_read_blocks(su.first_block + lba, blocks);
+-			su.strat_step = 3;
+-			if (!error) {
+-				ufs_copy_out(vaddr + done, (const char *)bounce + skip, want,
+-				    &su.strat_done);
+-				su.strat_step = 4;
++			error = EINVAL;
++			if (skip == 0 && (want % UFS_BLOCK) == 0 &&
++			    (((uintptr_t)vaddr + done) % PAGE_SIZE) == 0) {
++				su.strat_step = 6;      /* direct DMA into the buffer */
++				error = ufs_read_blocks_dma(su.first_block + lba, blocks,
++				    vaddr + done);
++				if (!error) {
++					su.strat_done = want;
++					su.direct_reads++;
++					su.direct_bytes += want;
++				}
++			}
++			if (error == EINVAL) {
++				error = ufs_read_blocks(su.first_block + lba, blocks);
++				su.strat_step = 3;
++				if (!error) {
++					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
++					    want, &su.strat_done);
++					su.strat_step = 4;
++				}
+ 			}
+ 		} else {
+ 			/* Partial device blocks at either end: read, merge, write back. */
+@@ -1296,7 +1395,8 @@
+ 		int n = snprintf(line, sizeof(line),
+ 		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
+ 		    " age %u ms | err %d x%u | lk %u/%u t%u st %u pp %u/%u ss %u"
+-		    " sb 0x%llx sc %u st%u sd %u sv 0x%llx sdt %llu | fails %u fage %llu\n",
++		    " sb 0x%llx sc %u st%u sd %u sv 0x%llx sdt %llu | dma %u/%llu"
++		    " fails %u fage %llu\n",
+ 		    ++tick, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
+ 		    sweet_log_seq_g, (unsigned)sweet_log_beats,
+ 		    (unsigned)su.cmd_serial, (unsigned long long)su.cmd_lba,
+@@ -1309,6 +1409,7 @@
+ 		    (unsigned long long)su.strat_blk, (unsigned)su.strat_count,
+ 		    (unsigned)su.strat_tid, (unsigned)su.strat_done,
+ 		    (unsigned long long)su.strat_vaddr, (unsigned long long)sdt,
++		    (unsigned)su.direct_reads, (unsigned long long)su.direct_bytes,
+ 		    sweet_log_fails_g,
+ 		    (unsigned long long)fage);
+ 		if (n > 0) {
