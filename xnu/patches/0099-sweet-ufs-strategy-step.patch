@@ -1,0 +1,114 @@
+sweet ufs: say where the strategy path sits inside the UFS lock
+
+bp16 wedged with the heartbeat reporting "lk 4/1 ... age 0 ms" for the
+rest of the boot: the file I/O path took sweet_ufs_lock and never gave it
+back, while no SCSI command was outstanding, so it is not waiting for the
+controller.  Its ring also shows the flusher stopping at 8.5 s, inside
+"exec launchd_cache_loader", i.e. the wedge happens on an ordinary HFS
+read of the dyld cache and not later.
+
+Record the step inside that block (1 taken, 2 before the read, 3 after
+it, 4 after the copy out, 5 before the unlock, 6 after it) plus the buf
+block number, byte count and thread id, and print them with the holder's
+thread id in the heartbeat.  A stuck boot then names the exact statement
+instead of "somewhere under the lock".
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -129,11 +129,20 @@
+ 	 * owner frozen names the path that never released. */
+ 	volatile uint32_t lock_owner;
+ 	volatile uint32_t lock_users;
++	volatile uint32_t lock_tid;
+ 	volatile uint32_t flush_stage;
+ 	/* Where a GPT partition lookup is right now: the heartbeat prints it, so
+ 	 * a lookup that never returns names its own LUN and step. */
+ 	volatile uint32_t part_lun;
+ 	volatile uint32_t part_step;
++	/* Where the strategy (file I/O) path is inside the lock: it holds
++	 * sweet_ufs_lock and issues one command at a time, so a boot that stops
++	 * with owner 4 and no command outstanding is stuck in memcpy or in the
++	 * unlock.  Printed by the heartbeat. */
++	volatile uint32_t strat_step;
++	volatile uint64_t strat_blk;
++	volatile uint32_t strat_count;
++	volatile uint32_t strat_tid;
+ 	char want[24];                          /* root partition name, boot-arg ufsroot */
+ } su;
+ 
+@@ -149,6 +158,7 @@
+ 	lck_mtx_lock(&sweet_ufs_lock);
+ 	su.lock_owner = who;
+ 	su.lock_users++;
++	su.lock_tid = (uint32_t)thread_tid(current_thread());
+ }
+ 
+ static inline void
+@@ -156,6 +166,7 @@
+ {
+ 	su.lock_users--;
+ 	su.lock_owner = 0;
++	su.lock_tid = 0;
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ }
+ 
+@@ -775,8 +786,13 @@
+ 		goto done;
+ 	}
+ 
++	su.strat_blk = (uint64_t)buf_blkno(bp);
++	su.strat_count = count;
++	su.strat_tid = (uint32_t)thread_tid(current_thread());
++	su.strat_step = 1;
+ 	ufs_lock(UFS_LK_STRATEGY);
+ 	for (uint32_t done = 0; done < count;) {
++		su.strat_step = 2;
+ 		uint64_t pos = off + done;
+ 		uint64_t lba = pos / UFS_BLOCK;
+ 		uint32_t skip = (uint32_t)(pos % UFS_BLOCK);
+@@ -785,8 +801,10 @@
+ 		void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 		if (rd) {
+ 			error = ufs_read_blocks(su.first_block + lba, blocks);
++			su.strat_step = 3;
+ 			if (!error) {
+ 				memcpy(vaddr + done, (const char *)bounce + skip, want);
++				su.strat_step = 4;
+ 			}
+ 		} else {
+ 			/* Partial device blocks at either end: read, merge, write back. */
+@@ -804,7 +822,9 @@
+ 		done += want;
+ 		buf_setresid(bp, count - done);
+ 	}
++	su.strat_step = 5;
+ 	ufs_unlock();
++	su.strat_step = 6;
+ 	buf_unmap(bp);
+ 
+ done:
+@@ -1241,18 +1261,22 @@
+ 			absolutetime_to_nanoseconds(now - sweet_log_last_g, &ns);
+ 			fage = ns / 1000000ull;
+ 		}
+-		char line[192];
++		char line[256];
+ 		int n = snprintf(line, sizeof(line),
+ 		    "SWEET HB %u: log %u seq %u beats %u | cmd %u lba 0x%llx n %u lun %u op 0x%02x"
+-		    " age %u ms | err %d x%u | lk %u/%u st %u pp %u/%u fails %u fage %llu\n",
++		    " age %u ms | err %d x%u | lk %u/%u t%u st %u pp %u/%u ss %u"
++		    " sb 0x%llx sc %u st%u | fails %u fage %llu\n",
+ 		    ++tick, (unsigned)os_atomic_load(&sweet_log_total, relaxed),
+ 		    sweet_log_seq_g, (unsigned)sweet_log_beats,
+ 		    (unsigned)su.cmd_serial, (unsigned long long)su.cmd_lba,
+ 		    (unsigned)su.cmd_count, (unsigned)su.cmd_lun, (unsigned)su.cmd_op,
+ 		    (unsigned)age_ms, su.last_err, (unsigned)su.err_serial,
+ 		    (unsigned)su.lock_owner, (unsigned)su.lock_users,
++		    (unsigned)su.lock_tid,
+ 		    (unsigned)su.flush_stage, (unsigned)su.part_lun,
+-		    (unsigned)su.part_step, sweet_log_fails_g,
++		    (unsigned)su.part_step, (unsigned)su.strat_step,
++		    (unsigned long long)su.strat_blk, (unsigned)su.strat_count,
++		    (unsigned)su.strat_tid, sweet_log_fails_g,
+ 		    (unsigned long long)fage);
+ 		if (n > 0) {
+ 			/* Ring first: printf() can block in the framebuffer driver, and
