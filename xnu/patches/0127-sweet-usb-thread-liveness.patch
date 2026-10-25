@@ -1,0 +1,52 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -271,6 +271,9 @@
+ 	mbuf_t      txq[UD_TXQ];
+ 	unsigned    txq_head, txq_count;
+ 	bool        tx_busy;
++	uint32_t    ev_live;            /* event-thread liveness prints */
++	uint32_t    probe_seen;         /* probe-thread prints */
++	uint32_t    ctl_seen;           /* control-frame prints */
+ 	uint64_t    rx_frames, tx_frames;
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+@@ -581,6 +584,10 @@
+ 				*nl = 0;
+ 			}
+ 			memcpy(ud_ctl_dst, f + 6, ETHER_ADDR_LEN);
++			if (ud.ctl_seen++ < 20) {
++				printf("SWEET USB: ctl frame %u len %u cmd '%s'\n",
++				    ud.ctl_seen, n, cmd);
++			}
+ 			ud_cmd_exec(cmd);
+ 			if (strcmp(cmd, "reboot") == 0) {
+ 				ud_sleep_ms(300);
+@@ -928,10 +935,13 @@
+ 			}
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+-		if ((++ticks % 30000) == 0) {
+-			printf("SWEET USB: ue0 rx %llu tx %llu frames, calls %u drops %u q %u busy %d\n",
+-			    ud.rx_frames, ud.tx_frames, ud.tx_calls, ud.tx_drops, ud.txq_count,
+-			    (int)ud.tx_busy);
++		if ((++ticks % 5000) == 0) {
++			if (ud.ev_live++ < 40) {
++				printf("SWEET USB: ev alive %u ticks %u pos %u rx %llu tx %llu "
++				    "calls %u drops %u q %u busy %d\n", ud.ev_live, ticks,
++				    ud.evt_pos, ud.rx_frames, ud.tx_frames, ud.tx_calls,
++				    ud.tx_drops, ud.txq_count, (int)ud.tx_busy);
++			}
+ 		}
+ 		ud_sleep_ms(1);
+ 	}
+@@ -1200,6 +1210,10 @@
+ 		if (!ud.configured || !ud_probe_on) {
+ 			continue;
+ 		}
++		if (ud.probe_seen++ < 20) {
++			printf("SWEET USB: probe round %u configured %d busy %d q %u\n",
++			    ud.probe_seen, (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
++		}
+ 		lck_mtx_lock(ud.lock);
+ 		if (!ud.tx_busy) {
+ 			uint8_t *f = (uint8_t *)(ud.dma + UD_TX);
