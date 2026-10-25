@@ -1,0 +1,117 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -64,6 +64,10 @@
+ 	{ "clkref", 0x8c010 },
+ };
+ 
++static int ud_verbose;           /* sweetusbverbose=1: per-frame chatter */
++static vm_offset_t ud_gcc;       /* GCC base, for forcing USB clocks back on */
++static uint64_t ud_stall_ticks;  /* 10 s expressed in absolute-time ticks */
++
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+ #define QUSB2_PA                0x088e2000
+@@ -90,6 +94,8 @@
+ 		return;
+ 	}
+ 	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
++
++	ud_gcc = gcc;
+ 	if (gcc == 0) {
+ 		printf("SWEET USB: GCC map failed\n");
+ 		return;
+@@ -297,7 +303,33 @@
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+ 
+-static int ud_verbose;           /* sweetusbverbose=1: per-frame chatter */
++
++/*
++ * Force the usb30_prim power domain and the USB GCC clocks back on. A DWC3
++ * register read stalls the CPU forever when the block loses its clock or power,
++ * so the only way to tell a gated block from a wedged thread is to vote the
++ * clocks from a thread that still runs and then read a register.
++ */
++static void
++ud_usb_power_on(void)
++{
++	if (ud_gcc == 0) {
++		return;
++	}
++	uint32_t gdscr = usb_rd(ud_gcc, GCC_USB30_PRIM_GDSCR);
++	if (!(gdscr & (1u << 31))) {
++		*(volatile uint32_t *)(ud_gcc + GCC_USB30_PRIM_GDSCR) = gdscr & ~1u;
++		for (int c = 0; c < 1000 && !(usb_rd(ud_gcc, GCC_USB30_PRIM_GDSCR) & (1u << 31)); c++) {
++			delay(10);
++		}
++	}
++	for (unsigned i = 0; i < sizeof(usb_cbcr) / sizeof(usb_cbcr[0]); i++) {
++		uint32_t v = usb_rd(ud_gcc, usb_cbcr[i].off);
++		if (v & CBCR_CLK_OFF) {
++			*(volatile uint32_t *)(ud_gcc + usb_cbcr[i].off) = v & ~CBCR_CLK_OFF;
++		}
++	}
++}
+ static int ud_stall_panic;       /* sweetusbstallpanic=1: panic on a stalled event thread */
+ 
+ static inline void
+@@ -1392,23 +1424,34 @@
+ 			    ud.probe_seen, (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
+ 		}
+ 		uint64_t now = mach_absolute_time();
+-		if (ud.ev_stamp != 0 &&
+-		    (now - ud.ev_stamp) * 1000 / ud_deadline_1s > 10000 &&
+-		    ud.stall_prints++ < 6) {
+-			printf("SWEET USB: STALL event thread silent %llu ms ticks %u "
+-			    "GEVNTCOUNT 0x%08x DSTS 0x%08x DCTL 0x%08x DALEPENA 0x%08x "
+-			    "GCTL 0x%08x\n",
+-			    (now - ud.ev_stamp) * 1000 / ud_deadline_1s, ud.ev_ticks,
+-			    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DSTS), dwc_rd(DCTL),
+-			    dwc_rd(DALEPENA), dwc_rd(GCTL));
++		uint64_t silent = ud.ev_stamp ? now - ud.ev_stamp : 0;
++		if (ud.ev_stamp != 0 && silent > ud_stall_ticks) {
++			uint64_t silent_ns = 0, ms;
++			absolutetime_to_nanoseconds(silent, &silent_ns);
++			ms = silent_ns / 1000000;
++			if (ud.stall_prints++ < 6) {
++				uint32_t gdscr = ud_gcc ? usb_rd(ud_gcc, GCC_USB30_PRIM_GDSCR) : 0;
++				uint32_t mclk = ud_gcc ? usb_rd(ud_gcc, usb_cbcr[0].off) : 0;
++				printf("SWEET USB: STALL event thread silent %llu ms ticks %u "
++				    "pos %u rx %llu tx %llu q %u busy %d GDSC 0x%08x master 0x%08x\n",
++				    ms, ud.ev_ticks, ud.evt_pos, ud.rx_frames, ud.tx_frames,
++				    ud.txq_count, (int)ud.tx_busy, gdscr, mclk);
++				/* If the block lost its clocks, this brings it back; if the
++				 * reads below then answer, the registers were fine all along. */
++				ud_usb_power_on();
++				printf("SWEET USB: STALL after power on GDSC 0x%08x master 0x%08x "
++				    "GEVNTCOUNT 0x%08x DSTS 0x%08x DCTL 0x%08x DALEPENA 0x%08x "
++				    "GCTL 0x%08x\n",
++				    ud_gcc ? usb_rd(ud_gcc, GCC_USB30_PRIM_GDSCR) : 0,
++				    ud_gcc ? usb_rd(ud_gcc, usb_cbcr[0].off) : 0,
++				    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DSTS), dwc_rd(DCTL),
++				    dwc_rd(DALEPENA), dwc_rd(GCTL));
++			}
+ 			if (ud_stall_panic) {
+-				panic("SWEET USB: event thread stalled for %llu ms "
+-				    "(ticks %u pos %u rx %llu tx %llu q %u busy %d, "
+-				    "GEVNTCOUNT 0x%08x DSTS 0x%08x GCTL 0x%08x)",
+-				    (now - ud.ev_stamp) * 1000 / ud_deadline_1s, ud.ev_ticks,
+-				    ud.evt_pos, ud.rx_frames, ud.tx_frames, ud.txq_count,
+-				    (int)ud.tx_busy, dwc_rd(GEVNTCOUNT) & 0xffff,
+-				    dwc_rd(DSTS), dwc_rd(GCTL));
++				panic("SWEET USB: event thread stalled %llu ms (ticks %u pos %u "
++				    "rx %llu tx %llu q %u busy %d)",
++				    ms, ud.ev_ticks, ud.evt_pos, ud.rx_frames, ud.tx_frames,
++				    ud.txq_count, (int)ud.tx_busy);
+ 			}
+ 		}
+ 		lck_mtx_lock(ud.lock);
+@@ -1838,7 +1881,7 @@
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
+ 	PE_parse_boot_argn("sweetusbverbose", &ud_verbose, sizeof(ud_verbose));
+ 	PE_parse_boot_argn("sweetusbstallpanic", &ud_stall_panic, sizeof(ud_stall_panic));
+-	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &ud_deadline_1s);
++	clock_interval_to_absolutetime_interval(10, NSEC_PER_SEC, &ud_stall_ticks);
+ 	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
