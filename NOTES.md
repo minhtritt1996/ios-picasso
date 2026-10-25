@@ -6,6 +6,23 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 20:40 (fb1 ring: the "correct" IDR reads wedge the SMMU bus) <<<
+1. Ring `fb1` (kernel `45e694c`, `/tmp/log-fb1.txt`, 186016 bytes) ends the SMMU trace at
+   `SWEET SMMU: map sid 0xe0 (cb -1)` then `SWEET SMMU: IDR0 ... groups 6 banks 1..7` and then
+   **no `bank N cbar ...` line at all**, while the UFS heartbeats keep coming from other CPUs.
+   So the calling thread is wedged inside one of the reads that follow - the `used[]` scan
+   (`SMR 0x800+4i` / `S2CR 0xc00+4i`) or the first CBAR/SCTLR read at `cb0 + (3 << pgshift)` -
+   with `nsmr = 6`, `cb0 = 0x8000`. The old, working code read IDR0/IDR1 from `0x20`/`0x24`,
+   took the loop bounds from those values and got through; reading `0x0`/`0x4` (the architectural
+   offsets) gives 6 groups and 8 banks, and the resulting reads hang the AHB on this SoC.
+   The earlier note ("a second read of CR0 wedges the bus", "S2CR(0xE0) read hangs") is the same
+   behaviour: SMMU register space answers a few accesses and then wedges.
+2. Consequence for the code: **revert `sweet_smmu.c` to the byte-for-byte version that
+   enumerated** (patch content at `e1194e6`) and keep only the `sweet_usb.c` TX/RX diagnostics.
+   The SMMU "correctness" work is parked until it can be done without extra reads.
+3. `45e694c` also never connected on USB (host dmesg: recovery disconnect at 13:32:37 and then
+   no `new high-speed USB device number`), which matches a wedged thread inside the USB probe.
+
 ### >>> UPDATE 2026-10-25 20:25 (tx1 ring: SMMU stopped before choosing a bank) <<<
 1. The `sweetboot=tx1` boot (kernel `32eca91`, ring pulled from recovery, 94516 bytes,
    `/tmp/log-tx1.txt`) never enumerated: the k60 host logs `usb 2-1.4.4: new high-speed

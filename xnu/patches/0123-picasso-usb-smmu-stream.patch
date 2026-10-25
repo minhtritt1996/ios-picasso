@@ -10,7 +10,7 @@
  bsd/dev/unix_startup.c			standard
 --- /dev/null
 +++ b/bsd/dev/sweet_smmu.c
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,245 @@
 +/*
 + * SWEET apps_smmu: a translating stage-1 context bank that identity-maps
 + * DRAM, so a DMA master whose stream ABL left unmatched can transfer.
@@ -45,7 +45,6 @@
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
-+extern ppnum_t pmap_find_phys_nofault(pmap_t pmap, addr64_t va);
 +int sweet_smmu_map_sid(unsigned sid);
 +
 +#define SMMU_PA         0x15000000u     /* apps_smmu */
@@ -101,57 +100,26 @@
 +static int
 +smmu_bank_create(void)
 +{
-+	uint32_t id0 = smmu_rd(0x0), id1 = smmu_rd(0x4);
++	uint32_t id0 = smmu_rd(0x20), id1 = smmu_rd(0x24);
 +	unsigned pgshift = (id1 >> 31) ? 16 : 12;
-+	/*
-+	 * picasso reads IDR0 = 0x00220406 (6 mapping groups, 4 KiB granule) and
-+	 * IDR1 = 0, i.e. the second identification register carries nothing
-+	 * usable here. Bank 0 is never free (the hypervisor uses it), so fall
-+	 * back to scanning banks 1..7 for one whose CBAR.C is clear.
-+	 */
 +	unsigned ncb = id1 & 0xff, ns2cb = (id1 >> 16) & 0xff;
-+	if (ncb == 0) {
-+		ncb = 8;
-+		ns2cb = 1;
-+	}
-+	printf("SWEET SMMU: IDR0 0x%08x IDR1 0x%08x groups %u banks %u..%u\n",
-+	    id0, id1, id0 & 0xff, ns2cb, ncb - 1);
 +	uint32_t gr1 = 1u << pgshift;
-+	uint32_t cb0 = ((id1 >> 28) & 7) ? (1u << (((id1 >> 28) & 7) + 1)) << pgshift
-+	    : 0x8000;   /* default context-bank array offset (SMMU-500) */
++	uint32_t cb0 = (1u << (((id1 >> 28) & 7) + 1)) << pgshift;
 +	smmu_nsmr = id0 & 0xff;
 +
 +	/* context banks already in use by a translating stream match group */
 +	uint32_t used[8] = { 0 };
 +	for (unsigned i = 0; i < smmu_nsmr && i < 128; i++) {
 +		uint32_t smr = smmu_rd(0x800 + 4 * i), s2cr = smmu_rd(0xc00 + 4 * i);
-+		if ((smr & (1u << 31)) && ((s2cr >> 16) & 3) == 0 &&
-+		    (s2cr & 0xff) < 64) {
++		if ((smr & (1u << 31)) && ((s2cr >> 16) & 3) == 0) {
 +			used[(s2cr & 0xff) / 32] |= 1u << ((s2cr & 0xff) % 32);
 +		}
 +	}
-+	/*
-+	 * Pick the bank deterministically: bank 3 is the one the successful run
-+	 * (CI 40193345254) attached the USB stream to and the host enumerated
-+	 * the phone with. Scanning from bank 1 instead picked a bank the
-+	 * hypervisor owns, and enumeration stalled after the first port reset,
-+	 * so only fall back to the scan when 3 is taken.
-+	 */
-+	static const unsigned prefer[] = { 3, 4, 5, 6, 7, 1, 2 };
-+	for (size_t i = 0; i < sizeof(prefer) / sizeof(prefer[0]) && smmu_cb < 0; i++) {
-+		unsigned c = prefer[i];
-+		if (c >= ncb) {
-+			continue;
++	for (unsigned c = ns2cb; c < ncb && smmu_cb < 0; c++) {
++		if (!(used[c / 32] & (1u << (c % 32))) &&
++		    !(smmu_rd(cb0 + (c << pgshift)) & 1)) {
++			smmu_cb = (int)c;
 +		}
-+		uint32_t cbar = smmu_rd(cb0 + (c << pgshift));
-+		int taken = (used[c / 32] & (1u << (c % 32))) != 0 || (cbar & 1) != 0;
-+		printf("SWEET SMMU: bank %u cbar 0x%08x sctlr 0x%08x %s\n", c, cbar,
-+		    smmu_rd(cb0 + ((uint32_t)c << pgshift) + 0x0),
-+		    taken ? "taken" : "free");
-+		if (taken) {
-+			continue;
-+		}
-+		smmu_cb = (int)c;
 +	}
 +	if (smmu_cb < 0) {
 +		printf("SWEET SMMU: no free context bank\n");
@@ -167,20 +135,11 @@
 +		return ENOMEM;
 +	}
 +	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)l1v);
-+	uint64_t l1_pa = pn ? ptoa_64(pn) : 0;
-+	printf("SWEET SMMU: page table va 0x%llx pmap_find_phys %u pa 0x%llx\n",
-+	    (uint64_t)l1v, (unsigned)pn, l1_pa);
 +	if (!pn) {
-+		/* a wired allocation may live where pmap_find_phys() cannot see it */
-+		ppnum_t pn2 = pmap_find_phys_nofault(kernel_pmap, (addr64_t)l1v);
-+		if (pn2 == 0) {
-+			printf("SWEET SMMU: no phys page for the page table\n");
-+			smmu_cb = -1;
-+			return ENOMEM;
-+		}
-+		l1_pa = ptoa_64(pn2);
-+		printf("SWEET SMMU: page table via nofault 0x%llx\n", l1_pa);
++		smmu_cb = -1;
++		return ENOMEM;
 +	}
++	uint64_t l1_pa = ptoa_64(pn);
 +	volatile uint64_t *l1 = (volatile uint64_t *)l1v;
 +	for (unsigned i = 2; i < 10; i++) {
 +		l1[i] = (uint64_t)i << 30 | 1u << 10 | 2u << 8 | 1u << 6 | 1;
@@ -210,8 +169,7 @@
 +		smmu_cb = -1;
 +		return EIO;
 +	}
-+	printf("SWEET SMMU: context bank %d, identity map, ttbr0 0x%llx (l1 0x%llx)\n",
-+	    smmu_cb, l1_pa, (uint64_t)l1v);
++	printf("SWEET SMMU: context bank %d, identity map, ttbr0 0x%llx\n", smmu_cb, l1_pa);
 +	return 0;
 +}
 +
@@ -221,9 +179,7 @@
 +{
 +	int error = EIO;
 +
-+	printf("SWEET SMMU: map sid 0x%x (cb %d)\n", sid, smmu_cb);
 +	if (__atomic_exchange_n(&smmu_lock, 1, __ATOMIC_ACQUIRE)) {
-+		printf("SWEET SMMU: map sid 0x%x busy\n", sid);
 +		return EBUSY;
 +	}
 +	if (smmu_base == 0) {
@@ -297,9 +253,6 @@
 +	error = (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) ? 0 : EIO;
 +out:
 +	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
-+	if (error) {
-+		printf("SWEET SMMU: map sid 0x%x failed %d\n", sid, error);
-+	}
 +	return error;
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
