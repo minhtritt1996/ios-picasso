@@ -266,7 +266,7 @@
  
  #define GCC_PA                  0x00100000
  #define GCC_SIZE                0x00090000
-@@ -1010,40 +1011,23 @@
+@@ -1010,40 +1011,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -308,18 +308,34 @@
 -				if (gbpa & 2u) {	/* ABORT: allow bypass again */
 -					*(volatile uint32_t *)(smmu + 0x0044) = gbpa & ~2u;
 -					__asm__ volatile ("dsb sy" ::: "memory");
--				}
++			uint32_t id0 = usb_rd(smmu, 0x0000), id1 = usb_rd(smmu, 0x0004);
++			unsigned nsmr = id0 & 0xff;
++			printf("SWEET USB: SMMU IDR0 0x%08x IDR1 0x%08x CR0 0x%08x GBPA 0x%08x SMRs %u CBAR0 0x%08x\n",
++			    id0, id1, usb_rd(smmu, 0x0020), usb_rd(smmu, 0x0044), nsmr,
++			    usb_rd(smmu, 0x1000));
++			/* SMR(n) is 0x800 + 4n: the stream ID is a *value*, never an index */
++			int shown = 0;
++			for (unsigned i = 0; i < nsmr && i < 128 && shown < 4; i++) {
++				uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
++				if (!(smr & (1u << 31))) {
++					continue;
++				}
++				uint32_t mask = (smr >> 16) & 0x7fff;
++				if (((smr ^ 0xe0) & ~mask & 0x7fff) == 0) {
++					printf("SWEET USB: SMMU smr %u 0x%08x s2cr 0x%08x matches sid 0xe0\n",
++					    i, smr, usb_rd(smmu, 0xc00 + 4 * i));
++					shown++;
+ 				}
 -				printf("SWEET USB: SMMU bypass e0: S2CR 0x%08x -> 0x%08x GBPA 0x%08x -> 0x%08x\n",
 -				    s2, usb_rd(smmu, s2off), gbpa, usb_rd(smmu, 0x0044));
--			}
-+			printf("SWEET USB: SMMU IDR0 0x%08x IDR1 0x%08x CR0 0x%08x GBPA 0x%08x SMR(e0) 0x%08x S2CR(e0) 0x%08x CBAR(0) 0x%08x\n",
-+			    usb_rd(smmu, 0x0000), usb_rd(smmu, 0x0004), usb_rd(smmu, 0x0020),
-+			    usb_rd(smmu, 0x0044), usb_rd(smmu, 0x800 + (0xe0 << 2)),
-+			    usb_rd(smmu, 0xc00 + (0xe0 << 2)), usb_rd(smmu, 0x1000));
+ 			}
++			if (!shown) {
++				printf("SWEET USB: SMMU no SMR matches sid 0xe0 (unmatched stream)\n");
++			}
  		}
  	}
  
-@@ -1162,6 +1146,23 @@
+@@ -1162,6 +1164,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  

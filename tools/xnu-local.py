@@ -120,7 +120,8 @@ def parse_log(path, tree):
             t = CI_ROOT.sub(tree, t)
             t = SDK_PLATFORM.sub(tree + '/sdk-kernel-platform/platform', t)
             if t == '-I.':
-                continue  # the runner's cwd; the component dirs are added below
+                i += 1    # the runner's cwd; the component dirs are added below
+                continue
             if t and not t.startswith('-fdebug-compilation-dir='):
                 fixed.append(t)
             i += 1
