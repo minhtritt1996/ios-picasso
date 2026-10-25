@@ -1,0 +1,209 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -39,6 +39,7 @@
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
+ #include <machine/atomic.h>
++#include <stdarg.h>
+ 
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
+@@ -216,6 +217,28 @@
+  * once, and if one of them wedges the controller this line is the only record
+  * of which LBA was in flight.
+  */
++/* Trace lines belong in the ring only: printf () draws the framebuffer
++ * console, and a wedged framebuffer write while sweet_ufs_lock is held stops
++ * every later file I/O (bp25: the ring ended in the middle of a "SWEET UFS gd"
++ * line, i.e. the console write died inside it and took the boot with it). */
++void
++sweet_tracef(const char *fmt, ...) __printflike(1, 2);
++
++void
++sweet_tracef(const char *fmt, ...)
++{
++	char line[192];
++	va_list ap;
++	int n;
++
++	va_start(ap, fmt);
++	n = vsnprintf(line, sizeof(line), fmt, ap);
++	va_end(ap);
++	if (n > 0) {
++		sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
++	}
++}
++
+ static void
+ ufs_trace(void)
+ {
+@@ -345,7 +368,7 @@
+ 	__builtin_arm_dsb(0xf);
+ 
+ 	if (su.trace) {
+-		printf("SWEET UFS gd: op 0x%02x lba 0x%llx n %u len %u prdt %u\n",
++		sweet_tracef("SWEET UFS gd: op 0x%02x lba 0x%llx n %u len %u prdt %u\n",
+ 		    cdb[0], (unsigned long long)su.cmd_lba, su.cmd_count, len,
+ 		    (unsigned)(len ? (utrd->prdt & 0xffff) : 0));
+ 	}
+@@ -388,13 +411,13 @@
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	if (su.trace) {
+-		printf("SWEET UFS cd: op 0x%02x lba 0x%llx ocs %u it %llu\n",
++		sweet_tracef("SWEET UFS cd: op 0x%02x lba 0x%llx ocs %u it %llu\n",
+ 		    cdb[0], (unsigned long long)su.cmd_lba, utrd->dw2 & 0xff,
+ 		    (unsigned long long)su.poll_iters);
+ 	}
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
+ 	if (su.trace) {
+-		printf("SWEET UFS e1: ack done\n");
++		sweet_tracef("SWEET UFS e1: ack done\n");
+ 	}
+ 
+ 	dma_sync(DMA_UTRL, sizeof(*utrd));
+@@ -404,7 +427,7 @@
+ 		dma_sync(DMA_UCD, sizeof(*ucd));
+ 	}
+ 	if (su.trace) {
+-		printf("SWEET UFS e2: utrd synced\n");
++		sweet_tracef("SWEET UFS e2: utrd synced\n");
+ 	}
+ 	if (len && dst != NULL) {
+ 		ufs_dma_sync_buf(dst, len, false);
+@@ -412,7 +435,7 @@
+ 		dma_sync(DMA_BOUNCE, len);
+ 	}
+ 	if (su.trace) {
+-		printf("SWEET UFS e3: buffer synced\n");
++		sweet_tracef("SWEET UFS e3: buffer synced\n");
+ 	}
+ 
+ 	uint32_t ocs = utrd->dw2 & 0xff;
+@@ -937,7 +960,7 @@
+ 	su.strat_t0 = mach_absolute_time();
+ 	su.strat_step = 1;
+ 	if (su.trace) {
+-		printf("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
++		sweet_tracef("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
+ 		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
+ 	}
+ 	for (uint32_t done = 0; done < count;) {
+@@ -991,13 +1014,13 @@
+ 	ufs_unlock();
+ 	su.strat_step = 6;
+ 	if (su.trace) {
+-		printf("SWEET UFS e4: unmapping bp\n");
++		sweet_tracef("SWEET UFS e4: unmapping bp\n");
+ 	}
+ 	buf_unmap(bp);
+ 
+ done:
+ 	if (su.trace) {
+-		printf("SWEET UFS out: %c lba 0x%llx ss %u err %d done %u\n",
++		sweet_tracef("SWEET UFS out: %c lba 0x%llx ss %u err %d done %u\n",
+ 		    rd ? 'R' : 'W', (unsigned long long)buf_blkno(bp),
+ 		    (unsigned)su.strat_step, error, (unsigned)su.strat_done);
+ 	}
+@@ -1145,9 +1168,17 @@
+ 	su.cache = (cache == 1);
+ 	su.wait = (wait == 1);
+ 	{
+-		uint32_t trace = 0;
++		uint32_t trace = 0, fboff = 0;
+ 		PE_parse_boot_argn("sweetufstrace", &trace, sizeof(trace));
+ 		su.trace = (trace == 1);
++		/* Draw nothing on the panel at all: console text still goes to the
++		 * ring, but a wedged framebuffer write can no longer stop the boot
++		 * (bp25 ended inside a console write with the UFS lock held).
++		 * Panics still draw. */
++		if (PE_parse_boot_argn("sweetfb_off", &fboff, sizeof(fboff)) && fboff) {
++			extern int sweet_console_muted;     /* osfmk/console/serial_console.c */
++			sweet_console_muted = 1;
++		}
+ 	}
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
+@@ -1232,6 +1263,10 @@
+ /* readable from other drivers: is the flush thread moving at all? */
+ uint64_t sweet_log_total_g;
+ unsigned sweet_log_seq_g, sweet_log_fails_g;
++/* Incremented by the ring-only kick thread, which busy-waits: it keeps
++ * counting when the console and every timeout sleep are stuck, so a frozen
++ * counter is a real hang.  Read by the reset watchdog. */
++volatile uint32_t sweet_kick_n;
+ /* Bumped on every flusher wakeup: tells a dead thread from one blocked in UFS. */
+ volatile uint32_t sweet_log_beats;
+ /* set by the thread itself, so a flusher that never starts is visible */
+@@ -1585,6 +1620,7 @@
+ 		if (len > 0) {
+ 			sweet_log_append(line, MIN(len, (int)sizeof(line) - 1));
+ 		}
++		sweet_kick_n++;
+ 	}
+ }
+ 
+--- a/iokit/Kernel/arm/PicassoModem.cpp
++++ b/iokit/Kernel/arm/PicassoModem.cpp
+@@ -38,6 +38,7 @@
+ extern "C" int sweet_ufs_pread(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, void *dst, uint32_t len);
+ extern "C" int sweet_ufs_pwrite(uint32_t lun, uint64_t first, uint64_t nblocks, uint64_t off, const void *src, uint32_t len);
+ extern "C" int sweet_ufs_emergency_dump(void);
++extern "C" void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
+ extern "C" int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern "C" int sweet_rpmh_arc_level(const char *res, unsigned level);
+ 
+@@ -3762,22 +3763,44 @@
+ static void
+ reset_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+-	uint32_t ms = 0;
++	extern volatile uint32_t sweet_kick_n;  /* bsd/dev/sweet_ufs.c */
++	uint32_t ms = 0, hangsecs = 12;
+ 	uint64_t a[8] = { 0x84000009ULL, 0, 0, 0, 0, 0, 0, 0 };
++	uint32_t last_kick = (uint32_t)~0u, quiet = 0;
+ 
+-	if (!PE_parse_boot_argn("sweetresetms", &ms, sizeof(ms)) || ms < 1000) {
+-		thread_terminate(current_thread());
+-		return;
++	if (PE_parse_boot_argn("sweetresetms", &ms, sizeof(ms)) && ms >= 1000) {
++		IOSleep(ms);
++		goto reset_now;
+ 	}
+-	IOSleep(ms);
++	if (!PE_parse_boot_argn("sweethangsecs", &hangsecs, sizeof(hangsecs)) || hangsecs < 6) {
++		hangsecs = 12;
++	}
++	/* The kick thread busy-waits and never touches the console, so its
++	 * counter is the one liveness signal that survives a wedged framebuffer
++	 * and every stuck timeout sleep.  A counter that has not moved for
++	 * hangsecs means the kernel is wedged: write the ring out without the
++	 * driver lock, then reset so the host can pull it from recovery. */
++	for (;;) {
++		IOSleep(3000);
++		uint32_t now = sweet_kick_n;
++		if (now == last_kick) {
++			quiet += 3;
++			if (quiet >= hangsecs) {
++				goto reset_now;
++			}
++		} else {
++			last_kick = now;
++			quiet = 0;
++		}
++	}
++reset_now:
+ 	{
++		/* Ring-only: a console write here is exactly what may be wedged. */
+ 		int d = sweet_ufs_emergency_dump();
+-		LOG("reset: ring dump (no lock) %d", d);
++
++		sweet_tracef("SWEET RESET: ring dump (no lock) %d\n", d);
+ 	}
+-	IOSleep(200);
+-	LOG("reset: PSCI SYSTEM_RESET");
+ 	smc_call(a);
+-	LOG("reset: PSCI reset returned");
+ 	thread_terminate(current_thread());
+ }
+ 
