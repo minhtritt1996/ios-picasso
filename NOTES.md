@@ -6,6 +6,29 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 17:35 (bp43 ring: no framebuffer client ever opens; 26 xpcproxy execs, no target exec) <<<
+1. **bp43 ring** (fresh, marker `sweetboot=bp43`, pulled 17:27). Early boot repeats bp42's: launchd's cache
+   handoff at boot-time 7.76 s, `Early boot complete`, then 26 x `exec xpcproxy` and one `exec SpringBoard`.
+   The services that *do* exec are the launchd built-ins (`launchd`, `mount`, `mount_hfs`, `usermanagerd`,
+   `xpcroleaccountd`, `tzinit`, `sysstatuscheck`, `seputil`, `prng_seedctl`, `mobile_obliterator`,
+   `launchd_cache_loader`) - and after that only `xpcproxy`, never the service it is a trampoline for.
+2. **The GUI path is never touched**: the only framebuffer lines are the driver's own start-up
+   (`AppleCLCD 1080x2400 stride 4320 at 0xa0000000 ... presented as 1125x2436` and the empty
+   IOAcceleratorES), with **no `SWEET FB: swap`/`sel` line at all**, i.e. no userland client ever opened
+   IOMobileFramebuffer. So `sweetfb_noconsole=1` cannot mute the console: nothing presents a frame. The frozen
+   console screen is therefore expected until a client opens the framebuffer.
+3. **Our own diagnostics killed the boot.** `bsd/dev/sweet_sample.c` prints `SMP --- sample 0` 90 s after
+   start and then walks `PROC_ALLPROCLIST` sampling user threads (`sweet_sample_task`); the ring ends exactly
+   on that line, so the sampler itself wedges the machine. Run with `sweetsample=-` from now on. The modem also
+   ends this boot with `slave-kernel 00000106 READY HANDOVER`, `00000107 FATAL READY HANDOVER`,
+   `modem crash reason: dog_hal_common.c:180:DOG detects stalled initialization, triage with IMAGE OWNER` at
+   t=35 s - the modem's own init watchdog fires; unrelated to the AP stall but worth remembering.
+4. **Patch 0120** adds the two missing observations: `SWEET EXEC FAIL <name> err <n> flags 0x..` at
+   `exec_mach_imgact`'s `bad:` (a failing exec was silent before) and
+   `SWEET FB: client <n> opened (task <p>)` in `AppleCLCD::addClient`, so one boot says whether the stall is a
+   failing exec or a daemon that never opens the display.
+5. **bp44** = run `40184920598` (0120) with `cpus=8 sweetfb_off=0 sweetfb_noconsole=1 sweetsample=-
+   modem_recovery=0 ufslogsecs=1 sweethangsecs=30 sweetboot=bp44`.
 ### >>> UPDATE 2026-10-25 17:20 (bp42 ring: modem READY, launchd early boot done, AppleCLCD published - the console was hiding the GUI) <<<
 1. **bp42's ring is fresh and rich** (pulled from `darwin` at 17:06, marker `sweetboot=bp42`). Kernel runs at
    **0xac000000 + 0x50000000** (`tools/mkadt.py` `PICASSO_PHYS_BASE`), i.e. the low bank and **below 4 GiB**,
