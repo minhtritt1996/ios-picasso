@@ -1,6 +1,29 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-25 07:30, latest)
+## Agent handoff / active work (2026-10-25 07:40, latest)
+### >>> UPDATE 2026-10-25 07:40 (bp12 flashed; it hangs EARLIER - screen stops at "core zlib
+### memory 0x0000", no recovery return in 450 s. Work stopped by the user at this point) <<<
+1. **bp12 = run `40145839716`, commit `0bb3800`** (patch 0095 applied - verified in the CI log and
+   the binary contains `lk %u/%u st %u`). Image `/tmp/variant-bp12.img`, md5
+   `9354e433d55b1752e2ee65075ca3b768`, flashed to `boot` with readback verified, cmdline = bp9's
+   plus `modem_watch=3`.
+2. **Result: worse than bp10/bp11.** The device never came back to recovery (no adb after 450 s)
+   and the console photo ends at `debug_log_init: Error!! gPanicBase ...` / `core zlib memory
+   0x0000` - i.e. **before** the `SWEET LOG:` / `PicassoModem: init` lines, so before the ring
+   exists and before the root mount. Nothing was logged anywhere: dead, not slow.
+3. Note the boot order this run reached: `SWEET HID: buttons/touch registered`, `SWEET FB:
+   AppleCLCD 1080x2400`, ifnet `lo0/gif0/stf0`, `Long Logs configured`, `Firehose configured`,
+   `standard timeslicing quantum`, then zlib. bp12 is the first run whose `modem_watch=3` would
+   have started GLINK at ~3 s, so a GLINK/QRTR path is now *in* the picture, but the stop is
+   before the ring, so this is unproven.
+4. **Device state: `boot` partition holds bp12 (9354e43...) and the phone hangs on that screen.**
+   To get back to a usable phone, hold Power 10-15 s to reset, then Power+Vol- for fastboot or
+   Power+Vol+ for OrangeFox recovery; nothing was changed in any other partition.
+5. Next step when work resumes: boot bp12 once more for a photo with the *full* screen (the last
+   photo is a partial scrolled view) to see whether `PicassoModem:` ever printed; if the stop is
+   before the ring, bisect 0095 by building it with `modem_watch=60` (GLINK never starts) to
+   separate "0095 itself breaks early boot" from "starting GLINK at 3 s breaks it".
+
 ### >>> UPDATE 2026-10-25 (the "iOS stops at 8 s" boot was **my own status-block write**: 8-LUN
 ### scan under `sweet_ufs_lock`; fixed in `0bb3800`, bp12 building) <<<
 1. **bp11 = bp10 kernel with `modem=0` (variant-bp11.img, md5 40e5c194d6700848fb07f7d674469946).**
