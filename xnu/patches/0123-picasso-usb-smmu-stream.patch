@@ -332,21 +332,20 @@
  		} else if (m != NULL) {
  			mbuf_freem(m);
  		}
-@@ -602,7 +616,12 @@
+@@ -602,7 +616,11 @@
  		}
  		ud.tx_busy = true;
  		ud.tx_frames++;
 -		ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, (uint32_t)len, TRBCTL_NORMAL);
++		/* called with ud.lock held: drop the frame, never wedge the queue */
 +		if (ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, (uint32_t)len, TRBCTL_NORMAL) != 0) {
-+			lck_mtx_lock(ud.lock);
 +			ud.tx_busy = false;
 +			ud.tx_drops++;
-+			lck_mtx_unlock(ud.lock);
 +		}
  	}
  }
  
-@@ -610,7 +629,14 @@
+@@ -610,7 +628,14 @@
  ud_if_output(ifnet_t ifp, mbuf_t m)
  {
  	lck_mtx_lock(ud.lock);
@@ -361,7 +360,7 @@
  		lck_mtx_unlock(ud.lock);
  		mbuf_freem(m);
  		ifnet_stat_increment_out(ifp, 0, 0, 1);
-@@ -753,7 +779,7 @@
+@@ -753,7 +778,7 @@
  }
  
  static void
@@ -370,7 +369,7 @@
  {
  	if (ev & 1) {                   /* device event */
  		uint32_t type = (ev >> 8) & 0xf;
-@@ -779,12 +805,20 @@
+@@ -779,12 +804,20 @@
  	unsigned type = (ev >> 6) & 0xf;
  	unsigned status = (ev >> 12) & 0xf;
  
@@ -391,7 +390,7 @@
  		ud.tx_busy = false;
  		ud_tx_kick_locked();
  		lck_mtx_unlock(ud.lock);
-@@ -833,18 +867,39 @@
+@@ -833,18 +866,39 @@
  		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
  		if (count) {
  			ud_sync(UD_EVT, UD_EVT_SIZE);
@@ -437,7 +436,7 @@
  		}
  		ud_sleep_ms(1);
  	}
-@@ -1010,40 +1065,41 @@
+@@ -1010,40 +1064,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -506,7 +505,7 @@
  		}
  	}
  
-@@ -1162,6 +1218,23 @@
+@@ -1162,6 +1217,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  
