@@ -6,6 +6,21 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 17:10 (BREAKTHROUGH: the kernel console now draws - patch 0119 works on the phone) <<<
+1. **bp42 = run `40182006448` (commit `5507af8`, patch 0119 applied) + cmdline
+   `cpus=8 sweetfb_off=0 sweethangsecs=30 ufslogsecs=1 sweetboot=bp42`**, image md5
+   `ff4cb0d4f681de1c9aa912052e62ef8a` (36,532,224 bytes), flashed over fastboot on k60 (`fastboot flash boot`,
+   OKAY) and booted.
+2. The panel now shows **live kernel text**: launchd's `Doing boot task` events for `tzinit`, `finish-restore`,
+   `finish-demo-restore`, `sysstatuscheck`, `prng_seedctl`, the launchd cache handoff ("Cache sent to launchd
+   successfully", `SC15D087-83DC-3DF3-862F-3E498B993B8E`), then `Early boot complete. Continuing system boot.`
+   and a stream of `exec xpcproxy`. So `SWEET_FB_PA=0xa0000000` is the right base and `sweetfb_off=0` is now
+   the *preferred* setting: no more blind boots.
+3. Consequences: the "console on = instant death" result from the 16:40 update was this address bug, not the
+   console. Any earlier conclusion drawn from a blank screen while the console was enabled is void.
+4. Reading the screen: the fb console wraps and does not scroll (newest text sits below the cursor, the line
+   after it is blank), so a photo of the bottom half is the current log tail. The ring in `darwin` still has
+   the full text and is the way to get it off the phone.
 ### >>> UPDATE 2026-10-25 17:05 (root cause of "console on = instant death": the bootstrap console drew at sweet's fb base) <<<
 1. **The bootstrap console was pointed at the wrong framebuffer.** `osfmk/arm64/start.s` (stage-0 band and
    the Normal-NC bootstrap block), `osfmk/arm64/arm_vm_init.c` (the reserved VA alias) and
