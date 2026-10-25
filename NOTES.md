@@ -6,6 +6,19 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 18:20 (bp46 traces were never in the kernel - CI skipped 0121 again) <<<
+1. **bp46 ring** (md5 `df8272680ba3cd2bb6a6de66bc9d91de`, marker `sweetboot=bp46`) contains neither
+   `SWEET EXECVE` nor `SWEET EXIT`, and neither does the kernel it booted: `strings` on
+   `/tmp/k-bp46/kernel.development.sweet` gives 0 for both, 1 for `SWEET EXEC FAIL` (0120). So CI silently
+   skipped 0121 - the failure mode NOTES already warns about - and the boot could not distinguish "xpcproxy
+   never reached execve" from "the trace is missing". Lesson relearned: never diff against a base kept on
+   disk; **always** `tools/check-patch.sh <patch> buildtree.tgz` with the buildtree of the run that produced
+   the kernel. `/tmp/orig119` was a pre-0120 copy, which is why the hunks were rejected.
+2. 0121 is now regenerated against `buildtree.tgz` of run `40187073075` and passes `check-patch.sh`
+   (`OK: applies cleanly`, 2 hunks). 0122 (heartbeat console gate) was checked the same way and applies.
+3. The heartbeat floods the console: each `SWEET HB` line is ~250 bytes, i.e. five console rows, so a few
+   seconds hide every userland message. `sweetufshb=0` (patch 0122) now keeps the HB in the ring only and
+   leaves the screen for userland output.
 ### >>> UPDATE 2026-10-25 18:05 (bp45: the sampler printed nothing - xpcproxy processes are gone before it runs) <<<
 1. **bp45 ring** (md5 `96ac1bd3958d4d0db9dd0629d3ae025e`, marker `sweetboot=bp45`, pulled 17:59) has **no `SMP`
    sample at all** and ends on the same 26 `exec xpcproxy` lines as bp44. `sweetsample=xpcproxy` therefore
