@@ -6,6 +6,30 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 17:20 (bp42 ring: modem READY, launchd early boot done, AppleCLCD published - the console was hiding the GUI) <<<
+1. **bp42's ring is fresh and rich** (pulled from `darwin` at 17:06, marker `sweetboot=bp42`). Kernel runs at
+   **0xac000000 + 0x50000000** (`tools/mkadt.py` `PICASSO_PHYS_BASE`), i.e. the low bank and **below 4 GiB**,
+   so the old 32-bit rmtfs problem is gone by construction: `PicassoModem: rmtfs: buffer pa b097c000`
+   (SCM assign still answers `ret=-2 res=0x2000000D`, as the reference port does; it is not needed).
+2. **The modem now boots fully**: `metadata: ehdr 1172 + hash 8248`, `init_image: ret=0 resumes=1`,
+   `mem_setup: ret=0`, `auth_and_reset: ret=0 resumes=35`, `t=32 ms: modem SMP2P item 435 up`,
+   `slave-kernel 00000006 READY HANDOVER`, **`modem is up (MODEM READY)`**.
+3. **Userland gets far**: launchd runs every early boot task (mount-phase-2, keybag, usermanagerd,
+   auearlyboot -> "No Early Boot Accessories", tzinit, finish-restore, sysstatuscheck, prng_seedctl,
+   launchd_cache_loader -> "Cache sent to launchd successfully"), then `Early boot complete. Continuing
+   system boot.`, then a burst of `exec xpcproxy` and one `exec SpringBoard`.
+4. **The display driver does attach**: `SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0xa0000000, default
+   surface 1, presented as 1125x2436` and `SWEET FB: empty IOAcceleratorES published`. So with
+   `sweetfb_noconsole=0` the console keeps painting over whatever the GUI draws - the frozen log screen is
+   the *console*, not a hung GUI. `sweetfb_noconsole=1` mutes the console once the GUI presents (the boot
+   text is still visible during early boot).
+5. **The machine stays alive after userland goes quiet**: `SWEET KICK` ticks up to `fage 607059` (607 s)
+   while nothing else is written, i.e. the kernel and its threads are fine; whatever stops is in
+   userland/IOKit, not a kernel wedge. A panic would have printed and dumped the ring.
+6. **bp43 = the same kernel with `sweetfb_noconsole=1`** (md5 `56baf5e90ded0942cceba72cbcf89994`) to see
+   whether SpringBoard actually draws. Read the ring order with care: the ring is circular, but this dump had
+   exactly one boot in it (one `SWEET LOG` line, marker at offset 252179 of 304941), so `tail` is valid here;
+   `SWEET KICK` `t` is printed modulo 1e9, so it wraps every second and cannot be used as an absolute clock.
 ### >>> UPDATE 2026-10-25 17:10 (BREAKTHROUGH: the kernel console now draws - patch 0119 works on the phone) <<<
 1. **bp42 = run `40182006448` (commit `5507af8`, patch 0119 applied) + cmdline
    `cpus=8 sweetfb_off=0 sweethangsecs=30 ufslogsecs=1 sweetboot=bp42`**, image md5
