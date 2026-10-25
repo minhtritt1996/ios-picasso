@@ -1,0 +1,202 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -25,6 +25,8 @@
+ #include <sys/kpi_mbuf.h>
+ #include <sys/kpi_socket.h>
+ #include <sys/reboot.h>
++#include <sys/vnode.h>
++#include <sys/fcntl.h>
+ #include <sys/sockio.h>
+ #include <net/if.h>
+ #include <net/if_types.h>
+@@ -914,6 +916,145 @@
+  * answered by one datagram. This is the port's only direct control path, so
+  * keep it dependency-free: no VFS, no threads of its own.
+  */
++
++/* ---- VFS helpers: the rootfs is HFS+, so the kernel is the only way to read
++ * or write it from this host (the flash box cannot mount HFS+). ---- */
++static long long
++ud_atoll(const char *s)
++{
++	long long v = 0;
++
++	while (*s >= '0' && *s <= '9') {
++		v = v * 10 + (*s++ - '0');
++	}
++	return v;
++}
++
++static int
++ud_b64(const char *in, uint8_t *out, int outmax)
++{
++	uint32_t acc = 0;
++	int bits = 0, n = 0;
++
++	for (; *in != 0; in++) {
++		int c = *in, v;
++		if (c >= 'A' && c <= 'Z') {
++			v = c - 'A';
++		} else if (c >= 'a' && c <= 'z') {
++			v = c - 'a' + 26;
++		} else if (c >= '0' && c <= '9') {
++			v = c - '0' + 52;
++		} else if (c == '+') {
++			v = 62;
++		} else if (c == '/') {
++			v = 63;
++		} else {
++			continue;                       /* '=' and anything else */
++		}
++		acc = (acc << 6) | (uint32_t)v;
++		bits += 6;
++		if (bits >= 8) {
++			bits -= 8;
++			if (n >= outmax) {
++				return -1;
++			}
++			out[n++] = (uint8_t)(acc >> bits);
++		}
++	}
++	return n;
++}
++
++static int
++ud_stat(const char *path, char *out, size_t outsz)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	struct vnode_attr va;
++	vnode_t vp = NULL;
++	int err = vnode_lookup(path, 0, &vp, ctx);
++
++	if (err != 0) {
++		snprintf(out, outsz, "%s: lookup error %d\n", path, err);
++		return err;
++	}
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_type);
++	VATTR_WANTED(&va, va_mode);
++	VATTR_WANTED(&va, va_data_size);
++	err = vnode_getattr(vp, &va, ctx);
++	if (err == 0) {
++		snprintf(out, outsz, "%s: type %d mode 0%o size %lld\n", path,
++		    (int)va.va_type, (int)(va.va_mode & 07777), va.va_data_size);
++	} else {
++		snprintf(out, outsz, "%s: getattr error %d\n", path, err);
++	}
++	vnode_put(vp);
++	return 0;
++}
++
++static int
++ud_cat(const char *path, int len, char *out, size_t outsz)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULL;
++	int resid = 0;
++	int err = vnode_lookup(path, 0, &vp, ctx);
++
++	if (err != 0) {
++		snprintf(out, outsz, "%s: lookup error %d\n", path, err);
++		return err;
++	}
++	if (len > (int)outsz - 1) {
++		len = (int)outsz - 1;
++	}
++	err = vn_rdwr(UIO_READ, vp, out, len, 0, UIO_SYSSPACE,
++	    IO_NODELOCKED | IO_NOCACHE, vfs_context_ucred(ctx), &resid,
++	    vfs_context_proc(ctx));
++	vnode_put(vp);
++	if (err != 0) {
++		snprintf(out, outsz, "%s: read error %d\n", path, err);
++		return err;
++	}
++	len -= resid;
++	out[len] = 0;
++	return len;
++}
++
++static int
++ud_put(const char *path, off_t off, const char *b64, char *out, size_t outsz)
++{
++	static uint8_t bin[1200];
++	vfs_context_t ctx = vfs_context_kernel();
++	struct vnode_attr va;
++	vnode_t vp = NULL;
++	int n = ud_b64(b64, bin, sizeof(bin));
++	int err;
++
++	if (n < 0) {
++		snprintf(out, outsz, "bad base64 (max %zu bytes per command)\n", sizeof(bin));
++		return EINVAL;
++	}
++	err = vnode_open(path, O_CREAT | O_TRUNC | O_RDWR, 0644, 0, &vp, ctx);
++	if (err != 0) {
++		snprintf(out, outsz, "%s: open error %d\n", path, err);
++		return err;
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_data_size, off + n);
++	err = vnode_setattr(vp, &va, ctx);
++	if (err == 0) {
++		err = vn_rdwr(UIO_WRITE, vp, (caddr_t)bin, n, off, UIO_SYSSPACE,
++		    IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ctx), NULL,
++		    vfs_context_proc(ctx));
++	}
++	vnode_close(vp, FWRITE, ctx);
++	snprintf(out, outsz, "%s: %s off %lld len %d\n", path,
++	    err == 0 ? "written" : "write error", off, n);
++	if (err != 0) {
++		snprintf(out, outsz, "%s: error %d at off %lld\n", path, err, off);
++	}
++	return err;
++}
++
+ static void
+ ud_cmd_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+@@ -990,9 +1131,43 @@
+ 			printf("SWEET USB: reboot requested over the command channel\n");
+ 			reboot_kernel(RB_AUTOBOOT, NULL);
+ 			continue;
++		} else if (strncmp(buf, "stat ", 5) == 0) {
++			memset(buf, 0, sizeof(buf));
++			ud_stat(buf + 5, buf, 1200);
++			iov.iov_len = strlen(buf);
++		} else if (strncmp(buf, "cat ", 4) == 0) {
++			char path[256];
++			int len = 1200;
++			strlcpy(path, buf + 4, sizeof(path));
++			char *sp = strchr(path, ' ');
++			if (sp != NULL) {
++				*sp = 0;
++				len = (int)ud_atoll(sp + 1);
++			}
++			memset(buf, 0, sizeof(buf));
++			int got = ud_cat(path, len, buf, sizeof(buf));
++			iov.iov_len = got > 0 ? (size_t)got : strlen(buf);
++		} else if (strncmp(buf, "put ", 4) == 0) {
++			char path[256];
++			char *sp;
++			strlcpy(path, buf + 4, sizeof(path));
++			if ((sp = strchr(path, ' ')) == NULL) {
++				iov.iov_len = (size_t)snprintf(buf, sizeof(buf),
++				    "usage: put <path> <offset> <base64>\n");
++			} else {
++				*sp = 0;
++				off_t off = (off_t)ud_atoll(sp + 1);
++				while (*++sp >= '0' && *sp <= '9') {
++					continue;
++				}
++				memset(buf, 0, sizeof(buf));
++				ud_put(path, off, sp + 1, buf, 1200);
++				iov.iov_len = strlen(buf);
++			}
+ 		} else {
+ 			iov.iov_len = (size_t)snprintf(buf, sizeof(buf),
+-			    "commands: log | info | probe 0|1 | reboot\n");
++			    "commands: log | info | probe 0|1 | reboot | stat <path> | "
++			    "cat <path> [len] | put <path> <off> <b64>\n");
+ 		}
+ 		size_t sent = 0;
+ 		sock_send(so, &msg, 0, &sent);
