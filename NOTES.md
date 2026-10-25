@@ -456,7 +456,50 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-25 08:00, latest)
+## Agent handoff / active work (2026-10-25, latest)
+### >>> 2026-10-25 (picasso): ECM LINK WORKS END-TO-END; UDP command channel added <<<
+**State: rev4 boots iOS with a working USB CDC-ECM device on the phone.**
+- Boot `sweetboot=rev4` (`payload-picasso-214625.bin`), cmdline
+  `debug=0x14e serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1
+  ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 ufsroot=darwin
+  launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_keepon=1
+  sweettouch=0 sweetusb=2 sweetusblog=1 sweetusbsmmu=1 sweetusbprobe=1 sweetscan=- sweetboot=rev4`
+- Measured on the flash host (k60, usb0 = 192.168.7.1/24): the phone gets
+  `inet 192.168.7.2` (ARP REACHABLE, lladdr 02:00:5e:77:ee:02), `ping -c3` =
+  3/3 0% loss (RTT 8-178 ms), the phone answers TCP SYN with SYN-ACK on
+  :22/:2222/:23/:5140, and it sends its own ARP requests and mDNS/Google-Cast
+  queries (95-frame capture). TX *and* RX, ARP and IP work in both directions.
+- **No listener is open on the phone**: the SYN-ACK comes from the stack, then
+  RST; the live log shows no sshd/xpcproxy job for it. This rootfs is an HFS+
+  image built from an iPhone X 16.7.16 rootfs, so OpenSSH is not installed.
+- Live console over the ECM link works: `nc -ukl 5140` on the host receives the
+  kernel ring (`/tmp/ue0.log` on k60, 5721 bytes for the boot).
+- **Patch 0124 (`xnu/patches/0124-sweet-usb-command-channel.patch`, commit
+  `7c7d60e`)**: a datagram command channel in the USB driver on
+  `192.168.7.2:5141` - `log` (last 1.3 KiB of the ring), `info` (link
+  counters), `probe 0|1` (TX self-test), `reboot` (`reboot_kernel(RB_AUTOBOOT)`).
+  Host helper: `/tmp/cmd.py` on k60, bound to 192.168.7.1:5141.
+  CI run 40204429228 (branch omp) builds the kernel with it.
+**PAUSED 2026-10-25 (user is closing the session; CI left running).**
+CI on branch `omp`: run `40204429228` (patch 0124 only) and run `40204734415`
+(0124+0125, triggered after 0125 was pushed) - both `gh workflow run xnu.yml --ref omp`.
+Nothing is flashed: the phone still runs rev4 without the command channel.
+**Next (planned, in this order):**
+1. Flash rev5 = rev4 cmdline + patches 0124/0125 (artifacts of run 40204734415),
+   then `python3 /tmp/cmd.py info` (k60, bound 192.168.7.1:5141) and
+   `python3 /tmp/cmd.py reboot` - must answer and reboot with no key hold.
+   Then `stat /bin/sh`, `stat /usr/libexec/sshd`, `stat /System/Library/xpc/launchd.plist`.
+2. Add VFS commands to the same channel (`stat`/`ls`/`cat`/`put`, kernel
+   `vnode_lookup` + `VNOP_GETATTR/READDIR/READ/WRITE`) so the rootfs can be
+   inspected from the host: does `/bin/sh` exist, does `/usr/libexec/sshd`?
+   (k60 cannot mount HFS+: no hfsplus module, no hfs tools.)
+3. Direct shell: write a launchd job into `/System/Library/xpc/launchd.plist`
+   (the `launchd_unsecure_cache=1` blob the loader sends to launchd) running
+   `/bin/sh -i` with `inetdCompatibility` + `SockServiceName: 4444`; launchd
+   passes the accepted connection as stdio, so `nc 192.168.7.2 4444` is a root
+   shell without needing OpenSSH. Real sshd only if the binary exists.
+
+## Agent handoff / active work (2026-10-25 08:00)
 ### >>> UPDATE 2026-10-25 08:00 (bp13 ring: iOS reached 8.5 s, flusher then blocked on a
 ### *partition lookup* (`lk 1/1`); 0096 caches lookups, bp14 flashing) <<<
 1. **bp13 (kernel `0bb3800`, real cmdline) ring**: `total 267883 seq 3`, last iOS line
