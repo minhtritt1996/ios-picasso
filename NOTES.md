@@ -6,6 +6,33 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 20:25 (tx1 ring: SMMU stopped before choosing a bank) <<<
+1. The `sweetboot=tx1` boot (kernel `32eca91`, ring pulled from recovery, 94516 bytes,
+   `/tmp/log-tx1.txt`) never enumerated: the k60 host logs `usb 2-1.4.4: new high-speed
+   USB device number 13/14` with no `New USB device found`, and the ring has **no `rx`
+   line at all** - the diagnostics never saw a frame.
+2. **The TX plumbing is fine**: the ring prints `SWEET USB: tx call 1 len 42 type 0x0806
+   configured 0 busy 0 q 0` while `ud_if_create()` runs, i.e. the stack hands the driver a
+   42-byte ARP frame through the legacy `if_output` path. It is dropped only because USB is
+   not configured yet at that point.
+3. **The SMMU is where this boot died.** The ring shows the probe line
+   (`SWEET USB: SMMU ... SMRs 6 CBAR0 0x0001f000`) and the new
+   `SWEET SMMU: IDR0 0x00220406 IDR1 0x00000000 groups 6 banks 1..7`, then heartbeats - no
+   `context bank` line, no `sid 0xe0 -> smr`. The only exit in `smmu_bank_create()` that
+   printed nothing was `pmap_find_phys() == 0` for the freshly wired L1 table, so the commit
+   that blamed "bank 1 instead of 3" (`c0bc135`) was a wrong guess: no bank was ever chosen
+   in that boot. The `prefer[] = {3,4,5,6,7,1,2}` order stays because bank 3 is the bank the
+   one successful attach used.
+4. `45e694c` (CI `40197359774`) keeps every trace and adds the fallback:
+   `SWEET SMMU: page table va 0x%llx pmap_find_phys %u pa 0x%llx`, then
+   `pmap_find_phys_nofault()`, then `SWEET SMMU: page table via nofault 0x%llx`; each
+   candidate bank logs `bank N cbar 0x... sctlr 0x... free|taken`; `sweet_smmu_map_sid`
+   logs entry and `map sid 0x%x failed %d`; `used[]` is bounded to banks < 64.
+5. Still unexplained from the working run (`/tmp/ring-smmu1.txt`, CI `40193345254`): it
+   printed `SWEET SMMU: context bank 3, identity map, ttbr0 0xafa80000` with the *old*
+   identification-register code, and enumerated, so whatever made `pmap_find_phys()` fail
+   in tx1 is new - the next ring answers it directly.
+
 ### >>> UPDATE 2026-10-25 22:05 (SMMU ATTACH WORKS: USB enumerates on picasso for the first time) <<<
 1. **Boot test `sweetboot=smmu1`** (kernel from run `40193345254`, md5 of ring
    `64353225c7f4944f840ddd846e14d8c4`) proves the SMMU theory: the ring prints
