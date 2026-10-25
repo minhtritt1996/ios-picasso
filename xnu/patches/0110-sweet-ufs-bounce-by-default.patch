@@ -1,0 +1,38 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -116,6 +116,7 @@
+ 	bool cache;                             /* boot-arg ufscache=1 */
+ 	bool wait;                              /* boot-arg ufswait=1 */
+ 	bool trace;                             /* boot-arg sweetufstrace=1 */
++	bool direct;                            /* boot-arg sweetdirect=1 */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
+@@ -973,7 +974,13 @@
+ 		void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 		if (rd) {
+ 			error = EINVAL;
+-			if (skip == 0 && (want % UFS_BLOCK) == 0 &&
++			/* Off by default: bp29/bp30 both stopped inside
++			 * ufs_read_blocks_dma () at the same read with no gd
++			 * line pending the doorbell, and the console showed a
++			 * kmem_invalid_object panic, i.e. the PRDT path is
++			 * unsound.  The bounce path gives data that booted, so
++			 * it is the default until that is understood. */
++			if (su.direct && skip == 0 && (want % UFS_BLOCK) == 0 &&
+ 			    (((uintptr_t)vaddr + done) % PAGE_SIZE) == 0) {
+ 				su.strat_step = 6;      /* direct DMA into the buffer */
+ 				error = ufs_read_blocks_dma(su.first_block + lba, blocks,
+@@ -1168,9 +1175,11 @@
+ 	su.cache = (cache == 1);
+ 	su.wait = (wait == 1);
+ 	{
+-		uint32_t trace = 0, fboff = 0;
++		uint32_t trace = 0, fboff = 0, direct = 0;
+ 		PE_parse_boot_argn("sweetufstrace", &trace, sizeof(trace));
+ 		su.trace = (trace == 1);
++		PE_parse_boot_argn("sweetdirect", &direct, sizeof(direct));
++		su.direct = (direct == 1);
+ 		/* Draw nothing on the panel at all: console text still goes to the
+ 		 * ring, but a wedged framebuffer write can no longer stop the boot
+ 		 * (bp25 ended inside a console write with the UFS lock held).
