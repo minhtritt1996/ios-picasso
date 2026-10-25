@@ -1,4 +1,22 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 11:55 (ring pulled from recovery: geometry, direct DMA works; console pause explained) <<<
+1. **`sweetfb_noconsole=1` is why bp20's screen froze at "Early boot complete"**: the kernel console
+   is paused when the GUI takes the framebuffer, so a still screen is NOT evidence of a wedge (and a
+   live HB is not visible either). The ring is the only channel after ~8 s.
+2. **The ring can be pulled even when the flusher died**: the ring buffer lives in RAM and keeps
+   growing; only the *flush* stops. Pulled bp20's from recovery (`tools/sweet-log-pull.sh -p darwin`),
+   header said `total 268200 flush #3`, last line `exec launchd_cache_loader` - the same instant as
+   bp16-bp19. So the wedge is still at the dyld cache read.
+3. **Real numbers from bp20's HB 1 (~2 s)**: `dma 759/69255168` (759 direct reads, 69 MB, last one
+   `ss 6` sc 16384 sd 16384 sdt 69 ms - completed), `pi 50134`, `hr 0`, and
+   **`pt 25701120/5243131`** = the `darwin` partition is blocks 25,701,120..30,944,251
+   (105.3 GB..126.8 GB, 21.5 GB). bp19's stalled `lba 0x1acc82f` (28,166,191) is therefore *inside*
+   the partition and inside the device, so the stall is not an out-of-range read.
+4. **0103** makes the modem watchdog (independent thread, `modem_recovery_after` = 150 s) write the
+   ring **without the driver lock** before it writes the BCB, so the next wedge leaves the whole
+   post-wedge ring (all HB lines, `pi`, `hr`) readable from recovery.
+5. Host side: `fastboot reboot recovery` works on this phone, and the ring pull needs
+   `tools/sweet-log.py` next to `tools/sweet-log-pull.sh` on the host that runs adb.
 ### >>> UPDATE 2026-10-25 11:20 (bp19/0101: direct DMA works - 1.09 GB read - then a command stalls; 0102) <<<
 1. **bp19 = 0101 (direct DMA into the caller's buffer) is a real advance**: the heartbeat read
    `dma 1517/1095884800` - **1.09 GB served with no bounce copy**, i.e. the whole dyld cache
