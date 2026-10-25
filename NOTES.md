@@ -1,5 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### >>> UPDATE 2026-10-25 09:00 (bp16/bp17: the boot stops inside the *copy out* of a HFS
+### read while holding the UFS lock; not the controller, not the console, not timeouts) <<<
+1. **bp16 (0094-0098).** Boot reached 35 s+ with the heartbeat printing, ring flusher dead at
+   8.5 s (`exec launchd_cache_loader`), for the whole boot `lk 4/1 ... age 0 ms`, and the modem
+   died at t=35 s (`slave-kernel ... FATAL READY HANDOVER`, `dog_hal_common.c:180:DOG detects
+   stalled initialization`). So the kernel, console, timers and the modem thread all live; the
+   **UFS lock is held by the strategy path (owner 4) with no SCSI command outstanding**.
+2. **bp17 (0099, strategy step markers).** `ss 3` = the strategy path returned from
+   `ufs_read_blocks` and is between that and the end of the copy out:
+   `SWEET HB 44: log 284493 seq 3 beats 3 | cmd 6822 lba 0x1acf8c7 n 68 lun 0 op 0x28 age 0 ms
+   | err 0 x0 | lk 4/1 t247 st 0 pp 5/0 ss 3 sb 0x1266e38 sc 278528 st247 | fails 0 fage 85066`
+   i.e. a 272 KiB read (`n 68` blocks) whose destination copy had not finished 50 s later.
+   `age 0` rules out the controller, `fage` growing rules out dead timeouts.
+3. **bp18 (0100)** copies in 4 KiB steps and prints `sd` (cursor), `sv` (destination VA) and
+   `sdt` (ms inside the block), so the next boot separates "store never returns" from "copy is
+   running absurdly slowly". Both destinations are normal kernel memory by construction
+   (`kmem_alloc_contig` bounce, HFS buffer VA), so a frozen cursor points at the mapping of the
+   *destination*, and a moving one at the copy path itself.
+4. **Ring reality check:** the ring can only be read from recovery (`adb dd` of `darwin`), and
+   since the flusher dies with the wedge it holds nothing past 8.5 s; the heartbeat on the
+   console is the channel that works, which is why the recent evidence is photographs.
+
 ### >>> UPDATE 2026-10-25 08:15 (bp14: cache fixed the 8.5 s stall, iOS reaches "Early boot
 ### complete", console then freezes while the kernel lives; 0097 adds a print-free kick line) <<<
 1. **bp14 = 0094+0095+0096** (commit `22fea12`, CI run `40148165764`), same real cmdline
