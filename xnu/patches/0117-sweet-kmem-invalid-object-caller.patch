@@ -1,0 +1,16 @@
+--- a/osfmk/vm/vm_kern.c
++++ b/osfmk/vm/vm_kern.c
+@@ -191,6 +191,13 @@
+ static void
+ __kmem_invalid_object_panic(uint32_t flags)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* No working debugger on this port: the caller chain of a bad kmem
++	 * free/alloc flags value is the only way to find the call site. */
++	printf("SWEET KMEM: invalid object flags=0x%x lr0=%p lr1=%p fp1=%p\n",
++	    flags, __builtin_return_address(0), __builtin_return_address(1),
++	    __builtin_frame_address(1));
++#endif
+ 	if (flags == 0) {
+ 		panic("KMEM_KOBJECT or KMEM_COMPRESSOR is required");
+ 	}
