@@ -1,0 +1,74 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1342,8 +1342,8 @@
+  * The bounce buffer is shared with the stuck thread on purpose: that thread
+  * is not coming back.
+  */
+-int
+-sweet_ufs_emergency_dump(void)
++static int
++sweet_ufs_dump_ring(bool force)
+ {
+ 	uint64_t base, total, pos;
+ 	void *bounce;
+@@ -1352,7 +1352,7 @@
+ 	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0) {
+ 		return ENXIO;
+ 	}
+-	if (su.cmd_start) {
++	if (!force && su.cmd_start) {
+ 		uint64_t ns = 0;
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - su.cmd_start, &ns);
+ 		if (ns < 10ull * NSEC_PER_SEC) {
+@@ -1396,6 +1396,32 @@
+ 	return error;
+ }
+ 
++int
++sweet_ufs_emergency_dump(void)
++{
++	return sweet_ufs_dump_ring(false);
++}
++
++/*
++ * Called from _cnputs () as soon as panic_active (): the console is muted in
++ * the bring-up boots, so a panic is otherwise invisible and takes the ring
++ * with it - bp29 stopped inside the direct-DMA read with no gd line, which
++ * is what a panic there would look like.  Writes the ring on every panic
++ * chunk (the partition then holds the panic message and backtrace).
++ */
++void
++sweet_ufs_panic_dump(void)
++{
++	static int busy;
++
++	if (busy) {
++		return;
++	}
++	busy = 1;
++	(void)sweet_ufs_dump_ring(true);
++	busy = 0;
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -403,8 +403,15 @@
+ 	extern int disableConsoleOutput;
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++	extern void sweet_ufs_panic_dump(void);     /* bsd/dev/sweet_ufs.c */
+ 	sweet_log_append(c, size);
+-	if (sweet_console_muted && !panic_active()) {
++	if (panic_active()) {
++		/* Muted consoles hide a panic completely: put the ring, which
++		 * already holds this chunk of panic text, on the partition. */
++		sweet_ufs_panic_dump();
++		return;
++	}
++	if (sweet_console_muted) {
+ 		return;
+ 	}
+ #endif
