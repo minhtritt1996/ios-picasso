@@ -390,42 +390,33 @@
  		ud.tx_busy = false;
  		ud_tx_kick_locked();
  		lck_mtx_unlock(ud.lock);
-@@ -833,18 +866,40 @@
+@@ -833,18 +866,33 @@
  		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
  		if (count) {
  			ud_sync(UD_EVT, UD_EVT_SIZE);
--			for (uint32_t done = 0; done < count; done += 4) {
--				uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
--				ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
-+			uint32_t done = 0;
-+			while (done + 4 <= count) {
-+				volatile uint32_t *w = (volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
-+				uint32_t ev = w[0];
-+				uint32_t p0 = 0, p1 = 0, p2 = 0;
-+				/* bit0 set is a device event (one dword); clear is a
-+				 * depevt, which is four dwords */
-+				uint32_t span = (ev & 1) ? 4 : 16;
-+				if (span == 16) {
-+					p0 = w[1];
-+					p1 = w[2];
-+					p2 = w[3];
-+				}
-+				ud.evt_pos = (ud.evt_pos + span) % UD_EVT_SIZE;
-+				done += span;
- 				if (ud.events++ < 200) {
++			/*
++			 * The event ring advances one dword at a time (rev1 proved it:
++			 * the dispatch below enumerated the device). Only the first
++			 * dword of an event is meaningful for dispatch; the following
++			 * dwords carry the parameters and are dispatched as harmless
++			 * noise, so the parameters are *peeked*, never consumed.
++			 */
+ 			for (uint32_t done = 0; done < count; done += 4) {
+ 				uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
++				uint32_t peek = *(volatile uint32_t *)(ud.dma + UD_EVT +
++				    ((ud.evt_pos + 4) % UD_EVT_SIZE));
+ 				ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
+-				if (ud.events++ < 200) {
 -					printf("SWEET USB: event 0x%08x\n", ev);
++				if (!(ev & 1)) {
 +					uint32_t ep = (ev >> 1) & 0x1f, type = (ev >> 6) & 0xf;
-+					uint32_t status = (ev >> 12) & 0xf;
-+					if (ev & 1) {
-+						printf("SWEET USB: dev ev type %u 0x%08x\n",
-+						    (ev >> 8) & 0xf, ev);
-+					} else {
-+						printf("SWEET USB: ev ep%u type %u status %u p %08x %08x %08x\n",
-+						    ep, type, status, p0, p1, p2);
++					if ((type == 1 || type == 3) && ud.events++ < 200) {
++						printf("SWEET USB: ev ep%u type %u status %u param0 "
++						    "0x%08x\n", ep, type, (ev >> 12) & 0xf, peek);
 +					}
  				}
 -				ud_event(ev);
-+				ud_event(ev, p0);
++				ud_event(ev, peek);
  			}
  			dwc_wr(GEVNTCOUNT, count);
  		}
@@ -437,7 +428,7 @@
  		}
  		ud_sleep_ms(1);
  	}
-@@ -1010,40 +1065,41 @@
+@@ -1010,40 +1058,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -506,7 +497,7 @@
  		}
  	}
  
-@@ -1162,6 +1218,23 @@
+@@ -1162,6 +1211,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  
