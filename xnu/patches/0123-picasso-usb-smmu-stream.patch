@@ -390,7 +390,7 @@
  		ud.tx_busy = false;
  		ud_tx_kick_locked();
  		lck_mtx_unlock(ud.lock);
-@@ -833,18 +866,39 @@
+@@ -833,18 +866,40 @@
  		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
  		if (count) {
  			ud_sync(UD_EVT, UD_EVT_SIZE);
@@ -402,8 +402,9 @@
 +				volatile uint32_t *w = (volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
 +				uint32_t ev = w[0];
 +				uint32_t p0 = 0, p1 = 0, p2 = 0;
-+				/* a device event is one dword, an endpoint event is four */
-+				uint32_t span = (ev & 1) ? 16 : 4;
++				/* bit0 set is a device event (one dword); clear is a
++				 * depevt, which is four dwords */
++				uint32_t span = (ev & 1) ? 4 : 16;
 +				if (span == 16) {
 +					p0 = w[1];
 +					p1 = w[2];
@@ -416,11 +417,11 @@
 +					uint32_t ep = (ev >> 1) & 0x1f, type = (ev >> 6) & 0xf;
 +					uint32_t status = (ev >> 12) & 0xf;
 +					if (ev & 1) {
-+						printf("SWEET USB: ev ep%u type %u status %u p %08x %08x %08x\n",
-+						    ep, type, status, p0, p1, p2);
-+					} else {
 +						printf("SWEET USB: dev ev type %u 0x%08x\n",
 +						    (ev >> 8) & 0xf, ev);
++					} else {
++						printf("SWEET USB: ev ep%u type %u status %u p %08x %08x %08x\n",
++						    ep, type, status, p0, p1, p2);
 +					}
  				}
 -				ud_event(ev);
@@ -436,7 +437,7 @@
  		}
  		ud_sleep_ms(1);
  	}
-@@ -1010,40 +1064,41 @@
+@@ -1010,40 +1065,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -505,7 +506,7 @@
  		}
  	}
  
-@@ -1162,6 +1217,23 @@
+@@ -1162,6 +1218,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  

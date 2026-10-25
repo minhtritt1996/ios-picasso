@@ -1,6 +1,7 @@
-# Cost control: this project's sessions reached 800k-token contexts, and
-# every turn re-bills the whole prompt (river/DeepSeek prefix cache, 95.7% hit).
-# Compact at 150k so per-request prompt cost stays ~5x lower.
+# Auto-compaction OFF (user decision 2026-10-24): summaries make the agent
+# forget pending work. Sessions keep full history up to the 1M window.
+# Cost note: every turn re-sends the whole prompt, so start a new session per
+# task instead of letting one run for days.
 compaction:
-  thresholdTokens: 150000
-  keepRecentTokens: 20000
+  enabled: false
+  midTurnEnabled: false
