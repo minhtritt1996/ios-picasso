@@ -270,7 +270,7 @@
  	unsigned    txq_head, txq_count;
  	bool        tx_busy;
  	uint64_t    rx_frames, tx_frames;
-+	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other; /* diagnostics */
++	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
  } ud;
  
  static inline void
@@ -345,7 +345,7 @@
  	}
  }
  
-@@ -610,7 +628,14 @@
+@@ -610,7 +628,20 @@
  ud_if_output(ifnet_t ifp, mbuf_t m)
  {
  	lck_mtx_lock(ud.lock);
@@ -354,13 +354,19 @@
 +		printf("SWEET USB: tx call %u len %u type 0x%02x%02x configured %d busy %d q %u\n",
 +		    ud.tx_calls, (unsigned)mbuf_pkthdr_len(m), f ? f[12] : 0, f ? f[13] : 0,
 +		    (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
++		if (f) {
++			printf("SWEET USB: tx hdr %02x:%02x:%02x:%02x:%02x:%02x > "
++			    "%02x:%02x:%02x:%02x:%02x:%02x\n",
++			    f[6], f[7], f[8], f[9], f[10], f[11],
++			    f[0], f[1], f[2], f[3], f[4], f[5]);
++		}
 +	}
  	if (ud.txq_count == UD_TXQ || !ud.configured) {
 +		ud.tx_drops++;
  		lck_mtx_unlock(ud.lock);
  		mbuf_freem(m);
  		ifnet_stat_increment_out(ifp, 0, 0, 1);
-@@ -753,7 +778,7 @@
+@@ -753,7 +784,7 @@
  }
  
  static void
@@ -369,7 +375,7 @@
  {
  	if (ev & 1) {                   /* device event */
  		uint32_t type = (ev >> 8) & 0xf;
-@@ -779,12 +804,20 @@
+@@ -779,12 +810,20 @@
  	unsigned type = (ev >> 6) & 0xf;
  	unsigned status = (ev >> 12) & 0xf;
  
@@ -390,7 +396,7 @@
  		ud.tx_busy = false;
  		ud_tx_kick_locked();
  		lck_mtx_unlock(ud.lock);
-@@ -833,18 +866,33 @@
+@@ -833,24 +872,76 @@
  		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
  		if (count) {
  			ud_sync(UD_EVT, UD_EVT_SIZE);
@@ -428,7 +434,50 @@
  		}
  		ud_sleep_ms(1);
  	}
-@@ -1010,40 +1058,41 @@
+ }
+ 
+ /*
++ * TX self-test: a frame the kernel sends on its own every two seconds, so a
++ * host capture proves the bulk IN path end to end without depending on what
++ * the iOS stack decides to transmit.
++ */
++static void
++ud_tx_probe_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	uint32_t seq = 0;
++	for (;;) {
++		ud_sleep_ms(2000);
++		if (!ud.configured) {
++			continue;
++		}
++		lck_mtx_lock(ud.lock);
++		if (!ud.tx_busy) {
++			uint8_t *f = (uint8_t *)(ud.dma + UD_TX);
++			bzero(f, 60);
++			memset(f, 0xff, 6);
++			memcpy(f + 6, ud_phone_mac, sizeof(ud_phone_mac));
++			f[12] = 0x88;
++			f[13] = 0xb5;
++			seq++;
++			snprintf((char *)f + 14, 40, "sweet-tx-probe %u", seq);
++			ud.tx_busy = true;
++			int err = ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, 60, TRBCTL_NORMAL);
++			if (ud.probes++ < 4) {
++				printf("SWEET USB: tx probe %u start err %d\n", seq, err);
++			}
++			if (err != 0) {
++				ud.tx_busy = false;
++			}
++		}
++		lck_mtx_unlock(ud.lock);
++	}
++}
++
++/*
+  * Live console log over USB Ethernet: every 100 ms the new bytes of the
+  * console ring (bsd/dev/sweet_ufs.c) go as UDP datagrams to
+  * 192.168.7.1:5140 (on the PC: nc -ukl 5140). Starts with the last 64 KiB
+@@ -1010,40 +1101,41 @@
  	}
  
  	/* 2. Initialize SNPS Femto High-Speed PHY (0x088e3000) on SM7250 / picasso */
@@ -497,7 +546,7 @@
  		}
  	}
  
-@@ -1162,6 +1211,23 @@
+@@ -1162,6 +1254,23 @@
  		    usb_rd(qs, QSCRATCH_GENERAL_CFG));
  	}
  
@@ -521,3 +570,15 @@
  	dwc_wr(GEVNTADRLO, (uint32_t)(ud.dma_pa + UD_EVT));
  	dwc_wr(GEVNTADRHI, (uint32_t)((ud.dma_pa + UD_EVT) >> 32));
  	dwc_wr(GEVNTSIZ, (1u << 31) | UD_EVT_SIZE);     /* interrupt masked: polled */
+@@ -1233,5 +1342,11 @@
+ 	if (livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	int probe = 1;
++	if (PE_parse_boot_argn("sweetusbprobe", &probe, sizeof(probe)) != 0 && probe != 0) {
++		if (kernel_thread_start(ud_tx_probe_thread, NULL, &thread) == KERN_SUCCESS) {
++			thread_deallocate(thread);
++		}
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
