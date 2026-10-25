@@ -1,4 +1,18 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+### >>> UPDATE 2026-10-25 15:50 (bp35 booted: panic is `__kmem_invalid_object_panic`, and panics are now symbolizable) <<<
+1. **bp35 flashed and booted** (image md5 `784581ba5c8508ce0f666d60dc05a8d0`, readback matched on the k60 host).
+   It goes much further than bp34: `dill_init`, `ifnet_attach` lo0/gif0/stf0, zone map
+   (`GEN1/GEN2/GEN3/DATA/metadata/metablits`), `VM bootstrap done; 63 maps, 165 entries and 501 holes
+   left`, log queues, firehose, oslog stream, timeslicing quanta, `mig_table_max_displ = 94`,
+   `debug_log_init: Error!! gPanicBase ...` twice, `kdp_core zlib memory 0x80000` - then panic.
+2. Caller `0xfffffe0007ad2660` = **`__kmem_invalid_object_panic`** (bp34's `0xfffffe00077f4d00` was
+   `load_init_program+0x14c`). So the kmem invariant panic survives the 0115 lock fix: the ring-dump race
+   was real and is fixed, but it was not the (only) corruptor.
+3. **Panics are symbolizable now**: `tools/symbolize.py KERNEL ADDRESS` parses the kernel's `LC_SYMTAB`
+   (71,085 symbols; the build keeps it, `aarch64-linux-gnu-nm` cannot read Mach-O and printed nothing).
+   `__kmem_failed_panic` sits at 0xfffffe0007ad2624, `__kmem_invalid_object_panic` at ...660.
+4. Next: bp36 = build 841695b (0116, reason string into the ring) with `ufslogsecs=1`, so the panic
+   message itself reaches the darwin partition before the machine stops.
 ### >>> UPDATE 2026-10-25 15:35 (bp35 packaged: 0115 lock fix in the kernel; 0114 was SKIPPED by CI, replaced by a validated 0116) <<<
 1. **CI silently skipped 0114** (`Skipping patch ... 0114-sweet-panic-capture-all-paths.patch ... error: patch failed: bsd/dev/sweet_ufs.c:1436`):
    it had been generated against my scratch tree instead of the post-0113 tree. 0115 (the lock fix) did apply.
