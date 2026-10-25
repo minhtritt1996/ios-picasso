@@ -1,5 +1,75 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## Agent handoff / active work (2026-10-25 07:30, latest)
+### >>> UPDATE 2026-10-25 (the "iOS stops at 8 s" boot was **my own status-block write**: 8-LUN
+### scan under `sweet_ufs_lock`; fixed in `0bb3800`, bp12 building) <<<
+1. **bp11 = bp10 kernel with `modem=0` (variant-bp11.img, md5 40e5c194d6700848fb07f7d674469946).**
+   Result: the machine did **not** freeze - console heartbeats ran to `SWEET HB 134`
+   (~270 s), and the modem-recovery timer reset it back to recovery at 150 s (340 s total).
+   But userspace I/O was dead from ~7.3 s on (`init_featureflags` is the last iOS line) and the
+   heartbeat reported `beats 2`, `cmd 1715` frozen: the **log flusher** was the one stuck thread.
+2. **Root cause found in the ring header**: `total 29828 seq 2` - the flusher's *first* flush
+   (seq 1) ran the modem status-block write I had gated on `seq == 1`, and that went through
+   `sweet_ufs_pwrite(..., sweet_ufs_part("darwin", ...))`. `sweet_ufs_part()` loops over **eight
+   LUNs** and a LUN that never answers costs a full command timeout each, and it does that with
+   `sweet_ufs_lock` held, so every file I/O request in the system blocks behind it: iOS stops
+   printing (console is behind the same lock), no error is logged anywhere, and the kernel looks
+   dead while it is alive. bp10 (same kernel, `modem=1`) froze at the same 8.4 s for this reason.
+3. **Fix `0bb3800` (patch 0095)**: write the status block with one `ufs_write_blocks()` into the
+   block just **below the ring header** (`base - 1`, same partition by construction, no lookup),
+   and add `lock_owner` / `lock_users` / `flush_stage` to the heartbeat (`lk <owner>/<users> st
+   <stage>`, owners 1..8 = part/pwrite/pread/strategy/sync/init/flush/status) so the next
+   unexplained stop names the path holding the lock.
+4. **`modem_watch` defaults to 60 s**: `modem_thread()` does `modem_watch(60)` before
+   `glink_start()`, so GLINK only starts at t=60 s. Every ring so far froze before that, which is
+   why none of them contains a single `glink:` line. bp12 therefore boots with **`modem_watch=3`**
+   (the watch loop already returns as soon as SMP2P says READY/HANDOVER at t=59 ms).
+5. **CI trap (again)**: patches must use `a/bsd/dev/sweet_ufs.c`, not `a/bsd/dev/arm/...` - run
+   `40144918620` silently *skipped* 0095 ("No such file or directory") and uploaded a kernel
+   without it. Validate with `tools/check-patch.sh` against the run's `xnu-buildtree` artifact
+   (paths inside `buildtree.tgz` are rooted at `xnu/`, so patch with `-p1` from `xnu/`).
+6. **bp12 = run `40145839716`** (commit `0bb3800`), cmdline = bp9's + `modem_watch=3`, i.e.
+   `modem=1 modem_rmtfs=1 modem_pdm=1 modem_pdr_restart=1 modem_glink_ms=0 ufslogsecs=1
+   modem_recovery=1 modem_recovery_after=150000`. Success criteria: iOS gets past 8.4 s, HB keeps
+   growing with `lk 0/0`, and `glink:`/`tick` lines appear from t≈3 s.
+7. **Ring read command** (works, busybox has 32-bit arithmetic): pull 1031 blocks from
+   `skip=$((5243131-1131))` of `darwin`, find `SWEETLOG`, header gives `total`/`seq`.
+
+## Agent handoff / active work (2026-10-25 06:30, latest)
+### >>> UPDATE 2026-10-25 (bp9 ring read at last: everything stops printing at ~8 s, inside the
+### modem thread's modem-partition FAT parse; heartbeat instrument committed as `bc7c418`) <<<
+1. **Ring location found (this was the blocker for every recent analysis).** `UFS_BLOCK` is
+   **4096**, not 512, and the ring sits at `base = first_block + nblocks - 1025` in those units,
+   i.e. the **last 4 MiB + 4 KiB of `darwin`**, *not* the last 512 KiB. Read it with
+   `dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=$((5243131-1131)) count=1131`
+   (that partition is 21,475,864,576 B = 5,243,131 x 4 KiB). `first block 0x1882b00` in the
+   kernel's own line is also in 4 KiB units. My earlier "no SWEETLOG at the end" results were
+   wrong: busybox `$(( ))` is **32-bit** and `21475864576/512` evaluates to `2008`, so all the
+   computed `skip` values were garbage. Always compute `skip` on the host.
+2. **bp9 (`2d4016b`) ring content**: header `seq=3 total=33120`; the last bytes are
+   `com.apple.xpc.launchd|...16:00:07.98 (dirs_c`, exactly the last line of the boot photo.
+   With `ufslogsecs=1` in the cmdline, **three** flushes in a whole boot mean `sweet_log_total`
+   stopped growing: nothing entered `_cnputs()` after ~8 s. The hook appends to the ring
+   *before* the console driver, so this is not a framebuffer/console-lock artefact - the
+   threads really stopped printing.
+3. **What stops is the modem thread**: its last line is `PicassoModem: vfat: bps 4096 spc 4
+   root 512 entries, FAT 44 KiB, data at sector 27 (fat16)`, i.e. it died/froze right after
+   mounting the modem partition's FAT and before reading the first file. The machine kept
+   scheduling (the flusher still woke and rewrote the same total), so this is not a panic.
+   Prime suspect: a LUN-4 (modem) command wedges the UFS/AHB, which also kills every MMIO
+   access that the printers would need - and `sweet_ufs_lock` then stays held.
+4. **Instrument (`bc7c418`, patch `0094-sweet-ufs-heartbeat.patch`)**: a heartbeat thread every
+   2 s writes `SWEET HB n: log <total> seq <n> beats <n> | cmd <serial> lba 0x.. n <blocks>
+   lun <n> op 0x.. age <ms> | err <errno> x<count>` **into the ring first and then to the
+   console** (so a wedged framebuffer cannot hide it) and touches no MMIO itself; every command
+   on a LUN other than the root one is appended as `SWEET CMD <serial>: lun <n> op 0x.. lba .. n ..`
+   *before* it is issued; the command path records errors instead of `printf()`ing while it
+   holds `sweet_ufs_lock`; the status block is written on flush `seq == 1` as well.
+5. **Next**: build `bc7c418`, package bp10 with the same cmdline as bp9, flash, boot, and read
+   the ring: if `SWEET HB` lines continue past 8 s the kernel is alive and the last
+   `SWEET CMD`/`age` names the stuck modem read; if the heartbeats stop too, the freeze is
+   global (scheduler or AHB).
+
 ## Agent handoff / active work (2026-10-25 00:10, latest)
 ### >>> UPDATE 2026-10-25 (bp8 hung: UFS write from the modem thread; fixed, needs a power cycle) <<<
 1. **bp8 = `b19f98b` (CI `40112275350`), same cmdline as bp7 plus `modem_recovery=1
