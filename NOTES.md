@@ -6,6 +6,19 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+### >>> UPDATE 2026-10-25 17:55 (bp44: no exec ever fails - xpcproxy is stuck before its own execve) <<<
+1. **bp44 ring** (run `40185576798`, patch 0120, md5 `2f363db5fc320cb53055cb0b173326c5`, marker
+   `sweetboot=bp44`, pulled 17:55). Same sequence as bp42/bp43, and the two new observations both stay silent:
+   **no `SWEET EXEC FAIL`** line at all and **no `SWEET FB: client`** line. So the 26 `exec xpcproxy` are
+   *successful* execs, nothing is refused, and the target exec of each xpcproxy never happens - xpcproxy stops
+   before it calls `execve`. No userland process ever opens IOMobileFramebuffer, which is why
+   `sweetfb_noconsole=1` cannot mute the console and the log screen stays.
+2. Consequence: the stall is not in the exec path and not in the display driver. The next question is *where
+   xpcproxy blocks*, which needs user stacks, so bp45 runs the same kernel with `sweetsample=xpcproxy`
+   (`bsd/dev/sweet_sample.c` prints `SMP name[pid] tN pc .. lr .. bt ..` for each thread). Sampling had been
+   turned off in bp44 because its `PROC_ALLPROCLIST` walk ended the bp43 ring; a boot that prints even one
+   sample before that is worth it.
+3. bp45 image md5 `77d760deb939709db9d674bc9d17e631`, flashed 17:57 over recovery adb and booted.
 ### >>> UPDATE 2026-10-25 17:35 (bp43 ring: no framebuffer client ever opens; 26 xpcproxy execs, no target exec) <<<
 1. **bp43 ring** (fresh, marker `sweetboot=bp43`, pulled 17:27). Early boot repeats bp42's: launchd's cache
    handoff at boot-time 7.76 s, `Early boot complete`, then 26 x `exec xpcproxy` and one `exec SpringBoard`.
