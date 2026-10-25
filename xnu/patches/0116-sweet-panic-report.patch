@@ -1,0 +1,96 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1462,6 +1462,58 @@
+  * is what a panic there would look like.  Writes the ring on every panic
+  * chunk (the partition then holds the panic message and backtrace).
+  */
++/*
++ * Called from consdebug_putc (): that is the path _doprnt uses to print the
++ * panic report, and it runs whether or not the console is muted.  The flush is
++ * rate limited: writing the ring takes a few hundred ms and the panic path must
++ * not spend that per character.
++ */
++int sweet_ufs_panic_dump(void);     /* defined below, used by both entries */
++
++void
++sweet_panic_putc(char c)
++{
++	extern const char *debugger_panic_str;  /* osfmk/kern/debug.c */
++	static uint64_t last_dump;
++
++	if (debugger_panic_str == NULL) {
++		return;
++	}
++	sweet_log_append(&c, 1);
++	if (c == '\n') {
++		uint64_t now = mach_absolute_time(), ns = 0;
++		if (last_dump != 0) {
++			absolutetime_to_nanoseconds(now - last_dump, &ns);
++		}
++		if (last_dump == 0 || ns > 200ull * NSEC_PER_MSEC) {
++			last_dump = now;
++			(void)sweet_ufs_panic_dump();
++		}
++	}
++}
++
++/*
++ * Called from panic_spin_forever (): the formatted reason still exists there,
++ * and its console print is gated on PE_i_can_has_debugger ()/panicDebugging
++ * while the paniclog has no region on this port, so this is the only
++ * unconditional place to put the reason into the ring.
++ */
++void
++sweet_panic_report(const char *s)
++{
++	char line[256];
++	int n;
++
++	if (s == NULL || s[0] == '\0') {
++		return;
++	}
++	n = snprintf(line, sizeof(line), "\nSWEET PANIC: %s\n", s);
++	if (n > 0) {
++		sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
++	}
++	(void)sweet_ufs_panic_dump();
++}
++
+ void
+ sweet_ufs_panic_dump(void)
+ {
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -911,6 +911,13 @@
+ void
+ consdebug_putc(char c)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* The panic report leaves through here, not through _cnputs (): keep it
++	 * in the persistent ring too (bsd/dev/sweet_ufs.c). */
++	extern void sweet_panic_putc(char c);
++	sweet_panic_putc(c);
++#endif
++
+ 	if (!disableConsoleOutput) {
+ 		console_write_char(c);
+ 	}
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1158,6 +1158,16 @@
+ void
+ panic_spin_forever(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* Last stop of a panic: debugger_panic_str still holds the formatted
++	 * reason, and nothing has printed it if the console print was gated. */
++	{
++		extern void sweet_panic_report(const char *s);
++		if (debugger_panic_str != NULL) {
++			sweet_panic_report(debugger_panic_str);
++		}
++	}
++#endif
+ 	for (;;) {
+ #if defined(__arm__) || defined(__arm64__)
+ 		/* On arm32, which doesn't have a WFE timeout, this may not return.  But that should be OK on this path. */
