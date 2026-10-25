@@ -1,0 +1,55 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -275,6 +275,9 @@
+ 	uint32_t    probe_seen;         /* probe-thread prints */
+ 	uint32_t    ctl_seen;           /* control-frame prints */
+ 	uint32_t    dev_ev;             /* device-event prints */
++	volatile uint32_t ev_ticks;     /* event-thread progress */
++	volatile uint64_t ev_stamp;     /* last event-thread loop, absolute */
++	uint32_t    stall_prints;
+ 	uint64_t    rx_frames, tx_frames;
+ 	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
+ } ud;
+@@ -940,6 +943,8 @@
+ 			}
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
++		ud.ev_ticks = ticks;
++		ud.ev_stamp = mach_absolute_time();
+ 		if ((++ticks % 1000) == 0) {
+ 			if (ud.ev_live++ < 200) {
+ 				printf("SWEET USB: ev alive %u ticks %u pos %u count 0x%x DSTS 0x%08x "
+@@ -957,6 +962,7 @@
+ extern uint64_t sweet_log_position(void);
+ 
+ static int ud_probe_on = 1;      /* sweetusbprobe=0 stops the TX probe */
++static uint64_t ud_deadline_1s; /* absolute ticks of 1 s, for stall prints */
+ /*
+  * Control channel: one command per Ethernet frame with the private EtherType
+  * 0x88b6, answered by one frame of the same type sent back to the sender.
+@@ -1220,6 +1226,17 @@
+ 			printf("SWEET USB: probe round %u configured %d busy %d q %u\n",
+ 			    ud.probe_seen, (int)ud.configured, (int)ud.tx_busy, ud.txq_count);
+ 		}
++		uint64_t now = mach_absolute_time();
++		if (ud.ev_stamp != 0 &&
++		    (now - ud.ev_stamp) * 1000 / ud_deadline_1s > 10000 &&
++		    ud.stall_prints++ < 6) {
++			printf("SWEET USB: STALL event thread silent %llu ms ticks %u "
++			    "GEVNTCOUNT 0x%08x DSTS 0x%08x DCTL 0x%08x DALEPENA 0x%08x "
++			    "GCTL 0x%08x\n",
++			    (now - ud.ev_stamp) * 1000 / ud_deadline_1s, ud.ev_ticks,
++			    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DSTS), dwc_rd(DCTL),
++			    dwc_rd(DALEPENA), dwc_rd(GCTL));
++		}
+ 		lck_mtx_lock(ud.lock);
+ 		if (!ud.tx_busy) {
+ 			uint8_t *f = (uint8_t *)(ud.dma + UD_TX);
+@@ -1645,6 +1662,7 @@
+ 		thread_deallocate(thread);
+ 	}
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
++	clock_interval_to_deadline(1000, NSEC_PER_MSEC, &ud_deadline_1s);
+ 	if (ud_probe_on) {
+ 		if (kernel_thread_start(ud_tx_probe_thread, NULL, &thread) == KERN_SUCCESS) {
+ 			thread_deallocate(thread);
