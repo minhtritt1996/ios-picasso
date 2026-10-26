@@ -1,0 +1,46 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -319,6 +319,7 @@
+ 	volatile uint32_t cmd_threads;
+ 	uint32_t    cmd_rescues;
+ 	uint32_t    rxw_rescues;
++	uint32_t    tx_rescues;         /* TX TRBs cleared from the kick thread */
+ 	volatile uint32_t rxw_loops;    /* frames handed to the stack */
+ 	uint32_t    rxw_prints;         /* first-frame prints */
+ 	uint32_t    rxw_panic;          /* sweetusbrxwpanic=1 */
+@@ -2233,6 +2234,35 @@
+ 			ud_rx_arm();
+ 		}
+ 	}
++	/*
++	 * TX needs the same repair, and for the same reason it has to live here: the
++	 * tests in the event thread (HWO clear, or a TRB older than two seconds) never
++	 * run once that thread stops. A single bulk-IN TRB that never completes leaves
++	 * tx_busy set, ud_tx_kick_locked() then starts nothing and every reply on the
++	 * control channel is silently dropped - which is what happened right after the
++	 * first successful `stat` on 0151.
++	 */
++	if (ud.tx_busy) {
++		volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
++		uint64_t age = ud.tx_stamp ? mach_absolute_time() - ud.tx_stamp : 0;
++		uint64_t ns = 0;
++
++		absolutetime_to_nanoseconds(age, &ns);
++		ud_sync(UD_TRB_TX, 16);
++		if (!(t[3] & TRB_HWO) || ns > 2000000000ULL) {
++			if (ud.tx_rescues++ < 8) {
++				ud_log("SWEET USB: tx trb %s %llu ms, cleared from the kick thread\n",
++				    (t[3] & TRB_HWO) ? "stale" : "completed without an event",
++				    ns / 1000000);
++			}
++			ud_epcmd(EP_TX, DEPCMD_ENDTRANSFER, 0, 0, 0);
++			ud_epcmd(EP_TX, DEPCMD_CLEARSTALL, 0, 0, 0);
++			lck_mtx_lock(ud.lock);
++			ud.tx_busy = false;
++			ud_tx_kick_locked();
++			lck_mtx_unlock(ud.lock);
++		}
++	}
+ }
+ 
+ /*
