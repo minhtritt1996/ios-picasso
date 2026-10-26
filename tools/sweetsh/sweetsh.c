@@ -138,6 +138,17 @@ puts_(const char *s)
 }
 
 static void
+putb_(const char *b, int n)
+{
+#ifdef SWEETSH_UDP_ONLY
+	extern void udp_emit(const char *s, int n);
+	udp_emit(b, n);
+#else
+	sys3(SYS_write, 1, (i64)b, (i64)n);
+#endif
+}
+
+static void
 putn_(i64 v)
 {
 	char buf[24];
@@ -409,9 +420,15 @@ ls_(const char *path)
 		}
 		for (i64 off = 0; off < n;) {
 			unsigned short reclen = *(unsigned short *)(buf + off + 16);
-			unsigned short namlen = *(unsigned short *)(buf + off + 18);
 			unsigned char type = (unsigned char)buf[off + 20];
 			const char *name = buf + off + 21;
+			/* The kernel leaves the 16-bit length field zero for this ABI, so
+			 * measure the name against what is left of the record instead. */
+			unsigned namlen = 0;
+			while (namlen < 255 && (unsigned)(name + namlen - buf) < (unsigned)reclen &&
+			    name[namlen] != 0) {
+				namlen++;
+			}
 
 			if (reclen == 0) {
 				break;
@@ -419,7 +436,7 @@ ls_(const char *path)
 			if (!(namlen == 1 && name[0] == '.') &&
 			    !(namlen == 2 && name[0] == '.' && name[1] == '.')) {
 				puts_(type == 4 ? "d " : (type == 8 ? "f " : "? "));
-				sys3(SYS_write, 1, (i64)name, namlen);
+				putb_(name, (int)namlen);
 				puts_("\r\n");
 			}
 			off += reclen;
@@ -788,6 +805,63 @@ serve(i64 lfd)
 	}
 }
 
+/*
+ * Install this running image over another path (the launchd carrier) and reboot.
+ *
+ * The carrier is the file launchd executes, so replacing it normally needs a
+ * recovery round trip: the shell cannot rewrite its own running image safely.
+ * Instead the new build is copied into a spare file (/bin/ps), executed from
+ * there with the argument "update", and that fresh process has no image in the
+ * way - it overwrites the carrier and reboots.
+ */
+static int
+running_from(const char *path)
+{
+	char hdr[16];
+	i64 fd = sys3(SYS_open, (i64)path, O_RDONLY, 0);
+	if (fd < 0) {
+		return 0;
+	}
+	i64 n = sys3(SYS_read, fd, (i64)hdr, sizeof(hdr));
+	sys3(SYS_close, fd, 0, 0);
+	if (n != (i64)sizeof(hdr)) {
+		return 0;
+	}
+	const char *self = (const char *)0x100000000;   /* our mapped Mach-O header */
+	for (int i = 0; i < (int)sizeof(hdr); i++) {
+		if (hdr[i] != self[i]) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void
+install_self(const char *dst)
+{
+	static char buf[24000];
+	i64 fd = sys3(SYS_open, (i64)"/bin/ps", O_RDONLY, 0);
+	if (fd < 0) {
+		puts_("update: cannot open /bin/ps\r\n");
+		return;
+	}
+	i64 n = sys3(SYS_read, fd, (i64)buf, sizeof(buf));
+	sys3(SYS_close, fd, 0, 0);
+	if (n <= 0) {
+		puts_("update: empty source\r\n");
+		return;
+	}
+	fd = sys3(SYS_open, (i64)dst, O_WRONLY, 0);
+	if (fd < 0) {
+		puts_("update: cannot open dst\r\n");
+		return;
+	}
+	i64 w = sys3(SYS_write, fd, (i64)buf, n);
+	sys3(SYS_close, fd, 0, 0);
+	puts_(w == n ? "update: written, rebooting\r\n" : "update: short write\r\n");
+	sys3(SYS_reboot, 0, 0, 0);              /* RB_AUTOBOOT */
+}
+
 void
 cstart(void)
 {
@@ -797,6 +871,13 @@ cstart(void)
 	 * fail at first - retry instead of falling through to a REPL that would
 	 * hit EOF on the console and exit. */
 #ifdef SWEETSH_UDP_ONLY
+	/* Am I running from the spare file rather than from the carrier? Compare the
+	 * first bytes of my own mapped image with the file: if they match, this
+	 * process was started from /bin/ps to install itself, and its image is not in
+	 * the way, so it can safely overwrite the carrier. */
+	if (running_from("/bin/ps")) {
+		install_self("/System/Library/CoreServices/SpringBoard.app/SpringBoard");
+	}
 	for (;;) {
 		serve_udp();            /* never returns */
 	}
