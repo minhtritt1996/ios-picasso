@@ -283,9 +283,11 @@ def _catalog_key(parent, name):
 DATE = 0xDC000000            # plausible HFS+ date (seconds since 1904)
 
 
-def _perms():
-    # HFSPlusBSDInfo: ownerID, groupID, adminFlags, ownerFlags, fileMode, special
-    return struct.pack('>IIBBHI', 0, 0, 0, 0, 0o100644, 0)
+def _perms(mode=0o100644):
+    # HFSPlusBSDInfo: ownerID, groupID, adminFlags, ownerFlags, fileMode, special.
+    # Executables need 0755: launchd refuses to start a job whose Program is not
+    # executable, and every binary this image grew was created 0644 until now.
+    return struct.pack('>IIBBHI', 0, 0, 0, 0, 0o100000 | mode, 0)
 
 
 def _fork(logical, nblocks, extents):
@@ -298,10 +300,10 @@ def _fork(logical, nblocks, extents):
     return out
 
 
-def _file_record(cnid, size, extents):
+def _file_record(cnid, size, extents, mode=0o755):
     body = struct.pack('>HHII', CAT_FILE, 0, 0, cnid)
     body += struct.pack('>IIIII', DATE, DATE, DATE, DATE, 0)
-    body += _perms()
+    body += _perms(mode)
     body += b'\0' * 32                                  # userInfo + finderInfo
     body += struct.pack('>II', 0, 0)                      # textEncoding, reserved
     body += _fork(size, sum(c for _, c in extents), extents)
