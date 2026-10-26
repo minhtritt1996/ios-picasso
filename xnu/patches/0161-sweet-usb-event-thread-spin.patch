@@ -1,0 +1,26 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1299,8 +1299,21 @@
+ 		 * the drain rate to one batch per millisecond, which is far below what a
+ 		 * host burst can produce - the ring filled and the controller stopped. */
+ 		if (count == 0) {
+-			ud.ev_stage = 6;        /* idle: sleeping */
+-			ud_sleep_ms(1);
++			ud.ev_stage = 6;        /* idle */
++			/*
++			 * Do not park on a kernel timeout here. This port's timers are not
++			 * reliable enough to wake a thread (a UFS command parked the same way
++			 * held its lock for a whole boot, and ev_stage == 6 in every ring shows
++			 * the event thread stopping right after it entered this sleep). A raw
++			 * spin of a few microseconds keeps the ring polled without depending on
++			 * the timer subsystem.
++			 */
++			uint64_t spin = 0;
++			nanoseconds_to_absolutetime(20ull * NSEC_PER_USEC, &spin);
++			uint64_t until = mach_absolute_time() + spin;
++			while (mach_absolute_time() < until) {
++				__builtin_arm_isb(0xf);
++			}
+ 		}
+ 	}
+ }
