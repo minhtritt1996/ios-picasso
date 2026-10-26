@@ -647,7 +647,28 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**How the two reference ports get SSH without runtime writes (research).**
+**BREAKTHROUGH: the kernel now reads the files created by catalog surgery.**
+Boot image `0156c1` (md5 `aab5b9d315800e7253575e830ab404d8`, `cpus=1`) + the
+re-ordered catalog:
+```
+/private/var/root/sweetsh               type 1 mode 0644 size 16512      <- ours
+/private/var/root/sh                    type 1 mode 0644 size 167504     (dash)
+/private/var/root/dbclient              type 1 mode 0644 size 268384
+/System/Library/LaunchDaemons/com.picasso.sweetsh.plist  type 1 mode 0644 size 463
+```
+Two of six still answer ENOENT (`dropbear`, `dropbearkey`) - those two records need
+looking at again. `cpus=8` panics on `Taking non-sleepable RW lock with preemption
+enabled @lock_rw.c:1377` (an lck_rw_lock_shared on a non-sleepable lock from a
+preemptible context) once the files are visible and launchd goes further; `cpus=1`
+boots through and answers on the control channel, so that panic is a
+preemption/race problem to fix separately.
+**Why the shell still does not answer:** launchd loads daemons from its cache
+(`/System/Library/xpc/launchd.plist`); a new plist file is not in the cache, so the
+job never runs (Bergamota's notes say the same: the cache entry *and* the file are
+needed). The carrier that is in the cache and runs at load is `SpringBoard` -
+replacing its 112,960-byte binary with the shell worked earlier in this session.
+
+**How the two reference ports get SSH without runtime writes (research).****How the two reference ports get SSH without runtime writes (research).**
 * **Bergamota / ios-sweet** (`ry-diffusion/Bergamota`, Poco F1, same driver family):
   `ssh root@192.168.7.2`, dropbear, key-only - and the userland is **baked into the
   HFS+ image on the host** (`mkiosroot-macos.sh`, macOS mounts HFS+ for real) before
