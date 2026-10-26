@@ -52,16 +52,8 @@ done
 [ "$up" = 1 ] || { echo "shell did not answer: pull the ring with tools/sweet-log-pull.sh -p darwin" >&2; exit 1; }
 echo "shell answers on UDP 4444"
 
-# 3. make the dropbear host key and start the daemon from the shell itself, then prove
-# SSH. The shell execs anything that is not one of its own commands, so these are sent
-# as plain command lines; keygen writes the file with -f and we read it back after.
-onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
-	python3 picasso-ecm.py l2 '/private/var/root/dropbearkey -t ed25519 -f $HOSTKEY' 120 2>/dev/null | tail -2"
-onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
-	python3 picasso-ecm.py l2 '/private/var/root/dropbear -r $HOSTKEY -p 22' 120 2>/dev/null | tail -2"
-sleep 5
-onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
-	python3 picasso-ecm.py l2 cat $HOSTKEY 120 2>/dev/null | head -2" | head -2
-
+# 3. The shell's own command channel is UDP 4444, not the kernel's L2 EtherType, so
+# the host-key and dropbear steps are exactly what picasso-ssh-up.py does: it sends
+# dropbearkey, checks the directory, starts dropbear and then tries an ssh login.
 echo "SSH check:"
-onhost "python3 picasso-ssh-up.py" 2>&1 | tail -12
+onhost "cd /tmp; python3 picasso-ssh-up.py" 2>&1 | tail -14
