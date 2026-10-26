@@ -1,9 +1,10 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -107,6 +107,32 @@
- 	return v;
+@@ -2120,3 +2120,29 @@
+ 	}
  }
- 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
++
 +/*
 + * Raw driver state for the kick thread, which keeps running when the USB event
 + * thread stops: reading it from there is the only way to see what the endpoint
@@ -29,10 +30,6 @@
 +	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
 +	    ud.rx_arm_err, ud.txq_count);
 +}
-+
- void
- sweet_usb_probe(void)
- {
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -1763,6 +1763,21 @@
