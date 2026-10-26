@@ -1,0 +1,108 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -313,6 +313,11 @@
+ 	volatile uint64_t rxw_enter;    /* frames handed to ifnet_input */
+ 	volatile uint64_t rxw_returned; /* ... and how many came back */
+ 	volatile uint32_t rxw_threads;  /* workers started (rescues included) */
++	volatile uint64_t cmd_done;     /* commands finished */
++	volatile bool     cmd_busy;     /* one is executing (maybe forever) */
++	volatile uint64_t cmd_stamp;
++	volatile uint32_t cmd_threads;
++	uint32_t    cmd_rescues;
+ 	uint32_t    rxw_rescues;
+ 	volatile uint32_t rxw_loops;    /* frames handed to the stack */
+ 	uint32_t    rxw_prints;         /* first-frame prints */
+@@ -1577,7 +1582,11 @@
+ 		ud.cmd_pending = false;
+ 		lck_mtx_unlock(ud.lock);
+ 
++		ud.cmd_busy = true;
++		ud.cmd_stamp = mach_absolute_time();
+ 		ud_cmd_exec(cmd, dst);
++		ud.cmd_busy = false;
++		os_atomic_inc(&ud.cmd_done, relaxed);
+ 		if (strcmp(cmd, "reboot") == 0) {
+ 			ud_sleep_ms(300);
+ 			ud_log("SWEET USB: reboot requested over the control channel\n");
+@@ -2098,6 +2107,7 @@
+ 		ud_log("SWEET USB: stop after RUN_STOP (sweetusbstep=%d)\n", usbstep);
+ 		return;
+ 	}
++	ud.cmd_threads = 1;
+ 	if (kernel_thread_start(ud_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+@@ -2146,14 +2156,14 @@
+ 	snprintf(out, outlen,
+ 	    " usb cfg %d rxarm %d txbusy %d evq 0x%x evtick %u rxw %llu/%llu th %u"
+ 	    " dalepa 0x%x hwo %d/%d rx %llu tx %llu lost %u/%u stale %u/%u"
+-	    " sp %u/%u err %u q %u\n",
++	    " sp %u/%u err %u q %u cmdt %u cmdd %llu\n",
+ 	    (int)ud.configured, (int)ud.rx_armed, (int)ud.tx_busy,
+ 	    dwc_rd(GEVNTCOUNT) & 0xffff, ud.ev_ticks, ud.rxw_enter, ud.rxw_returned,
+ 	    ud.rxw_threads, dwc_rd(DALEPENA),
+ 	    (rx[3] & TRB_HWO) ? 1 : 0, (tx[3] & TRB_HWO) ? 1 : 0,
+ 	    ud.rx_frames, ud.tx_frames, ud.rx_lost, ud.tx_lost,
+ 	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
+-	    ud.rx_arm_err, ud.txq_count);
++	    ud.rx_arm_err, ud.txq_count, ud.cmd_threads, ud.cmd_done);
+ }
+ 
+ /*
+@@ -2260,3 +2270,38 @@
+ 		}
+ 	}
+ }
++
++/*
++ * A command that touches the filesystem can block for ever on this port (the UFS
++ * path wedges), and because there is one command thread, that also stops `info`
++ * and `log` - which are exactly the commands needed to debug such a boot. So a
++ * command thread stuck for three seconds is abandoned and another is started: the
++ * channel keeps answering, and only the wedged command loses its reply.
++ */
++void
++sweet_usb_cmd_rescue(void)
++{
++	if (__predict_false(ud.dma == 0 || ud.cmd_threads >= 4)) {
++		return;
++	}
++	if (!ud.cmd_busy || ud.cmd_stamp == 0) {
++		return;
++	}
++	uint64_t age = mach_absolute_time() - ud.cmd_stamp;
++	uint64_t ns = 0;
++	thread_t t = NULL;
++
++	absolutetime_to_nanoseconds(age, &ns);
++	if (ns < 3000000000ULL) {
++		return;
++	}
++	ud.cmd_busy = false;            /* the wedged thread keeps its own copy */
++	if (kernel_thread_start(ud_cmd_thread, NULL, &t) == KERN_SUCCESS) {
++		thread_deallocate(t);
++		os_atomic_inc(&ud.cmd_threads, relaxed);
++		if (ud.cmd_rescues++ < 8) {
++			ud_log("SWEET USB: command stuck %llu ms, started cmd thread %u\n",
++			    ns / 1000000, ud.cmd_threads);
++		}
++	}
++}
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1766,6 +1766,15 @@
+ 		/* The USB driver's own watchdog lives in its event thread, which is
+ 		 * exactly what stops when the link dies - so report its state from here
+ 		 * every fifth spin (~10 s). */
++		{
++			extern void sweet_usb_watchdog(void);
++			extern void sweet_usb_rx_rescue(void);
++			extern void sweet_usb_cmd_rescue(void);
++
++			sweet_usb_watchdog();
++			sweet_usb_rx_rescue();
++			sweet_usb_cmd_rescue();
++		}
+ 		if ((n % 5) == 0) {
+ 			char usb[220];
+ 			extern void sweet_usb_state(char *out, int outlen);
