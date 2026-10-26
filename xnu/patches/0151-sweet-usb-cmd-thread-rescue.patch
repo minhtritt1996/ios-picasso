@@ -64,7 +64,7 @@
 +void
 +sweet_usb_cmd_rescue(void)
 +{
-+	if (__predict_false(ud.dma == 0 || ud.cmd_threads >= 4)) {
++	if (ud.dma == 0 || ud.cmd_threads >= 4) {
 +		return;
 +	}
 +	if (!ud.cmd_busy || ud.cmd_stamp == 0) {

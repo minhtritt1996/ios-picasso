@@ -60,7 +60,7 @@
 +	VATTR_SET(&va, va_data_size, size);
 +	err = vnode_setattr(vp, &va, ctx);
 +	if (err == 0) {
-+		err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++		err = VNOP_FSYNC(vp, 1 /* MNT_WAIT */, ctx);
  	}
 +	vnode_close(vp, FWRITE, ctx);
 +	snprintf(out, outsz, "%s: size %lld %s\n", path, size,
