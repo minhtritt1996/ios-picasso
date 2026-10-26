@@ -1,0 +1,15 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1768,8 +1768,12 @@
+ 		 * every fifth spin (~10 s). */
+ 		{
+ 			extern void sweet_usb_watchdog(void);
++			extern void sweet_usb_rx_rescue(void);
++			extern void sweet_usb_cmd_rescue(void);
+ 
+ 			sweet_usb_watchdog();
++			sweet_usb_rx_rescue();
++			sweet_usb_cmd_rescue();
+ 		}
+ 		if ((n % 5) == 0) {
+ 			char usb[220];

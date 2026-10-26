@@ -88,21 +88,3 @@
 +		}
 +	}
 +}
---- a/bsd/dev/sweet_ufs.c
-+++ b/bsd/dev/sweet_ufs.c
-@@ -1766,6 +1766,15 @@
- 		/* The USB driver's own watchdog lives in its event thread, which is
- 		 * exactly what stops when the link dies - so report its state from here
- 		 * every fifth spin (~10 s). */
-+		{
-+			extern void sweet_usb_watchdog(void);
-+			extern void sweet_usb_rx_rescue(void);
-+			extern void sweet_usb_cmd_rescue(void);
-+
-+			sweet_usb_watchdog();
-+			sweet_usb_rx_rescue();
-+			sweet_usb_cmd_rescue();
-+		}
- 		if ((n % 5) == 0) {
- 			char usb[220];
- 			extern void sweet_usb_state(char *out, int outlen);
