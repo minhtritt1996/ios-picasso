@@ -493,27 +493,31 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    ad-hoc signatures (README: ld64.lld signs with **4 KiB** pages, which this
    kernel accepts - `ubc_subr.c:374`). Not installed yet: the rootfs has no
    `/usr/local` and no way to create files from inside (see 8).
-**USB wedge: the analysis so far, with the ring logs.**
-Three boots were measured with instruments in the kernel:
-- `0143`/`0144` boot: `ev alive` to 200 s, `GEVNTCOUNT 0x0`, DALEPENA `0x2f`,
-  `DSTS` frame number ticking, `rx 255 tx 195` frozen, and crucially the ring
-  shows **ep0 still working** - `setup 21 43 000e 0000` every 1-2 s is answered
-  while bulk is dead. None of the new recovery paths fired (`rx lost`, `stale`,
-  `arm failed`, `pressure` all absent), so the bulk TRB is stuck with HWO=1: the
-  controller dropped it without an event.
-- `0144` boot: 179/200 burst replies in 10.1 s, then 0/80. The burst is what
-  kills it, not time.
-- `0145` (stale-TRB watchdog: ENDTRANSFER + CLEARSTALL + re-arm after 2 s) is
-  flashed and the very next boot was dead again at `rx 67 tx 105`, L2 silent.
-  Note the host cannot be reset from the workstation (no sudo), so a wedged boot
-  can only be cleared by rebooting the phone.
-**The instrument problem: the ring is only readable in recovery, and the link is
-only alive sometimes.** The console *is* visible on screen and survives a dead
-link (the photo of `ls /` proved userland writes to /dev/console show up), so the
-shell - not the kernel - should report a wedge: when it has received no UDP
-command for a minute it dumps its own diagnostics plus the ring tail to
-/dev/console, and the screen can be photographed. That needs the shell to know
-where the ring is: first `ls /dev` over a live link to find the disk node.
+**USB wedge: current state (0146 flashed, md5 `cc16da4e0ea756cfbee64add488162b0`,
+ring read after every boot).**
+Measured signatures, each from a ring pulled in recovery:
+- 0143/0144 boot: ep0 alive (`setup 21 43 000e 0000` every 1-2 s answered),
+  `GEVNTCOUNT 0`, DALEPENA `0x2f`, DSTS frame number ticking, `rx 255 tx 195`
+  frozen; no `stale`/`lost`/`pressure`/`arm failed` line ever fired.
+- 0145 boot: **two bus resets** then `connected, speed 0`, `rx 20 tx 0`, i.e.
+  bulk never came back - and the ring proved why: a bus reset wipes the core's
+  endpoint configuration, but `ud.configured` stayed set and `ud_configure()`
+  returns early while it is set, so the re-enumeration's SET_CONFIGURATION was
+  ignored. `0146` drops the flag on reset/disconnect so it is rebuilt.
+- 0146 boot: `rx 117 tx 104` (TX did work this time) then wedged again, L2
+  silent, host `txerr 60`.
+**`txerr 60` is the same number in every wedged boot** (60, 60, 240...), which
+smells like a *host* side giving up (usbnet's URB pool) rather than a device
+fault. That is the cheapest next experiment and it does not need the phone: run
+`sudo usbreset 1209:0001` (or unbind/bind `cdc_ether`) on the workstation while a
+boot is wedged. If the link recovers, the device was fine and usbnet stopped
+queueing URBs; if nothing changes, it is the device.
+**Kernel-side next instrument:** the kick thread in `sweet_ufs.c` survives every
+wedge (it keeps printing `SWEET HB`/`SWEET KICK`), while `ud_thread`'s own
+watchdog never fires - so export a `sweet_usb_state(char *buf, size_t)` from
+`sweet_usb.c` (configured, rx_armed, tx_busy, GEVNTCOUNT, DALEPENA, both TRB
+`HWO` bits, rx/tx/lost/stale counters) and have the kick thread append it to the
+ring every 10 s. Then one recovery read settles it.
 
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
