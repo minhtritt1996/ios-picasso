@@ -633,7 +633,13 @@ the snapshot's four ranges (verified) so the `Runtime corruption detected on
 iOSRoot` state from the first install is gone. The boot after that restore did not
 answer on the control channel within the first minute - either it is the port's
 usual early wedge, or the kernel is running its forced fsck over the 16 GiB volume
-before the driver is usable. That boot is the open question.
+before the driver is usable. That boot is the open question: host counters read `rx 1 tx 16 txerr 180`, i.e.
+the device never accepted a single bulk-OUT frame, which means it never reached
+SET_CONFIGURATION - the boot stopped before the gadget was configured, not a
+driver wedge (a wedged-but-configured link shows `txerr 0` and rx/tx counters
+climbing). Prime suspect: the forced fsck over the 16 GiB volume, or the mount
+refusing the volume outright. Next: one fresh boot; if the channel stays silent,
+pull the ring in recovery - it will say whether `hfs` is fsck'ing or erroring.
 **Decision for the next session:** stop editing the volume offline. The safe
 writers are the ones that own the volume while it is mounted - the *kernel's VFS*
 (via the shell's `cp`/`w`, or the `put` command) or Apple's own fsck. Catalog
