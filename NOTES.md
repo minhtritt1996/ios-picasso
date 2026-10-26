@@ -522,6 +522,41 @@ say whether the RX TRB was armed, whether `configured` was still set, and which
 counter moved - the watchdogs inside the event thread never fired in any boot,
 which is itself the anomaly to explain.
 
+**Big result (boot image `0148`, md5 `7f3971485510557daaeb4b15cfa0486c`): the USB
+driver is stable under sustained traffic.** With `0142`-`0148` in the kernel the
+kernel control channel answered **60/60 requests over 59 s with host `txerr 0`**
+(`rx 236 tx 292`), where every earlier boot died within seconds. The wedge had
+three separate causes, each proven from a ring pulled in recovery:
+1. the event ring was stepped 16 bytes whenever the pending count divided by 16,
+   so four buffered events lost three (`0141`);
+2. the single RX TRB was re-armed unconditionally, so a duplicate completion
+   overwrote the one the controller was filling (`0143`), and a bus reset left
+   `ud.configured` set so the re-enumeration's SET_CONFIGURATION was ignored and
+   no endpoint was ever configured again (`0146`);
+3. the *event thread itself* eventually disappears: the raw state taken by the
+   kick thread reads `evq 0xc evtick N hwo 0/0 dalepa 0x2f` frozen for a minute -
+   pending events nobody consumes, which is also why watchdogs living in that
+   thread never fired (`0147`, `0148`).
+`0148` therefore drains a stuck ring from the kick thread (the context that keeps
+printing through every wedge). With that, the link survives.
+
+**New blocker, different subsystem: kernel VFS writes stall the command thread.**
+`put` (vnode_open O_CREAT + vn_rdwr IO_SYNC) created
+`/private/var/root/sweetsh` (21 chunks) but ended up 169 bytes, and the very next
+commands got no reply at all - `rx 420 tx 453 txerr 0`, i.e. the driver healthy
+and the *command thread stuck inside VFS*. This is the same flaky UFS/HFS+ path
+that shows up as `fage` growing to 90 s. So: do **not** install files through the
+kernel channel. The working paths are recovery `dd` into an existing file, or the
+shell's own userland `cp`.
+**Where the shell stands:** installed at
+`/System/Library/CoreServices/SpringBoard.app/SpringBoard` (region md5
+`187fa27eaf302e87e21fbfcde1aa0254`, the build with `putb_` names, `cp`,
+`mkdir -p`, `w`, `reboot` and self-install). launchd spawns it in some boots only;
+the fix is a real LaunchDaemon plist file, which needs a file-creation path (the
+userland VFS from the shell, or HFS+ catalog surgery) - and now also
+`/private/var/root/sweetsh` as the binary, since `/usr/local` does not exist on
+this rootfs.
+
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
 root `struct passwd` when the lookup fails; and the binaries need real paths
