@@ -1,0 +1,15 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7442,7 +7442,11 @@
+ 						strlcpy(a1, imgp->ip_startargv + l0, sizeof(a1));
+ 					}
+ 				}
+-				printf("exec %s argv %s %s\n", p->p_name, a0, a1);
++				/* The file size names which binary was really exec'd: a
++				 * carrier we replaced is a few tens of kilobytes, the stock
++				 * daemon hundreds. */
++				printf("exec %s argv %s %s size %lld\n", p->p_name, a0, a1,
++				    imgp->ip_vattr != NULL ? (long long)imgp->ip_vattr->va_data_size : -1LL);
+ 			}
+ #else
+ 			printf("Allowing spawn of iOS binary %s since it has "
