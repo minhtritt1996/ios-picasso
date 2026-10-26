@@ -37,14 +37,17 @@
  			ufs_wr(REG_UTRLCLR, ~1u);
  			su.host_resets++;
  			(void)ufs_take_over_host();
-@@ -425,6 +441,11 @@
+@@ -425,6 +441,14 @@
  		__builtin_arm_isb(0xf);
  	}
  	__builtin_arm_dsb(0xf);
 +	if (write && su.wr_done++ < 8) {
-+		sweet_tracef("SWEET UFS WR DONE %u: dw2 0x%08x ocs %u it %llu IS 0x%x\n",
++		const uint8_t *r = ucd->resp;
++		sweet_tracef("SWEET UFS WR DONE %u: dw2 0x%08x ocs %u it %llu IS 0x%x rsp %02x %02x"
++		    " %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
 +		    su.wr_done, utrd->dw2, utrd->dw2 & 0xff,
-+		    (unsigned long long)su.poll_iters, ufs_rd(REG_IS));
++		    (unsigned long long)su.poll_iters, ufs_rd(REG_IS),
++		    r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11]);
 +	}
  	if (su.trace) {
  		sweet_tracef("SWEET UFS cd: op 0x%02x lba 0x%llx ocs %u it %llu\n",
