@@ -647,7 +647,27 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**BREAKTHROUGH: the kernel now reads the files created by catalog surgery.**
+**State at the end of this session (2026-10-26 late).**
+* Volume: pristine iOS root + the six catalog entries we created
+  (`/private/var/root/{sweetsh,sh,dropbear,dbclient,dropbearkey}` and
+  `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`) + the shell also written
+  over `SpringBoard` as the carrier. Of those, `sweetsh`, `sh`, `dbclient` and the
+  plist are **readable by the kernel** (`stat` returns type/mode/size);
+  `dropbear`/`dropbearkey` still ENOENT and need their records re-checked.
+* Kernel flashed: `0156c1`, boot image md5 `aab5b9d315800e7253575e830ab404d8`
+  (`cpus=1`). `cpus=8` panics on `lock_rw.c:1377` as soon as launchd goes further.
+* The shell did not answer on the last two boots because the USB link itself was
+  down (no reply even to `l2 info`), so the carrier question is still open: with
+  `cpus=1` the boot also takes minutes, and the UDP test window may simply have been
+  too early.
+**Next three steps, in order:** (1) confirm `dropbear`/`dropbearkey` records (same
+leaf/offset mistake as before, or a name-length edge); (2) boot with `cpus=1`, wait
+through the slow boot and watch `l2 info` for the link, then test UDP 4444 - the
+shell-as-SpringBoard carrier has worked before; (3) once the shell answers, run
+`/private/var/root/sh` and use `dropbearkey` + an `authorized_keys` put to start
+dropbear for SSH.
+
+**BREAKTHROUGH: the kernel now reads the files created by catalog surgery.****BREAKTHROUGH: the kernel now reads the files created by catalog surgery.**
 Boot image `0156c1` (md5 `aab5b9d315800e7253575e830ab404d8`, `cpus=1`) + the
 re-ordered catalog:
 ```
