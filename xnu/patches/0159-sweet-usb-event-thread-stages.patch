@@ -1,0 +1,65 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -330,6 +330,7 @@
+ 	uint32_t    stall_prints;
+ 	uint32_t    ev_geo;             /* event-ring geometry prints */
+ 	uint32_t    ev_press;           /* event-ring pressure prints */
++	volatile uint32_t ev_stage;     /* where the event thread is (0 = never ran) */
+ 	uint32_t    rx_spurious;
+ 	uint32_t    rx_arm_err;
+ 	uint32_t    tx_spurious;
+@@ -1158,6 +1159,7 @@
+ {
+ 	uint32_t ticks = 0;
+ 	for (;;) {
++		ud.ev_stage = 1;                /* about to read the pending count */
+ 		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
+ 		if (count >= UD_EVT_SIZE - 16 && ud.ev_press++ < 8) {
+ 			/* A full ring stops the controller: this line is the proof that a
+@@ -1166,7 +1168,9 @@
+ 			    count, UD_EVT_SIZE, ud.evt_pos);
+ 		}
+ 		if (count) {
++			ud.ev_stage = 2;        /* invalidating the event buffer */
+ 			ud_sync(UD_EVT, UD_EVT_SIZE);
++			ud.ev_stage = 3;        /* dispatching events */
+ 			/*
+ 			 * The event ring advances one dword at a time (rev1 proved it:
+ 			 * the dispatch below enumerated the device). Only the first
+@@ -1203,8 +1207,11 @@
+ 						    "0x%08x\n", ep, type, (ev >> 12) & 0xf, peek);
+ 					}
+ 				}
++				ud.ev_stage = 4;
+ 				ud_event(ev, peek);
++				ud.ev_stage = 3;
+ 			}
++			ud.ev_stage = 5;        /* acknowledging the batch */
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+ 		ud.ev_ticks = ticks;
+@@ -1292,6 +1299,7 @@
+ 		 * the drain rate to one batch per millisecond, which is far below what a
+ 		 * host burst can produce - the ring filled and the controller stopped. */
+ 		if (count == 0) {
++			ud.ev_stage = 6;        /* idle: sleeping */
+ 			ud_sleep_ms(1);
+ 		}
+ 	}
+@@ -2195,14 +2203,14 @@
+ 	snprintf(out, outlen,
+ 	    " usb cfg %d rxarm %d txbusy %d evq 0x%x evtick %u rxw %llu/%llu th %u"
+ 	    " dalepa 0x%x hwo %d/%d rx %llu tx %llu lost %u/%u stale %u/%u"
+-	    " sp %u/%u err %u q %u cmdt %u cmdd %llu\n",
++	    " sp %u/%u err %u q %u cmdt %u cmdd %llu evs %u\n",
+ 	    (int)ud.configured, (int)ud.rx_armed, (int)ud.tx_busy,
+ 	    dwc_rd(GEVNTCOUNT) & 0xffff, ud.ev_ticks, ud.rxw_enter, ud.rxw_returned,
+ 	    ud.rxw_threads, dwc_rd(DALEPENA),
+ 	    (rx[3] & TRB_HWO) ? 1 : 0, (tx[3] & TRB_HWO) ? 1 : 0,
+ 	    ud.rx_frames, ud.tx_frames, ud.rx_lost, ud.tx_lost,
+ 	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
+-	    ud.rx_arm_err, ud.txq_count, ud.cmd_threads, ud.cmd_done);
++	    ud.rx_arm_err, ud.txq_count, ud.cmd_threads, ud.cmd_done, ud.ev_stage);
+ }
+ 
+ /*
