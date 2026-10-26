@@ -573,12 +573,21 @@ ranges into the phone's `darwin` partition in recovery (~1.5 MB: volume header +
 bitmap `0:129`, catalog leaves `183682:2` and `1763522:2`, data `3062493:233`)
 and each range verified by md5 on the device. SpringBoard was restored to stock
 (md5 `09495bc9...`) since the plist replaces it as the carrier.
-**Open right now:** the boot after that install had a wedged link again
-(`rx 178 tx 250 txerr 0`, then no reply to any kernel-channel command, 0/15
-probes), so it is *not yet known* whether launchd loaded the plist. Next recovery
-trip: pull the ring and grep it for `com.picasso.sweetsh` (launchd logs the job
-name and any plist error) and for `exec sweetsh`; also pull blocks `183682:2` and
-`1763522:2` to confirm the phone's catalog matches the image.
+**The USB stack is fixed - the failure is now above it.** The ring of the boot
+after the install, taken at 260 s of uptime, ends with:
+`SWEET USBSTATE 130: usb cfg 1 rxarm 1 txbusy 0 evq 0x0 evtick 458706 dalepa 0x2f
+hwo 1/0 rx 249 tx 177 lost 0/0 stale 0/0 sp 1/0 err 0 q 0`
+- ring empty (`evq 0`), the event thread spinning (`evtick` 458706), the RX TRB
+armed (`hwo 1`), counters moving, no stale/lost/arm errors. Compare with the first
+diagnosis of this class (`evq 0xc`, `hwo 0/0`, counters frozen).
+So patches `0141`-`0148` did their job. What still stops is (a) the boot itself:
+launchd only reaches `exec xpcproxy` over and over and never the daemon phase, so
+the LaunchDaemon plist never runs, and (b) the kernel command channel stopped
+answering my probes although the driver was healthy - the RX worker handing
+frames to `ifnet_input` is the next suspect (`rxw N enter` without `returned`;
+the trace is capped at eight frames, so that needs a counter, not a print).
+**Verified on the device:** the shipped catalog really contains `sweetsh`,
+`sh`, `dropbear`, `dbclient`, `dropbearkey` and `com.picasso.sweetsh.plist`.
 
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
