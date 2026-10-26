@@ -493,20 +493,27 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    ad-hoc signatures (README: ld64.lld signs with **4 KiB** pages, which this
    kernel accepts - `ubc_subr.c:374`). Not installed yet: the rootfs has no
    `/usr/local` and no way to create files from inside (see 8).
-**USB wedge: root cause found in the ring log (0143).** The log pulled from
-`darwin` before flashing 0142 shows the shape exactly: `SWEET USB: ev alive
-65..79` (the event thread was running), `GEVNTCOUNT 0x0` every second, DALEPENA
-`0x2f`, GCTL unchanged, **DSTS' frame number still ticking**, `rx 424 tx 393`
-frozen, `SWEET HB` heartbeats continuous. An empty event ring plus a live frame
-counter plus host URBs timing out means the device is NAKing forever: the RX
-endpoint has no TRB left, so every completion path re-arming the single RX TRB
-unconditionally had overwritten the TRB the controller was still filling (a
-duplicate completion during a burst does it). `0143` makes `ud_rx_arm()`
-idempotent behind `ud.rx_armed`, drops a completion that arrives with no armed
-TRB instead of feeding a stale frame to the stack, and clears the flag on bus
-reset/disconnect. `0142` (drain the ring without sleeping, log ring pressure) is
-the companion change: the poll loop slept 1 ms after every batch, capping the
-drain rate far below a host burst.
+**USB wedge: the analysis so far, with the ring logs.**
+Three boots were measured with instruments in the kernel:
+- `0143`/`0144` boot: `ev alive` to 200 s, `GEVNTCOUNT 0x0`, DALEPENA `0x2f`,
+  `DSTS` frame number ticking, `rx 255 tx 195` frozen, and crucially the ring
+  shows **ep0 still working** - `setup 21 43 000e 0000` every 1-2 s is answered
+  while bulk is dead. None of the new recovery paths fired (`rx lost`, `stale`,
+  `arm failed`, `pressure` all absent), so the bulk TRB is stuck with HWO=1: the
+  controller dropped it without an event.
+- `0144` boot: 179/200 burst replies in 10.1 s, then 0/80. The burst is what
+  kills it, not time.
+- `0145` (stale-TRB watchdog: ENDTRANSFER + CLEARSTALL + re-arm after 2 s) is
+  flashed and the very next boot was dead again at `rx 67 tx 105`, L2 silent.
+  Note the host cannot be reset from the workstation (no sudo), so a wedged boot
+  can only be cleared by rebooting the phone.
+**The instrument problem: the ring is only readable in recovery, and the link is
+only alive sometimes.** The console *is* visible on screen and survives a dead
+link (the photo of `ls /` proved userland writes to /dev/console show up), so the
+shell - not the kernel - should report a wedge: when it has received no UDP
+command for a minute it dumps its own diagnostics plus the ring tail to
+/dev/console, and the screen can be photographed. That needs the shell to know
+where the ring is: first `ls /dev` over a live link to find the disk node.
 
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
