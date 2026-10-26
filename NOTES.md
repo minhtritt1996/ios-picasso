@@ -705,7 +705,12 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**Do not page the ring in a tight loop.** `l2 logback N` is a *command* like any
+**The gadget itself can disappear after a channel flood.** After the logback loop
+the host then reported `no gadget interface found` and `lsusb` showed the 1209 device
+gone while the phone was still booted, so the USB bring-up died, not just the command
+queue. Reboot the phone before blaming the driver: a fresh boot enumerates again.
+
+**Do not page the ring in a tight loop.****Do not page the ring in a tight loop.** `l2 logback N` is a *command* like any
 other: a loop of a few hundred of them fills the single command queue, and every
 later `l2 info` then returns stale `logback` replies for minutes (measured: the
 channel looked dead while it was working through the backlog). Read the tail with
