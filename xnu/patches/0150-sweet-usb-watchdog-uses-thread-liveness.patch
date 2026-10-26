@@ -1,0 +1,68 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -2171,31 +2171,36 @@
+ void
+ sweet_usb_watchdog(void)
+ {
+-	static uint32_t seen;
+-	static uint32_t stuck;
++	static uint32_t last_tick;
++	static uint32_t stalled;
+ 	uint32_t count;
+ 
+ 	if (ud.dma == 0 || !ud.configured) {
+-		seen = 0;
+-		stuck = 0;
++		last_tick = 0;
++		stalled = 0;
+ 		return;
+ 	}
+-	count = dwc_rd(GEVNTCOUNT) & 0xffff;
+-	if (count == 0) {
+-		seen = 0;
+-		stuck = 0;
++	/*
++	 * Liveness is the event thread's own loop counter, not the pending count:
++	 * under load GEVNTCOUNT keeps changing, so waiting for it to hold still
++	 * meant the ring was never drained exactly when it was filling - it
++	 * overflowed at 1024 events and the controller stopped, which is the
++	 * `rx 23` frozen state of the 0149 boot. While the thread advances, it
++	 * owns the ring; once it stops advancing, this thread takes over.
++	 */
++	if (ud.ev_ticks != last_tick) {
++		last_tick = ud.ev_ticks;
++		stalled = 0;
+ 		return;
+ 	}
+-	if (count != seen) {
+-		seen = count;
+-		stuck = 0;
++	if (++stalled < 2) {
+ 		return;
+ 	}
+-	if (++stuck < 2) {
++	stalled = 0;
++	count = dwc_rd(GEVNTCOUNT) & 0xffff;
++	if (count == 0) {
+ 		return;
+ 	}
+-	stuck = 0;
+-	seen = 0;
+ 	ud_log("SWEET USB: watchdog drains stuck ring, count 0x%x evtick %u\n",
+ 	    count, ud.ev_ticks);
+ 	ud_sync(UD_EVT, UD_EVT_SIZE);
+@@ -2210,13 +2215,11 @@
+ 		}
+ 	}
+ 	dwc_wr(GEVNTCOUNT, count);
+-	/* The TRB the dead thread never re-armed: HWO clear means we own it. */
+ 	{
+ 		volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
+ 
+ 		ud_sync(UD_TRB_RX, 16);
+-		if (!(t[3] & TRB_HWO)) {
+-			ud.rx_armed = false;
++		if (!(t[3] & TRB_HWO) && !ud.rx_armed) {
+ 			ud_rx_arm();
+ 		}
+ 	}
