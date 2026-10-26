@@ -51,7 +51,9 @@ jobs:
           export CFLAGS="-O2 -fno-stack-protector"
           export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign,-platform_version,ios,${IOS_MIN},${IOS_MIN}"
           ./configure --host=aarch64-apple-darwin || { tail -40 config.log; exit 1; }
-          make -j"$(nproc)" || { tail -40 config.log; exit 1; }
+          # The account wrapper is needed only while compiling and linking, so it
+          # is force-included here rather than during configure.
+          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h" || { tail -40 config.log; exit 1; }
           llvm-objdump --macho --private-headers src/dash | grep -E "MH_MAGIC|LC_CODE_SIGNATURE" | head -3
           mkdir -p "$GITHUB_WORKSPACE/out" && cp src/dash "$GITHUB_WORKSPACE/out/sh"
 
@@ -61,9 +63,9 @@ jobs:
           tar xzf dropbear.tar.gz
           cd dropbear-DROPBEAR_2022.83
           export CC="clang --target=arm64-apple-ios${IOS_MIN} -isysroot $SDK"
-          # getpwnam() goes through opendirectoryd on iOS 16 and that daemon does
-          # not run in this port, so the forced include synthesizes root.
-          export CFLAGS="-O2 -fno-stack-protector -Wno-error -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h"
+          # Plain flags for configure: its probes *expect* an undeclared builtin
+          # to fail, and force-including <string.h> would defeat them.
+          export CFLAGS="-O2 -fno-stack-protector -Wno-error"
           export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign"
           # no zlib in the SDK build, no syslog daemon in this port, and the port
           # has no /etc/dropbear yet - the key files are generated on the phone
@@ -72,7 +74,9 @@ jobs:
           ./configure --host=aarch64-apple-darwin --disable-zlib --disable-syslog \
                       --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp \
                       --disable-wtmpx || { tail -60 config.log; exit 1; }
-          make -j"$(nproc)"
+          # The account wrapper is needed only while compiling and linking, so it
+          # is force-included here rather than during configure.
+          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h"
           ls -l dropbear dbclient dropbearkey 2>/dev/null || { tail -60 config.log; exit 1; }
           for b in dropbear dbclient dropbearkey; do
             llvm-objdump --macho --private-headers $b | grep -E "LC_CODE_SIGNATURE|LC_LOAD_DYLIB" | head -4
