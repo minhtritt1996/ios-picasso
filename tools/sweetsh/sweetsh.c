@@ -54,6 +54,7 @@ typedef unsigned int u32;
 #define O_RDONLY 0
 #define O_CREAT  0x0200
 #define O_TRUNC  0x0400
+#define O_APPEND 0x0008
 
 static i64
 sys3(i64 n, i64 a, i64 b, i64 c)
@@ -285,6 +286,44 @@ console_always_num(const char *prefix, i64 v, const char *suffix)
 		sys3(SYS_write, fd, (i64)buf, n);
 		sys3(SYS_close, fd, 0, 0);
 	}
+}
+
+/* Status file: the console is not reliably writable for a daemon, but userland file
+ * writes work, so the socket lifecycle goes to /private/var/root/sweetsh.status and
+ * is read back over the kernel channel with `cat`. */
+static i64 status_fd = -2;
+
+static void
+status_line(const char *tag, i64 v)
+{
+	if (status_fd == -2) {
+		status_fd = sys3(SYS_open, (i64)"/private/var/root/sweetsh.status",
+		    O_WRONLY | O_CREAT | O_APPEND, 0644);
+	}
+	if (status_fd < 0) {
+		return;
+	}
+	char buf[64];
+	int n = 0;
+	while (tag && *tag && n < 40) {
+		buf[n++] = *tag++;
+	}
+	char digits[24];
+	int d = 0;
+	unsigned long long u = (v < 0) ? (unsigned long long)(-v) : (unsigned long long)v;
+
+	if (v < 0 && n < 42) {
+		buf[n++] = '-';
+	}
+	do {
+		digits[d++] = (char)('0' + (u % 10));
+		u /= 10;
+	} while (u && d < 20);
+	while (d > 0 && n < 56) {
+		buf[n++] = digits[--d];
+	}
+	buf[n++] = '\n';
+	(void)sys3(SYS_write, status_fd, (i64)buf, n);
 }
 
 static void
@@ -882,11 +921,14 @@ serve_udp(void)
 
 		if (berr2 == 0) {
 			console_always_num("sweetsh: bound udp 4444 after tries ", bind_tries + 1, "\r\n");
+			status_line("bind ok tries ", bind_tries + 1);
+			status_line("pid ", sys3(SYS_getpid, 0, 0, 0));
 			break;
 		}
 		last_err = berr2;
 		if (++bind_tries == 1 || (bind_tries % 20) == 0) {
 			console_always_num("sweetsh: bind failed ", berr2, "\r\n");
+			status_line("bind err ", berr2);
 		}
 		sys3(SYS_close, fd, 0, 0);
 		sleep_ms(500);
@@ -903,6 +945,7 @@ serve_udp(void)
 			sleep_ms(20);
 			continue;
 		}
+		status_line("rx len ", n);
 		cmd[n] = 0;
 		char *nl = cmd;
 		while (*nl && *nl != '\n' && *nl != '\r') {

@@ -705,7 +705,22 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**0161 fixed the event thread, and the daemon stall has a name.**
+**Neither carrier answers UDP, and the console cannot say why (2026-10-26 late).**
+SpringBoard and `/usr/libexec/safetyalertsd` were both replaced in turn by the shell
+(ring-proven `exec SpringBoard`, no crash, boot continues); the poll never gets a
+reply and the console never shows a `sweetsh:` line - a daemon cannot open
+/dev/console, so the lifecycle prints are lost. The shell now writes
+`/private/var/root/sweetsh.status` instead (userland file writes work):
+`pid N`, `bind ok tries N` / `bind err N`, and `rx len N` per datagram received. That
+file answers the one open question - whether the shell runs and cannot bind, or binds
+and never receives a userland datagram (the kernel's own EtherType control channel
+works, but nothing has yet proven that the stack delivers UDP to a userland socket on
+this port). Read it with `l2 cat /private/var/root/sweetsh.status`.
+Queued payloads (both images match their catalog `logicalSize`, so only the data
+blocks change): SpringBoard 28 blocks, md5 `4e290674b8a3f5cbe7ee8220f6bfb61a`;
+safetyalertsd 89 blocks at 2136943, md5 `d25f17f51a8839096c92bd83fe4f3c45`.
+
+**0161 fixed the event thread, and the daemon stall has a name.****0161 fixed the event thread, and the daemon stall has a name.**
 `0161` (no timer in the event thread's idle path) took the loop counter from a
 frozen ~5,400 to **3,005,234 iterations** with `evs 6`, i.e. the event thread now
 survives the whole boot and the control channel keeps answering - that was the same
