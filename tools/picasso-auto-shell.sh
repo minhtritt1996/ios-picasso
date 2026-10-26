@@ -76,7 +76,11 @@ while [ $i -lt $((HOURS * 240)) ]; do
 	fi
 
 	# Normal boot with a live kernel command channel: replace amfid from the kernel.
-	if onhost "cd $HOSTDIR; python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ecm.py l2 info 2>/dev/null | grep -q configured"; then
+	# Only when the kernel really has `putend` (patch 0153). Older kernels open with
+	# O_TRUNC, so a chunked write would leave the target holding its last chunk only -
+	# and rebooting on that breaks amfid beyond repair without recovery.
+	if onhost "cd $HOSTDIR; python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ecm.py l2 info 2>/dev/null | grep -q configured" &&
+	   ! onhost "cd $HOSTDIR; python3 picasso-ecm.py l2 putend /private/var/root/l2probe 1 2>/dev/null | grep -q '^commands:'"; then
 		echo "=== $(date +%T) L2 channel answers: writing the shell over /usr/libexec/amfid"
 		onhost "cd $HOSTDIR && python3 picasso-install-binary-over-l2.py --binary $(basename "$BIN") --dest /usr/libexec/amfid --reboot 2>&1 | tail -8"
 		sleep 30
