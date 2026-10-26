@@ -705,7 +705,16 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Neither carrier answers UDP, and the console cannot say why (2026-10-26 late).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Two carrier shapes are queued for the next trip.** (a) the 98,586-byte image with
+the full-coverage signature (payload md5 `4e290674b8a3f5cbe7ee8220f6bfb61a` for
+SpringBoard, catalog already at 98,586); (b) `small.bin` - md5
+`be7003a431fc4a57827c3a27a6fd3105`, 32,920 bytes, ident `com.picasso.sweetsh`, written
+into SpringBoard's full 112,960-byte file, which needs the catalog size restored with
+`setsize ... 112960` (block `222202:2`, patched block md5 `f8fbd4bb55d33ccb5f4bdcc15d29d353`). Shape (b)
+is the configuration that answered UDP earlier in the session, so if (a) stays silent,
+(b) says whether the signature coverage or the identity changed the behaviour.
+
+**Neither carrier answers UDP, and the console cannot say why (2026-10-26 late).**
 SpringBoard and `/usr/libexec/safetyalertsd` were both replaced in turn by the shell
 (ring-proven `exec SpringBoard`, no crash, boot continues); the poll never gets a
 reply and the console never shows a `sweetsh:` line - a daemon cannot open
