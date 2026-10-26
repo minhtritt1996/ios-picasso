@@ -25,6 +25,7 @@ LC_CODE_SIGNATURE = 0x1d
 CSMAGIC_EMBEDDED_SIGNATURE = 0xfade0cc0
 CSMAGIC_CODEDIRECTORY = 0xfade0c02
 CSSLOT_CODEDIRECTORY = 0
+PAGE = 16384          # XNU arm64 iOS page size (ARM_PGSHIFT 14)
 CS_ADHOC = 0x2
 ARM_THREAD_STATE64 = 6
 VM_PROT_READ = 1
@@ -54,12 +55,18 @@ def build_version():
 
 
 def adhoc_signature(image, ident):
-    """Ad-hoc SuperBlob + CodeDirectory (SHA-256, 4 KiB pages) for `image`.
+    """Ad-hoc SuperBlob + CodeDirectory (SHA-256, 16 KiB pages) for `image`.
 
     arm64 iOS refuses unsigned code on enforcing configurations; an ad-hoc
     signature (no authority, CS_ADHOC) is the cheapest way to look signed.
+
+    XNU on arm64 iOS uses 16 KiB pages (ARM_PGSHIFT 14) and hashes code with the
+    *kernel* page size: a 4 KiB CodeDirectory made every page invalid and the
+    kernel then removed execute permission, so the first instruction faulted as
+    SIGILL (cs_invalid_page(0x100000000)). The caller also page-aligns the blob
+    so it never shares a hashed page with code.
     """
-    page = 4096
+    page = PAGE
     paginated = image + b'\0' * ((-len(image)) % page)
     slots = [hashlib.sha256(paginated[i:i + page]).digest()
              for i in range(0, len(paginated), page)]
@@ -74,7 +81,7 @@ def adhoc_signature(image, ident):
     cd = b''.join([
         struct.pack('>IIIIIIIII', CSMAGIC_CODEDIRECTORY, cd_len, 0x20100, CS_ADHOC,
                     hash_offset, ident_offset, 0, len(slots), len(image)),
-        struct.pack('>BBBB', 32, 2, 0, 12),     # hashSize, hashType=sha256, platform, pageSize
+        struct.pack('>BBBB', 32, 2, 0, 14),     # hashSize, hashType=sha256, platform, pageSize=16 KiB
         struct.pack('>I', 0),                   # spare2
         struct.pack('>I', 0),                   # scatterOffset
         ident_b,
@@ -121,7 +128,10 @@ def main():
     if sign:
         # The signature size depends only on dataoff (one hash per 4 KiB page)
         # and dataoff only on the bytes before it, so a single pass is enough.
-        dataoff = len(body) + ((-len(body)) % 16)
+        # The signature blob must start on a page boundary: with a 16 KiB page
+        # size the blob would otherwise share the last hashed page with code, and
+        # the hash of that page could never match (it contains the blob itself).
+        dataoff = len(body) + ((-len(body)) % PAGE)
         image = body + b'\0' * (dataoff - len(body))
         sig = adhoc_signature(image, 'com.picasso.sweetsh')
         lc = struct.pack('<IIII', LC_CODE_SIGNATURE, 16, dataoff, len(sig))

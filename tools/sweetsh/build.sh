@@ -24,5 +24,15 @@ if $LLVM/llvm-nm sweetsh.elf | grep -qE ' [bB] '; then
 fi
 python3 mkmacho.py sweetsh.bin sweetsh-plain
 python3 mkmacho.py sweetsh.bin sweetsh-signed --sign
+
+# quiet build: no /dev/console write, no UDP beacon (both went through kernel
+# paths that have wedged the USB driver while the shell was running)
+$LLVM/clang -target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-builtin \
+	-fno-stack-protector -fno-pic -DSWEETSH_QUIET -c sweetsh.c -o sweetsh-q.o
+$LLVM/lld -flavor gnu -N -static -nostdlib -Ttext=0x100001000 -e _start \
+	sweetsh-q.o -o sweetsh-q.elf
+$LLVM/llvm-objcopy -O binary sweetsh-q.elf sweetsh-q.bin
+python3 mkmacho.py sweetsh-q.bin sweetsh-quiet-plain
+python3 mkmacho.py sweetsh-q.bin sweetsh-quiet-signed --sign
 cp sweetsh-plain sweetsh
 ls -l sweetsh-plain sweetsh-signed

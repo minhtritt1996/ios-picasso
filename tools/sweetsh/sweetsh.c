@@ -580,6 +580,11 @@ cstart(void)
 	 * It also runs before the network stack has an interface, so binding can
 	 * fail at first - retry instead of falling through to a REPL that would
 	 * hit EOF on the console and exit. */
+#ifdef SWEETSH_DELAY
+	/* test build: stay completely inert for a minute so a wedge can be
+	 * attributed to the process existing rather than to its socket calls */
+	sleep_ms(60000);
+#endif
 	for (;;) {
 		i64 lfd = listen_4444();
 
