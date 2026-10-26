@@ -301,13 +301,15 @@ listen_4444(void)
 {
 	struct sockaddr_in sa;
 	int fd = (int)sys3(SYS_socket, AF_INET, SOCK_STREAM, 0);
-	int one = 1;
 
 	if (fd < 0) {
 		console("sweetsh: socket failed\r\n");
 		return -1;
 	}
-	sys4(SYS_setsockopt, fd, SOL_SOCKET, SO_REUSEADDR, (i64)&one);
+	/* socket/connect/write are the only 3-argument calls this binary makes.
+	 * setsockopt(2) takes five arguments and was being issued through the
+	 * four-argument wrapper, so the kernel copied a bogus length from x4 and
+	 * the call wedged the box; SO_REUSEADDR is not needed here anyway. */
 	for (int i = 0; i < (int)sizeof(sa); i++) {
 		((char *)&sa)[i] = 0;
 	}
