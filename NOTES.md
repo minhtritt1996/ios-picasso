@@ -705,7 +705,26 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**With the cache entry present, the spawn still needs an AMFI bypass.** The cache edit
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Runbook to a root shell / SSH, by either route (2026-10-26).** Everything below is
+committed; the only manual step left is getting the phone reachable.
+- `tools/picasso-auto-shell.sh [hours]` watches and finishes unattended. It tries
+  `REMOTE=root@100.121.254.115` (k60) by default, or `REMOTE=local` for a phone
+  plugged into the workstation, and takes whichever route the phone offers:
+  1. recovery -> `tools/picasso-bringup-shell.sh`: the shell into amfid's
+     `2099019:35` slot, reboot, wait for UDP 4444, `dropbearkey`, `dropbear -p 22`.
+  2. normal boot with a live L2 channel -> `tools/picasso-install-binary-over-l2.py
+     --dest /usr/libexec/amfid --reboot`, which needs no recovery: patch 0153 made
+     the channel's `put` chunked-safe (`O_CREAT|O_RDWR`, 0755) and added `putend`.
+- Both routes end in `tools/picasso-ssh-up.py`, which drives the shell over UDP 4444
+  and then proves `ssh -i ~/.ssh/picasso_key root@192.168.7.2`.
+- Evidence that the channel itself works was taken on hardware earlier today: the
+  shell answered `FILECONT` transfers, `cat`, `w` and `stat` over the private
+  EtherType, and the host counter read `rx 23` for our frames. The failure that
+  stopped this session is on the device side: on the most recent boot the kernel's
+  command thread answered nothing (`tx 0`, not even `info`), and k60 went offline, so
+  no route to the phone remains until it is power-cycled and reattached.
+
+**With the cache entry present, the spawn still needs an AMFI bypass.****With the cache entry present, the spawn still needs an AMFI bypass.** The cache edit
 itself is sound - the plist rebuild keeps every key (522 entries plus our two) and its
 size fits the extent - but a boot with it plus the restored `/private/var/root` records
 still produced no `/private/var/root/sweetsh.status` and no UDP 4444 answer. The
