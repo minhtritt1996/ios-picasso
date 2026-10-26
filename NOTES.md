@@ -705,7 +705,21 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**0160 is flashed** (boot image `129e24b7d38450311a7dea54c608ff61`): the console
+**PROVEN with 0160: launchd does exec our shell.** `tools/ring-report.py` on the
+0160 boot lists 76 spawns with their targets
+(`exec xpcproxy argv xpcproxy com.apple.backboardd`, `...containermanagerd`,
+`...mobile.lockdown`, ...) and then `exec SpringBoard` - after which the ring keeps
+going normally (no crash line, no halt, UFS reads `ocs 0`). So the carrier works and
+the shell runs; what is missing is its answer on UDP 4444. The quiet build hid why,
+so the shell now prints its socket lifecycle to /dev/console (and therefore the
+ring): `sweetsh: bind failed <errno>`, `sweetsh: bound udp 4444 after tries N`,
+`sweetsh: serving, last err 0`. That image is still exactly 98,586 bytes, matching
+the catalog entry, so only the 28 SpringBoard blocks change.
+Once the shell answers, `tools/picasso-ssh-up.py` finishes the job: it runs
+`dropbearkey` and `dropbear -p 22` through the shell and then proves `ssh root@...`
+with the baked authorized_keys.
+
+**0160 is flashed****0160 is flashed** (boot image `129e24b7d38450311a7dea54c608ff61`): the console
 now shows `exec dirs_cleaner argv dirs_cleaner /tmp`, so every spawn names its
 target. `tools/ring-report.py RING` turns one recovery `dd` into the answer - boot
 line, the spawn list with targets, the boot tasks that ran, the last lines before
