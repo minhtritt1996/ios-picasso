@@ -175,9 +175,13 @@ Each of these cost a boot and is enforced by `tools/sweetsh/mkmacho.py`:
 
 ## Next steps
 
-1. Make VFS safe: the stall that kills the command thread and the launchd daemon
-   phase is the last systematic blocker (UFS lock contention, `fage` in the
-   `SWEET HB` lines shows the flusher ageing to 90 s).
+1. **Fix this port's VFS/UFS write path - it blocks everything else.** Creating a
+   file from the kernel (`put`, patch `0153`) hangs on the first `vnode_open`, and
+   the same stall ages the ring flusher to 90 s (`fage` in the `SWEET HB` lines).
+   Until it is understood, no userland can be installed, by any route: offline
+   catalog surgery is undone by journal replay at mount, disabling the journal makes
+   HFS+ hang in lookup, and VFS creation hangs outright. Everything else (shell,
+   dash, dropbear, plist content, install tooling) is built and waiting.
 2. Check the catalog records we write against Apple's own (permissions block,
    `textEncoding`, thread record), so XNU lists the files we create.
 3. Start `dropbear` in place of `sweetsh` once the LaunchDaemon actually runs, with

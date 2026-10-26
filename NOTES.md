@@ -647,7 +647,37 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**Two process fixes at the end of the session (2026-10-26).**
+**Why no userland can be installed on this volume (measured, end of session).**
+Three routes were tried and each is now closed with evidence:
+1. **Offline catalog surgery** - the records are written correctly (verified by
+   reading them back through the fork path, byte-identical, and XNU sees the parent
+   directory), but the volume is **journaled** (`attributes 0x80002000`,
+   `lastMountedVersion "HFSJ"`), so at mount the kernel replays the journal and
+   puts the catalog back: `stat /private/var/root/dropbear` answers ENOENT while the
+   volume stays perfectly consistent (no `hfs` complaint once the bitmap is left
+   alone). A 17 GB full-image restore proved the volume was byte-identical to the
+   image that contains the records - and the kernel still did not see them.
+2. **Disabling the journal** (`0x80002000 -> 0x80000100`, i.e. clear
+   kHFSVolumeJournaledBit, set kHFSVolumeUnmountedBit) is worse: XNU's HFS+ then
+   **hangs in lookup**, so every `stat` wedges one kernel command thread (the
+   rescue thread pool is capped at four, after which the control channel is mute
+   even for `info`). Reverted.
+3. **Creating the files from the kernel** (`put` with `O_CREAT`, no fsync per
+   chunk, `putend` for the size - patch `0153`) hangs on the very first
+   `vnode_open`: the reply never comes and the channel dies. This is the same
+   VFS/UFS stall that ages the ring flusher (`fage`) to 90 s.
+So the blocker for a userland is **this port's VFS/UFS write path**, not USB and
+not the tooling. Everything else is ready: the freestanding shell runs under
+launchd, dash/dropbear/dbclient/dropbearkey cross-build in CI with valid ad-hoc
+signatures and the correct `pw_shell`, the LaunchDaemon plist content exists, and
+both install recipes (offline catalog surgery with correct HFS+ key ordering, and
+chunked `put`) are implemented and tested up to the point where the filesystem
+stops cooperating.
+**Phone state:** volume restored to the pristine image (VH+catalog+bitmap+data
+shipped back and md5-verified), boot clean, USB control channel working whenever
+the boot reaches configuration.
+
+**Two process fixes at the end of the session (2026-10-26).****Two process fixes at the end of the session (2026-10-26).**
 1. `0149` and `0151` were being **silently skipped** by CI: both carried a
    `sweet_ufs.c` hunk generated against a base taken before `0148`, so
    `patch does not apply` and the kernels built since then had no RX-worker rescue
