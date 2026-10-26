@@ -74,10 +74,17 @@ jobs:
           ./configure --host=aarch64-apple-darwin --disable-zlib --disable-syslog \
                       --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp \
                       --disable-wtmpx || { tail -60 config.log; exit 1; }
-          # The account wrapper is needed only while compiling and linking, so it
-          # is force-included here rather than during configure (and only for
-          # dropbear - dash does not do account lookups).
-          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h" || { tail -40 config.log; exit 1; }
+          # The account wrapper goes in as a source include, in the files that do
+          # lookups. Overriding CFLAGS on the make line breaks dropbear's
+          # sub-builds (libtommath loses its own -I flags) and force-including it
+          # during configure defeats configure's probes.
+          cp "$GITHUB_WORKSPACE/tools/userland/picasso_pw.h" .
+          for f in common-session.c svr-chansession.c loginrec.c svr-auth.c \
+                   svr-authpubkey.c svr-authpasswd.c svr-service.c; do
+            if [ -f "$f" ]; then sed -i '1i #include "picasso_pw.h"' "$f"; fi
+          done
+          grep -l picasso_pw.h *.c | tr '\n' ' '; echo
+          make -j"$(nproc)" || { tail -40 config.log; exit 1; }
           ls -l dropbear dbclient dropbearkey 2>/dev/null || { tail -60 config.log; exit 1; }
           for b in dropbear dbclient dropbearkey; do
             llvm-objdump --macho --private-headers $b | grep -E "LC_CODE_SIGNATURE|LC_LOAD_DYLIB" | head -4
