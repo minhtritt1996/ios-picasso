@@ -623,7 +623,25 @@ Recovery of the volume: rewrite the four ranges from the snapshot (volume header
 bitmap `0:129`, catalog leaves `183682:2` and `1763522:2`, data `3062493:233`),
 which returns it to the exact state it booted from.
 
-**USB IS FIXED - measured.****USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
+**Where the file install stands (2026-10-26, end of session).**
+`tools/hfsplus-tool.py` gained fetch read-ahead (`HFS_REMOTE` now pulls 512 KiB
+per adb call, so a full catalog walk takes ~6 min instead of >15), and with it the
+directory listing of the *live* volume works:
+`ls /private/var/root` over the remote image shows `sweetsh`, `sh`, `dropbear`,
+`dbclient`, `dropbearkey` with their real extents. The volume was then restored to
+the snapshot's four ranges (verified) so the `Runtime corruption detected on
+iOSRoot` state from the first install is gone. The boot after that restore did not
+answer on the control channel within the first minute - either it is the port's
+usual early wedge, or the kernel is running its forced fsck over the 16 GiB volume
+before the driver is usable. That boot is the open question.
+**Decision for the next session:** stop editing the volume offline. The safe
+writers are the ones that own the volume while it is mounted - the *kernel's VFS*
+(via the shell's `cp`/`w`, or the `put` command) or Apple's own fsck. Catalog
+surgery keeps its value for reading and for restores, and the live-edit path
+(`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
+but it must always be computed against the live volume and shipped as a delta.
+
+**USB IS FIXED - measured.****USB IS FIXED - measured.****USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
 the kernel control channel answered **379 of 379 requests over 180 s with zero
 misses** (`l2 info`), where 0149 managed 3 replies and died at 46 s and every
 earlier boot died within seconds. The last hole was the drain trigger in `0148`:

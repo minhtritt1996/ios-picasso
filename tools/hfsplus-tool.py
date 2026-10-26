@@ -49,13 +49,24 @@ def _covered(off, n):
     return False
 
 
+AHEAD = 512 * 1024      # one adb round trip per half megabyte, not per block
+
+
 def remote_fetch(img, off, n):
-    """Pull [off, off+n) from the phone into the image file."""
+    """Pull [off, off+n) from the phone into the image file.
+
+    The catalog walk reads leaf node after leaf node, so fetching exactly the
+    requested block costs one adb round trip per node and a full walk takes
+    minutes. Reading a window instead turns that into a handful of calls.
+    """
     if not REMOTE:
         return
     block = 4096
-    start = (off // block) * block
-    count = ((off + n - start) + block - 1) // block
+    base = (off // AHEAD) * AHEAD
+    start = base
+    count = min(((((off + n) - base) + block - 1) // block), AHEAD // block)
+    if count * block < n:
+        count = (n + block - 1) // block
     cmd = '%s bs=%d skip=%d count=%d 2>/dev/null' % (REMOTE, block, start // block, count)
     print('# fetch %d bytes at %d' % (count * block, start), file=sys.stderr)
     out = subprocess.run(cmd, shell=True, capture_output=True)
@@ -82,7 +93,9 @@ class Vol:
                 f.truncate(64 << 30)
             open(path + '.ranges', 'w').close()
         _load_ranges(path)
-        self.writable = os.access(path, os.W_OK) and not REMOTE
+        # REMOTE only adds the on-demand fetching; the local sparse file is
+        # still where an edit is computed, so writes stay allowed.
+        self.writable = os.access(path, os.W_OK)
         self.f = open(path, 'r+b' if self.writable else 'rb')
         hdr = self.read(1024, 512)
         magic = hdr[0:2]
