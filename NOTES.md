@@ -615,7 +615,18 @@ channel stopped answering entirely, and earlier a 16 KB `put` created a 169-byte
 file and then killed the channel. The same subsystem is why the boot often stalls
 at the `exec xpcproxy` phase before launchd reaches the daemon phase, so the
 installed LaunchDaemon plist has still never been exercised.
-**Catalog surgery caveat to check next:** the files created offline are visible to
+**0151 measured (boot image md5 `4a45c6a18e7e6c314d5a1d44ec3bdba2`):** the
+channel answers, `stat /private/var/root` returns `type 2 mode 0750 size 170`
+(so XNU's HFS+ does read the volume fine), and then the very next command gets no
+reply - the abandoned-command-thread rescue never fires because the stat *did*
+return. The likely cause is the TX side: one bulk-IN TRB that never completes
+leaves `ud.tx_busy` set, `ud_tx_kick_locked()` then refuses to start anything and
+every later reply is silently dropped. Both TX repairs (`0144` HWO test and `0145`
+stale abort) live in the *event thread*, which is exactly the thread that dies, so
+nothing clears it. **Next patch: run the TX HWO/stale repair from
+`sweet_usb_watchdog()` (kick thread) too** - that should make the channel
+self-healing and would finally make file commands safe to use for debugging.
+**Catalog surgery caveat to check next:****Catalog surgery caveat to check next:** the files created offline are visible to
 `tools/hfsplus-tool.py` and their blocks are on the device (md5-verified), but a
 `stat /private/var/root/dropbear` from the running kernel answered ENOENT before
 the channel wedged. Either the records are not what XNU's HFS+ expects (compare a
