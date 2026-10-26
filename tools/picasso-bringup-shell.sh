@@ -21,7 +21,11 @@ remote() {
 		sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "$@"
 	fi
 }
-onhost() { sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "cd /tmp; $*"; }
+onhost() {
+	if [ "$REMOTE" = local ]; then sh -c "cd /tmp; $*"; else
+		sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "cd /tmp; $*"
+	fi
+}
 
 remote "adb -s $SERIAL get-state" >/dev/null 2>&1 || {
 	echo "phone is not in recovery on $REMOTE" >&2
@@ -30,7 +34,9 @@ remote "adb -s $SERIAL get-state" >/dev/null 2>&1 || {
 
 # 1. amfid becomes our shell: same 35-block slot, the shell in front and zeros after.
 want=$(md5sum "$CARRIER" | cut -d' ' -f1)
-sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no -q "$CARRIER" "$REMOTE:/tmp/blk.bin"
+if [ "$REMOTE" = local ]; then cp "$CARRIER" /tmp/blk.bin; else
+	sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no -q "$CARRIER" "$REMOTE:/tmp/blk.bin"
+fi
 got=$(remote "adb -s $SERIAL push /tmp/blk.bin /tmp/blk.bin >/dev/null 2>&1;
 	adb -s $SERIAL shell 'dd if=/tmp/blk.bin of=/dev/block/bootdevice/by-name/darwin bs=4096 seek=2099019 conv=notrunc 2>/dev/null; sync;
 	dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=2099019 count=35 2>/dev/null | md5sum'" | cut -d' ' -f1)
@@ -43,15 +49,10 @@ echo "booting; waiting for the shell to answer on UDP 4444"
 # 2. wait for the shell (launchd job or the carrier itself - either one binds 4444).
 up=0
 for i in $(seq 1 30); do
-	r=$(onhost "python3 picasso-ecm.py up >/dev/null 2>&1; python3 - <<'PY'
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
-try:
-    s.sendto(b'help', ('192.168.7.2', 4444)); s.recvfrom(2048); print(1)
-except OSError:
-    print(0)
-PY" 2>/dev/null | tail -1)
-	if [ "$r" = "1" ]; then up=1; break; fi
+	if onhost "python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ssh-up.py --check"; then
+		up=1
+		break
+	fi
 	sleep 20
 done
 [ "$up" = 1 ] || { echo "shell did not answer: pull the ring with tools/sweet-log-pull.sh -p darwin" >&2; exit 1; }
