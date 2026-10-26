@@ -456,7 +456,66 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-26, latest)
+## Agent handoff / active work (2026-10-26 (2), latest)
+### >>> USB is fixed; the shell is correct but no launchd carrier exists <<<
+**What works (measured):**
+- Patch `0139` (driver logs through `vsnprintf` + `sweet_log_append`, never
+  `printf`) removed the deadlock that killed the DWC3 event thread. After it the
+  link is stable for minutes: `ping` 3/3 0% loss, control channel answering with
+  `busy 0`, `ev alive` to 184 s, ring readable over USB. Most "wedges" I chased
+  after that were **my own tooling** (the ECM netdev is re-created on every
+  re-enumeration and an address set on the old one makes the link look dead);
+  `tools/picasso-ecm.py up` now reads the address back with `SIOCGIFADDR` and
+  re-applies it.
+- `tools/sweetsh` (freestanding arm64 Mach-O) is now correct in every way the
+  hardware complained about, each proven by a crash report:
+  - stack alignment: XNU gives a static binary sp = 8 mod 16, so a naked entry
+    stub aligns sp before the prologue (`stp` at pc base+4 was SIGBUS);
+  - the single segment must be **rwx**: with prot 5/5 the first store to a global
+    died as `far = base + filesize` (SIGBUS code 2);
+  - `vmsize` must cover `.bss` (elfextent.py -> `--memsize`);
+  - signature: CodeDirectory must use the kernel's **16 KiB** page shift (14),
+    the blob must start on a 16 KiB boundary, and the CD must be at least
+    `sizeof(CS_CodeDirectory)` = **108** bytes (120/128 used) - otherwise the
+    kernel returns EBADEXEC, drops the blob, `cs_invalid_page` removes execute
+    permission and the first instruction is SIGILL;
+  - `cs_enforcement_disable=1` (+ `amfi_get_out_of_my_way=1`) in the boot line.
+**Where it is blocked:** launchd will not run our binary anywhere useful.
+- Boot tasks (`tzinit`, `usermanagerd`, `launchd_cache_loader`, ...) all panic
+  with "boot task is not a platform binary (...) handshake structure not
+  initialized" - they need a genuine Apple platform binary and the launchd
+  handshake. Confirmed on screen for tzinit and usermanagerd.
+- An entry added to `/System/Library/xpc/launchd.plist` alone is not spawned
+  (launchd needs the plist file to exist too - Bergamota installs *both*).
+- Daemons that only run when their Mach service is demanded never start here
+  (`runningboardd`, `OTACrashCopier` were never exec'd in any boot).
+- `SpringBoard` is exec'd in *some* boots (we saw `exec SpringBoard`, then
+  `EXIT SpringBoard rv 0x4` + `CRASH` when its binary was our shell) but not in
+  others; launchd's daemon phase in this port stops at `xpcproxy` when
+  SpringBoard's Mach services never appear, which is exactly what happens when
+  SpringBoard is our shell.
+**Next step (designed, not started):** install our own LaunchDaemon *file* so
+launchd loads it like Bergamota's dropbear job: create
+`/System/Library/LaunchDaemons/com.picasso.sweetsh.plist` in the HFS+ volume
+(needs catalog surgery: allocate blocks from the allocation bitmap, write the
+data, insert a catalog record and update the free-space accounting) and add the
+same path to the `LaunchDaemons` dict of `/System/Library/xpc/launchd.plist`
+(the file is a bplist; re-encode with plistlib, keep the total 791,729 bytes by
+padding an unused string, pad each region back to its 4 KiB blocks). Then the job
+runs `/usr/local/bin/sweetsh` (our shell, UDP mode) as root with RunAtLoad.
+Fallback if that is too much: build dropbear/dash/toybox on a Mac with the
+iPhoneOS SDK and install them the Bergamota way
+(`docs/SSH_OVER_USB.md` in ry-diffusion/Bergamota), which also needs the plist
+file creation.
+**Restore points** (`/home/tritm/dump/backup/`): `springboard.orig.region` (from
+`/home/tritm/ios-work/root/ios16-root-picasso.img`, md5 09495bc9...),
+`usermanagerd.region`, `tzinit.region`, `runningboardd.region`,
+`launchd.region`, `launchd_cache_loader.region`, `launchd.plist.region`,
+`bin-ps.region`, `otacrash.region`. The same image
+(`/home/tritm/ios-work/root/ios16-root-picasso.img`) is the source of truth for
+every stock file, and our HFS+ tool reads it directly.
+
+## Agent handoff / previous (2026-10-26)
 ### >>> 2026-10-26 (picasso): USB fixed, shell executes only with enforcement off <<<
 **USB is stable now.** Patch `0139` (all driver output through `vsnprintf` +
 `sys/sweet_log_append`, never `printf`) removed the console-lock deadlock that
