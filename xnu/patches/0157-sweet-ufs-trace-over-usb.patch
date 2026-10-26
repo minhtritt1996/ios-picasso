@@ -1,0 +1,70 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -227,6 +227,23 @@
+ void
+ sweet_tracef(const char *fmt, ...) __printflike(1, 2);
+ 
++/*
++ * The filesystem cannot persist the ring on this port (writes never complete), so
++ * anything worth reading is kept in RAM and pulled over the USB control channel
++ * with `ufslog`. Same text also goes to the ring, where it still helps a live read.
++ */
++static char ufs_trace_buf[4096];
++static uint32_t ufs_trace_pos;
++
++static void
++ufs_trace_put(const char *line, int n)
++{
++	for (int i = 0; i < n; i++) {
++		ufs_trace_buf[ufs_trace_pos % sizeof(ufs_trace_buf)] = line[i];
++		ufs_trace_pos++;
++	}
++}
++
+ void
+ sweet_tracef(const char *fmt, ...)
+ {
+@@ -239,9 +256,27 @@
+ 	va_end(ap);
+ 	if (n > 0) {
+ 		sweet_log_append(line, MIN(n, (int)sizeof(line) - 1));
++		ufs_trace_put(line, MIN(n, (int)sizeof(line) - 1));
+ 	}
+ }
+ 
++/* Copy up to max bytes of the trace buffer, starting `from` bytes back from the
++ * write position. Returns how many bytes were written to out. */
++uint32_t
++sweet_ufs_trace_copy(uint32_t from, char *out, uint32_t max)
++{
++	uint32_t have = MIN(ufs_trace_pos, (uint32_t)sizeof(ufs_trace_buf));
++
++	if (from > have) {
++		from = have;
++	}
++	uint32_t n = MIN(max, have - from);
++	for (uint32_t i = 0; i < n; i++) {
++		out[i] = ufs_trace_buf[(ufs_trace_pos - have + from + i) % sizeof(ufs_trace_buf)];
++	}
++	return n;
++}
++
+ static void
+ ufs_trace(void)
+ {
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1519,6 +1519,13 @@
+ 		if (ud_cat(path, len, out, sizeof(out)) < 0) {
+ 			snprintf(out, sizeof(out), "%s: read failed\n", path);
+ 		}
++	} else if (strncmp(buf, "ufslog", 6) == 0) {
++		extern uint32_t sweet_ufs_trace_copy(uint32_t from, char *out, uint32_t max);
++		uint32_t from = (buf[6] == ' ') ? (uint32_t)ud_atoll(buf + 7) : 0;
++		uint32_t n = sweet_ufs_trace_copy(from, out, 1200);
++
++		out[n] = 0;
++		return;
+ 	} else if (strncmp(buf, "putend ", 7) == 0) {
+ 		char path[200];
+ 		strlcpy(path, buf + 7, sizeof(path));
