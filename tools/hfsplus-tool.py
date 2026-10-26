@@ -82,7 +82,8 @@ class Vol:
                 f.truncate(64 << 30)
             open(path + '.ranges', 'w').close()
         _load_ranges(path)
-        self.f = open(path, 'r+b' if REMOTE else 'rb')
+        self.writable = os.access(path, os.W_OK) and not REMOTE
+        self.f = open(path, 'r+b' if self.writable else 'rb')
         hdr = self.read(1024, 512)
         magic = hdr[0:2]
         if magic not in (b'H+', b'HX'):
@@ -95,6 +96,16 @@ class Vol:
         ext = hdr[0x160:0x160 + 80]
         self.extents = self.fork(ext)
         self.extents_size = struct.unpack('>Q', ext[0:8])[0]
+        self.vh = hdr
+        node = self.fork_read(self.catalog, self.catalog_size, 0, self.blocksize)
+        self.node_size = struct.unpack('>H', node[32:34])[0] or 4096
+        self.first_leaf = struct.unpack('>I', node[24:28])[0]
+
+    def write(self, off, data):
+        if not self.writable:
+            raise SystemExit('%s is not writable' % IMAGE)
+        self.f.seek(off)
+        self.f.write(data)
 
     def read(self, off, n):
         if REMOTE and not _covered(off, n):
@@ -212,6 +223,232 @@ def find(vol, path):
     return entry
 
 
+
+# ---------------------------------------------------------------- creation ---
+# Creating a file needs three on-disk structures the reader never touches: free
+# allocation blocks, catalog B-tree records, and the volume header counters. All
+# are plain data, so a file can be created offline and only the changed blocks
+# shipped to the phone (see the block list printed at the end).
+
+CAT_FILE, CAT_FOLDER, CAT_FOLDER_THREAD, CAT_FILE_THREAD = 2, 1, 3, 4
+VH_FILE_COUNT, VH_FOLDER_COUNT, VH_FREE_BLOCKS, VH_NEXT_CNID = 32, 36, 48, 64
+
+
+def _node_unpack(raw):
+    fwd, back, kind, height, num = struct.unpack('>IIbBH', raw[0:12])
+    offs = [struct.unpack('>H', raw[len(raw) - 2 * (i + 1):len(raw) - 2 * i])[0]
+            for i in range(num + 1)]
+    return fwd, back, kind, height, [raw[offs[i]:offs[i + 1]] for i in range(num)]
+
+
+def _node_pack(fwd, back, kind, height, recs, node_size):
+    buf = bytearray(node_size)
+    struct.pack_into('>IIbBH', buf, 0, fwd, back, kind, height, len(recs))
+    pos = 14
+    offs = []
+    for rec in recs:
+        if len(rec) % 2:
+            rec = rec + b'\0'              # records (and keys) are 2-byte aligned
+        offs.append(pos)
+        buf[pos:pos + len(rec)] = rec
+        pos += len(rec)
+    if pos + 2 * (len(recs) + 1) > node_size:
+        raise SystemExit('catalog node overflow: records need %d of %d bytes'
+                         % (pos, node_size))
+    offs.append(pos)
+    for i, o in enumerate(offs):
+        struct.pack_into('>H', buf, node_size - 2 * (i + 1), o)
+    return bytes(buf)
+
+
+def _catalog_key(parent, name):
+    chars = name.encode('utf-16-be')
+    key = struct.pack('>IH', parent, len(chars) // 2) + chars
+    return struct.pack('>H', len(key)) + key
+
+
+DATE = 0xDC000000            # plausible HFS+ date (seconds since 1904)
+
+
+def _perms():
+    # HFSPlusBSDInfo: ownerID, groupID, adminFlags, ownerFlags, fileMode, special
+    return struct.pack('>IIBBHI', 0, 0, 0, 0, 0o100644, 0)
+
+
+def _fork(logical, nblocks, extents):
+    out = struct.pack('>QII', logical, 4096, nblocks)
+    for i in range(8):
+        if i < len(extents):
+            out += struct.pack('>II', extents[i][0], extents[i][1])
+        else:
+            out += struct.pack('>II', 0, 0)
+    return out
+
+
+def _file_record(cnid, size, extents):
+    body = struct.pack('>HHII', CAT_FILE, 0, 0, cnid)
+    body += struct.pack('>IIIII', DATE, DATE, DATE, DATE, 0)
+    body += _perms()
+    body += b'\0' * 32                                  # userInfo + finderInfo
+    body += struct.pack('>II', 0, 0)                      # textEncoding, reserved
+    body += _fork(size, sum(c for _, c in extents), extents)
+    body += _fork(0, 0, [])
+    return body
+
+
+def _file_thread(cnid, parent, name):
+    body = struct.pack('>HHI', CAT_FILE_THREAD, 0, parent)
+    body += struct.pack('>H', len(name)) + name.encode('utf-16-be')
+    return body
+
+
+def _alloc_run(vol, nblocks):
+    """Find and claim a contiguous run of nblocks in the allocation bitmap."""
+    alloc_blob = vol.vh[0x70:0x70 + 80]
+    extents = Vol.fork(alloc_blob)
+    size = struct.unpack('>Q', alloc_blob[0:8])[0]
+    bitmap = bytearray(vol.fork_read(extents, size, 0, size))
+    start = 0
+    while start < vol.totalblocks:
+        byte = start // 8
+        bit = 7 - (start % 8)
+        if bitmap[byte] & (1 << bit):
+            start += 1
+            continue
+        run = 0
+        while run < nblocks and start + run < vol.totalblocks:
+            b = (start + run) // 8
+            i = 7 - ((start + run) % 8)
+            if bitmap[b] & (1 << i):
+                break
+            run += 1
+        if run == nblocks:
+            for k in range(nblocks):
+                b = (start + k) // 8
+                i = 7 - ((start + k) % 8)
+                bitmap[b] |= (1 << i)
+            return start, bytes(bitmap), extents, size
+        start += max(run, 1)
+    raise SystemExit('no contiguous run of %d blocks' % nblocks)
+
+
+def _insert(vol, records):
+    """Insert (key, body) records into the catalog B-tree leaves, in order."""
+    _insert.changed = set()
+    node_size = vol.node_size
+    header = vol.fork_read(vol.catalog, vol.catalog_size, 0, node_size)
+    fwd, back, kind, height, recs = _node_unpack(header)
+    hdr = bytearray(recs[0])
+    leaf_records = struct.unpack('>I', hdr[6:10])[0]
+
+    # every leaf, in link order, with its keys
+    leaves = []
+    node_no = vol.first_leaf
+    while node_no:
+        raw = vol.fork_read(vol.catalog, vol.catalog_size, node_no * node_size, node_size)
+        fwd_n, back_n, kind_n, height_n, recs_n = _node_unpack(raw)
+        leaves.append({'no': node_no, 'fwd': fwd_n, 'back': back_n,
+                       'kind': kind_n, 'height': height_n, 'recs': recs_n})
+        node_no = fwd_n
+    if not leaves:
+        raise SystemExit('no catalog leaves')
+
+    def key_of(rec):
+        keylen = struct.unpack('>H', rec[0:2])[0]
+        return rec[2:2 + keylen]
+
+    dirty = {}
+    for key, body in records:
+        rec = key + body
+        target = None
+        for leaf in leaves:
+            keys = [key_of(r) for r in leaf['recs']]
+            if not keys or keys[-1] >= key:
+                target = leaf
+                break
+        if target is None:
+            target = leaves[-1]
+        keys = [key_of(r) for r in target['recs']]
+        pos = len(keys)
+        for i, k in enumerate(keys):
+            if k >= key:
+                pos = i
+                break
+        target['recs'].insert(pos, rec)
+        leaf_records += 1
+        dirty[target['no']] = target
+
+    for node_no, leaf in dirty.items():
+        packed = _node_pack(leaf['fwd'], leaf['back'], leaf['kind'],
+                            leaf['height'], leaf['recs'], node_size)
+        _fork_write(vol, vol.catalog, vol.catalog_size, node_no * node_size, packed,
+                    _insert.changed)
+
+    struct.pack_into('>I', hdr, 6, leaf_records)
+    recs[0] = bytes(hdr)
+    _fork_write(vol, vol.catalog, vol.catalog_size, 0,
+                _node_pack(fwd, back, kind, height, recs, node_size), _insert.changed)
+
+
+def _fork_write(vol, extents, size, offset, data, changed=None):
+    pos = 0
+    for start_block, count in extents:
+        extent_len = count * vol.blocksize
+        if offset < pos + extent_len:
+            inner = offset - pos
+            take = min(len(data), extent_len - inner)
+            vol.write(start_block * vol.blocksize + inner, data[:take])
+            if changed is not None:
+                for b in range(start_block + inner // vol.blocksize,
+                               start_block + (inner + take + vol.blocksize - 1) // vol.blocksize):
+                    changed.add(b)
+            data = data[take:]
+            offset += take
+            if not data:
+                return
+        pos += extent_len
+    raise SystemExit('fork too small for %d bytes' % len(data))
+
+
+def create(vol, folder_path, files):
+    """Create files inside folder_path: [(name, local_path), ...]."""
+    if not vol.writable:
+        raise SystemExit('%s is not writable' % IMAGE)
+    got = find(vol, folder_path)
+    if not got or got[1] is None:
+        raise SystemExit('no such folder: %s' % folder_path)
+    folder_id = struct.unpack('>I', got[1][8:12])[0]
+    cnid = struct.unpack('>I', vol.vh[VH_NEXT_CNID:VH_NEXT_CNID + 4])[0]
+    free_blocks = struct.unpack('>I', vol.vh[VH_FREE_BLOCKS:VH_FREE_BLOCKS + 4])[0]
+    file_count = struct.unpack('>I', vol.vh[VH_FILE_COUNT:VH_FILE_COUNT + 4])[0]
+    records = []
+    changed = set()
+    for name, local in files:
+        blob = open(local, 'rb').read()
+        nblocks = (len(blob) + vol.blocksize - 1) // vol.blocksize
+        start, bitmap, alloc_extents, alloc_size = _alloc_run(vol, nblocks)
+        vol.write(start * vol.blocksize,
+                  blob + b'\0' * (nblocks * vol.blocksize - len(blob)))
+        _fork_write(vol, alloc_extents, alloc_size, 0, bitmap, changed)
+        for b in range(start, start + nblocks):
+            changed.add(b)
+        records.append((_catalog_key(folder_id, name),
+                        _file_record(cnid, len(blob), [(start, nblocks)])))
+        records.append((_catalog_key(cnid, ''),
+                        _file_thread(cnid, folder_id, name)))
+        print('  %-28s %8d bytes at block %d (%d blocks) cnid %d'
+              % (name, len(blob), start, nblocks, cnid))
+        cnid += 1
+        free_blocks -= nblocks
+        file_count += 1
+    _insert(vol, records)
+    changed |= _insert.changed
+    changed.add(1024 // vol.blocksize)          # the volume header lives there
+    vol.write(1024 + VH_FREE_BLOCKS, struct.pack('>I', free_blocks))
+    vol.write(1024 + VH_FILE_COUNT, struct.pack('>I', file_count))
+    vol.write(1024 + VH_NEXT_CNID, struct.pack('>I', cnid))
+    return changed
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
@@ -240,6 +477,26 @@ def main():
                     print('f %-40s id %-9d %8d bytes ext %s' % (name, fid, size, forks))
                 else:
                     print('d %-40s id %d' % (name, fid))
+    elif cmd == 'create':
+        folder = sys.argv[3]
+        files = [tuple(a.split('=', 1)) for a in sys.argv[4:]]
+        if not files:
+            sys.exit('usage: hfsplus-tool.py IMAGE create FOLDER NAME=LOCAL ...')
+        changed = create(vol, folder, files)
+        vol.f.flush()
+        print('# %d blocks changed; ranges to write back:' % len(changed))
+        blocks = sorted(changed)
+        run = [blocks[0], blocks[0]]
+        out = []
+        for b in blocks[1:] + [None]:
+            if b is not None and b == run[1] + 1:
+                run[1] = b
+                continue
+            out.append(tuple(run))
+            if b is not None:
+                run = [b, b]
+        for first, last in out:
+            print('  bs=4096 skip=%d count=%d' % (first, last - first + 1))
     elif cmd in ('cat', 'ext'):
         path = sys.argv[3]
         got = find(vol, path)
