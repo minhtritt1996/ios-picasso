@@ -367,8 +367,22 @@ def _insert(vol, records):
         raise SystemExit('no catalog leaves')
 
     def key_of(rec):
+        """Ordering key: (parentID, case-folded name).
+
+        HFS+ orders a catalog key by parent first and then by the *name* with its
+        own case-insensitive collation; comparing the raw key bytes would put the
+        2-byte keyLength first, i.e. sort by name length, and the kernel's binary
+        search then lands on a different record and returns ENOENT even though the
+        entry is on disk (exactly what 'stat /private/var/root/dropbear' did).
+        For the ASCII names a rootfs entry has, folding A-Z is the fast path of
+        XNU's FastUnicodeCompare.
+        """
         keylen = struct.unpack('>H', rec[0:2])[0]
-        return rec[2:2 + keylen]
+        key = rec[2:2 + keylen]
+        parent, = struct.unpack('>I', key[0:4])
+        namelen = struct.unpack('>H', key[4:6])[0]
+        name = key[6:6 + 2 * namelen]
+        return (parent, bytes((c | 0x20) if 0x41 <= c <= 0x5a else c for c in name))
 
     dirty = {}
     for key, body in records:

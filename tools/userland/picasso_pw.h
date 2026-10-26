@@ -7,6 +7,9 @@
  * entry for root (and mobile), and keep the real lookup as the first choice so
  * nothing changes on a system where opendirectoryd works.
  *
+ * The shell path is the one the rootfs install uses: /usr/local does not exist
+ * on this rootfs and cannot be created from the kernel.
+ *
  * Password authentication stays off: without a database there is no shadow hash
  * to compare, so the phone must be reached with a public key.
  */
@@ -24,7 +27,7 @@ static struct passwd *picasso_getpwnam(const char *name)
 	static char pw_name[] = "root";
 	static char pw_passwd[] = "*";
 	static char pw_dir[] = "/private/var/root";
-	static char pw_shell[] = "/usr/local/bin/sh";
+	static char pw_shell[] = "/private/var/root/sh";
 	static char pw_gecos[] = "";
 	static char pw_class[] = "";
 
