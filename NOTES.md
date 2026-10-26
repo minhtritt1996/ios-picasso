@@ -705,7 +705,13 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**Carriers tried tonight (2026-10-26, each measured):**
+**Do not page the ring in a tight loop.** `l2 logback N` is a *command* like any
+other: a loop of a few hundred of them fills the single command queue, and every
+later `l2 info` then returns stale `logback` replies for minutes (measured: the
+channel looked dead while it was working through the backlog). Read the tail with
+one `log` and at most a handful of `logback` steps, or pull the ring in recovery.
+
+**Carriers tried tonight (2026-10-26, each measured):****Carriers tried tonight (2026-10-26, each measured):**
 * **boot task** (`/usr/libexec/sysstatuscheck`, signed with `--ident
   com.apple.sysstatuscheck` - the kernel compares a boot task's signing identifier
   with its expected name and panics otherwise, `observed=com.picasso.sweetsh
