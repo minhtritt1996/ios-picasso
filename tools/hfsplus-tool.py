@@ -511,6 +511,44 @@ def main():
                     print('f %-40s id %-9d %8d bytes ext %s' % (name, fid, size, forks))
                 else:
                     print('d %-40s id %d' % (name, fid))
+    elif cmd == 'setsize':
+        # Patch one file record's data-fork logicalSize. Needed when a file on the
+        # device has a fixed size (an existing binary we replace) and the
+        # replacement is a different length: the extent stays, the size changes.
+        path, newsize = sys.argv[3], int(sys.argv[4])
+        folder, _, name = path.rpartition('/')
+        got = find(vol, folder or '/')
+        if not got or got[1] is None:
+            sys.exit('no such folder: %s' % folder)
+        folder_id = struct.unpack('>I', got[1][8:12])[0]
+        node_size = vol.node_size
+        node_no = vol.first_leaf
+        done = False
+        while node_no and not done:
+            raw = vol.fork_read(vol.catalog, vol.catalog_size, node_no * node_size, node_size)
+            fwd, back, kind, height, recs = _node_unpack(raw)
+            for i, rec in enumerate(recs):
+                keylen = struct.unpack('>H', rec[0:2])[0]
+                key = rec[2:2 + keylen]
+                parent, = struct.unpack('>I', key[0:4])
+                nl = struct.unpack('>H', key[4:6])[0]
+                rname = key[6:6 + 2 * nl].decode('utf-16-be', 'replace')
+                if parent == folder_id and rname == name:
+                    body = bytearray(rec[2 + keylen:])
+                    if struct.unpack('>H', body[0:2])[0] != 2:
+                        sys.exit('%s is not a file record' % path)
+                    old, = struct.unpack('>Q', body[88:96])
+                    struct.pack_into('>Q', body, 88, newsize)
+                    recs[i] = rec[:2 + keylen] + bytes(body)
+                    packed = _node_pack(fwd, back, kind, height, recs, node_size)
+                    _fork_write(vol, vol.catalog, vol.catalog_size, node_no * node_size, packed)
+                    print('# %s: logicalSize %d -> %d' % (path, old, newsize))
+                    print('  bs=4096 skip=%d count=1' % ((node_no * node_size) // vol.blocksize))
+                    done = True
+                    break
+            node_no = fwd
+        if not done:
+            sys.exit('record not found: %s' % path)
     elif cmd == 'unjournal':
         # A journaled volume replays its journal at mount, which silently undoes
         # any offline edit (the records were on disk, yet XNU answered ENOENT and

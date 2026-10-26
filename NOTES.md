@@ -659,7 +659,27 @@ of `0xffffffe0007abfbd8` (17 hex digits - the real canonical form is
 (0xabbbd8 from the header), so the next step is to fix its segment/base arithmetic
 and then read which code path calls `lck_rw_lock_shared()` on a non-sleepable lock.
 
-**State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).**
+**UFS writes work now (0155), and the platform-binary rule is the next wall.**
+The ring of the `0156c1` boot reads `seq 10 beats 10` with `lk 0/0` and `fage`
+around 2 s: the flusher flushed ten times, where every earlier ring read
+`flush 0`. So the spin-only command wait fixed the *write* path as well, and reads,
+writes and the log ring all work under `cpus=1`. VFS **file creation** is still
+broken (`put` with `O_CREAT` wedges the command thread), so files must still be
+baked into the image or written by dd in recovery.
+With the shell written over `SpringBoard` the boot panics with
+`userspace panic: unexpected exec of non-platform binary:
+/System/Library/CoreServices/SpringBoard.app/SpringBoard`: the file is 112,960
+bytes (the stock size) while an ad-hoc signature can only start its blob on a
+16 KiB boundary, so the signature covered 16,384 bytes of a 112,960-byte file and
+the kernel refused it. The fix is to make the *catalog size* match a
+page-aligned signed image: `hfsplus-tool.py setsize PATH SIZE` patches the file
+record's `logicalSize` (the extent stays), and an image of 98,584 bytes
+(dataoff 98,304 + 280-byte blob) fits in SpringBoard's 28-block extent. That patch
+was computed and shipped but **not verified on the device** (the read-back was
+attempted after the phone left recovery, and `stat` still reported 112,960), so it
+has to be re-shipped and checked block by block.
+
+**State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).**
 * Volume: pristine iOS root + the six catalog entries we created
   (`/private/var/root/{sweetsh,sh,dropbear,dbclient,dropbearkey}` and
   `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`) + the shell also written
