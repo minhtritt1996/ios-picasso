@@ -10,7 +10,7 @@
 # A normal daemon has no platform-binary requirement, and replacing a binary's
 # *content* keeps HFS+ untouched (same size, same blocks, same catalog record).
 #
-#   tools/picasso-install-daemon.sh [springboard|runningboardd|containermanagerd]
+#   tools/picasso-install-daemon.sh [launchd|springboard|runningboardd|containermanagerd]
 #   SHELL_VARIANT=signed tools/picasso-install-daemon.sh
 #
 # Needs the phone in recovery (adb) and a boot image already flashed.
@@ -23,6 +23,10 @@ case "$target" in
 # kernel exec trace ("exec SpringBoard"), so replacing its content is the most
 # reliable way to get our binary executed. On-demand daemons (runningboardd) are
 # only spawned when something looks up their Mach service.
+# The kernel execs this as PID 1 (load_init_program), so no launchd, no plist
+# cache and no "platform binary" handshake is involved: the shell runs as root
+# with the console as stdio and can bind its own listener.
+launchd) block=2094543 blocks=133 size=541600 ;;       # /sbin/launchd
 springboard) block=296602 blocks=28 size=112960 ;;      # SpringBoard.app/SpringBoard
 runningboardd) block=2136925 blocks=18 size=72352 ;;   # /usr/libexec/runningboardd
 containermanagerd) block=2103293 blocks=14 size=54112 ;;
