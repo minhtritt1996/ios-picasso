@@ -492,8 +492,28 @@ repl(void)
 	}
 }
 
-void
+/*
+ * XNU hands a static binary a stack pointer that is only 8-byte aligned
+ * (sp = 0x16fdffc98 in one crash), and the first 16-byte store of the generated
+ * prologue then raises an alignment fault, which arrives as SIGBUS with
+ * pc = base+4. Align sp before any compiler-generated code runs.
+ */
+void cstart(void);
+
+__attribute__((naked, noreturn, aligned(16))) void
 _start(void)
+{
+	/* AND (immediate) cannot name SP, so bounce through x9. */
+	__asm__ volatile(
+		"mov x9, sp\n\t"
+		"and x9, x9, #0xfffffffffffffff0\n\t"
+		"mov sp, x9\n\t"
+		"bl  cstart\n\t"
+		"brk #1\n\t");
+}
+
+void
+cstart(void)
 {
 	/* launchd may hand us a socket on fd 0 (inetd style): then just serve it. */
 	beacon("sweetsh: start\n");
