@@ -586,6 +586,14 @@ the LaunchDaemon plist never runs, and (b) the kernel command channel stopped
 answering my probes although the driver was healthy - the RX worker handing
 frames to `ifnet_input` is the next suspect (`rxw N enter` without `returned`;
 the trace is capped at eight frames, so that needs a counter, not a print).
+**0149 flashed (boot image md5 `9853c7cf4ab3529986b0d48e9f6888e5`):** the ring
+now carries `rxw enter/returned` and the worker count in `SWEET USBSTATE`, plus a
+`rx worker stuck N ms, started worker M` line when the kick thread rescues a
+worker, so the next ring read settles whether one blocking `ifnet_input()` is what
+starves the receive side. A 150 s soak of the kernel channel on that build still
+wedged after 46 s (3 replies), so the rescue either did not help or never fired -
+the ring says which.
+
 **Verified on the device:** the shipped catalog really contains `sweetsh`,
 `sh`, `dropbear`, `dbclient`, `dropbearkey` and `com.picasso.sweetsh.plist`.
 
