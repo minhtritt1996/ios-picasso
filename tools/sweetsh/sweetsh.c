@@ -41,6 +41,7 @@ typedef unsigned int u32;
 #define SYS_reboot   55
 #define SYS_mkdir    136
 #define SYS_getdirentries64 344
+#define SYS_lseek    199
 
 #define AF_INET      2
 #define SOCK_STREAM  1
@@ -378,7 +379,8 @@ static void
 banner(void)
 {
 	puts_("\r\nsweetsh - picasso XNU port, freestanding arm64 static binary\r\n"
-	    "builtins: ls [dir], cat <file>, echo, cd <dir>, rm, mkdir, help, exit\r\n"
+	    "builtins: ls [dir], cat <file>, w <file> <off> <hex>, reboot, echo,\r\n"
+	    "          cd <dir>, rm, mkdir, help, exit\r\n"
 	    "anything else is exec'd as /bin, /sbin, /usr/bin, /usr/libexec or a path.\r\n\r\n");
 }
 
@@ -449,6 +451,90 @@ cat_(const char *path)
 	sys3(SYS_close, fd, 0, 0);
 }
 
+/*
+ * Byte-level file patching from inside the booted kernel: `w <path> <offset>
+ * <hex>` replaces bytes at an absolute offset of an existing file, which is what
+ * `dd conv=notrunc` did from recovery. The file keeps its size and the HFS+
+ * catalog is untouched, so this is a safe, idempotent way to swap a binary and
+ * reboot - no recovery round trip, no adb.
+ */
+static u64
+hexval(char c)
+{
+	if (c >= '0' && c <= '9') {
+		return (u64)(c - '0');
+	}
+	if (c >= 'a' && c <= 'f') {
+		return (u64)(c - 'a' + 10);
+	}
+	if (c >= 'A' && c <= 'F') {
+		return (u64)(c - 'A' + 10);
+	}
+	return ~(u64)0;
+}
+
+static u64
+parse_hex(const char *s)
+{
+	u64 v = 0;
+
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+		s += 2;
+	}
+	while (*s) {
+		u64 d = hexval(*s++);
+
+		if (d == ~(u64)0) {
+			return ~(u64)0;
+		}
+		v = (v << 4) | d;
+	}
+	return v;
+}
+
+static void
+write_(const char *path, const char *soff, const char *hex)
+{
+	static unsigned char buf[560];
+	u64 off = parse_hex(soff);
+	unsigned n = 0;
+
+	if (off == ~(u64)0) {
+		puts_("w: bad offset\r\n");
+		return;
+	}
+	while (hex[0] && hex[1] && n < sizeof(buf)) {
+		u64 hi = hexval(hex[0]), lo = hexval(hex[1]);
+
+		if (hi == ~(u64)0 || lo == ~(u64)0) {
+			break;
+		}
+		buf[n++] = (unsigned char)((hi << 4) | lo);
+		hex += 2;
+	}
+	i64 fd = sys3(SYS_open, (i64)path, O_WRONLY, 0);
+
+	if (fd < 0) {
+		puts_("w: cannot open ");
+		puts_(path);
+		puts_("\r\n");
+		return;
+	}
+	if (sys3(SYS_lseek, fd, (i64)off, 0) < 0) {
+		puts_("w: lseek failed\r\n");
+		sys3(SYS_close, fd, 0, 0);
+		return;
+	}
+	i64 wrote = sys3(SYS_write, fd, (i64)buf, n);
+
+	sys3(SYS_close, fd, 0, 0);
+	if (wrote != (i64)n) {
+		puts_("w: short write\r\n");
+		return;
+	}
+	puts_("ok\r\n");
+}
+
 static int
 run(char *line)
 {
@@ -468,6 +554,19 @@ run(char *line)
 	}
 	if (streq(argv[0], "ls")) {
 		ls_(argc > 1 ? argv[1] : 0);
+		return 0;
+	}
+	if (streq(argv[0], "w")) {
+		if (argc < 4) {
+			puts_("usage: w <path> <offset> <hex>\r\n");
+		} else {
+			write_(argv[1], argv[2], argv[3]);
+		}
+		return 0;
+	}
+	if (streq(argv[0], "reboot")) {
+		sys3(SYS_reboot, 0, 0, 0);      /* RB_AUTOBOOT */
+		puts_("reboot failed\r\n");
 		return 0;
 	}
 	if (streq(argv[0], "cat")) {
@@ -640,7 +739,7 @@ serve_udp(void)
 		sleep_ms(500);
 	}
 	for (;;) {
-		char cmd[512];
+		char cmd[1200];
 		struct sockaddr_in from;
 		i64 fromlen = sizeof(from);
 		i64 n = sys6(SYS_recvfrom, fd, (i64)cmd, sizeof(cmd) - 1, 0,
