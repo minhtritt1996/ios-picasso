@@ -61,10 +61,14 @@ jobs:
           tar xzf dropbear.tar.gz
           cd dropbear-DROPBEAR_2022.83
           export CC="clang --target=arm64-apple-ios${IOS_MIN} -isysroot $SDK"
-          export CFLAGS="-O2 -fno-stack-protector -Wno-error"
+          # getpwnam() goes through opendirectoryd on iOS 16 and that daemon does
+          # not run in this port, so the forced include synthesizes root.
+          export CFLAGS="-O2 -fno-stack-protector -Wno-error -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h"
           export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign"
           # no zlib in the SDK build, no syslog daemon in this port, and the port
           # has no /etc/dropbear yet - the key files are generated on the phone
+          # password auth needs a shadow database this port does not have, and
+          # lastlog/utmp/wtmp are absent too
           ./configure --host=aarch64-apple-darwin --disable-zlib --disable-syslog \
                       --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp \
                       --disable-wtmpx || { tail -60 config.log; exit 1; }

@@ -52,6 +52,8 @@ typedef unsigned int u32;
 #define SO_REUSEADDR 0x0004
 
 #define O_RDONLY 0
+#define O_CREAT  0x0200
+#define O_TRUNC  0x0400
 
 static i64
 sys3(i64 n, i64 a, i64 b, i64 c)
@@ -552,6 +554,71 @@ write_(const char *path, const char *soff, const char *hex)
 	puts_("ok\r\n");
 }
 
+/*
+ * cp <src> <dst>: create dst and copy src into it.
+ *
+ * Writing a *new* file is what installing a userland needs, and the VFS can do
+ * it from inside the kernel - the HFS+ catalog work that recovery-based
+ * installation needs is only for editing the image offline.
+ */
+static void
+cp_(const char *src, const char *dst)
+{
+	static char buf[8192];
+	i64 in = sys3(SYS_open, (i64)src, O_RDONLY, 0);
+
+	if (in < 0) {
+		puts_("cp: cannot open ");
+		puts_(src);
+		puts_("\r\n");
+		return;
+	}
+	i64 out = sys3(SYS_open, (i64)dst, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+
+	if (out < 0) {
+		puts_("cp: cannot create ");
+		puts_(dst);
+		puts_("\r\n");
+		sys3(SYS_close, in, 0, 0);
+		return;
+	}
+	for (;;) {
+		i64 n = sys3(SYS_read, in, (i64)buf, sizeof(buf));
+
+		if (n <= 0) {
+			break;
+		}
+		if (sys3(SYS_write, out, (i64)buf, n) != n) {
+			puts_("cp: short write\r\n");
+			break;
+		}
+	}
+	sys3(SYS_close, in, 0, 0);
+	sys3(SYS_close, out, 0, 0);
+	puts_("ok\r\n");
+}
+
+/* mkdir -p: create every missing component of PATH. */
+static void
+mkdir_p(char *path)
+{
+	for (char *p = path + 1; ; p++) {
+		if (*p == '/' || *p == 0) {
+			char saved = *p;
+
+			*p = 0;
+			if (path[0]) {
+				sys3(SYS_mkdir, (i64)path, 0755, 0);
+			}
+			*p = saved;
+			if (saved == 0) {
+				break;
+			}
+		}
+	}
+	puts_("ok\r\n");
+}
+
 static int
 run(char *line)
 {
@@ -584,6 +651,22 @@ run(char *line)
 	if (streq(argv[0], "reboot")) {
 		sys3(SYS_reboot, 0, 0, 0);      /* RB_AUTOBOOT */
 		puts_("reboot failed\r\n");
+		return 0;
+	}
+	if (streq(argv[0], "cp")) {
+		if (argc < 3) {
+			puts_("usage: cp <src> <dst>\r\n");
+		} else {
+			cp_(argv[1], argv[2]);
+		}
+		return 0;
+	}
+	if (streq(argv[0], "mkdir")) {
+		if (argc < 2) {
+			puts_("usage: mkdir <dir>\r\n");
+		} else {
+			mkdir_p(argv[1]);
+		}
 		return 0;
 	}
 	if (streq(argv[0], "cat")) {
