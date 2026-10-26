@@ -1,0 +1,97 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -2137,12 +2137,78 @@
+ 		return;
+ 	}
+ 	snprintf(out, outlen,
+-	    " usb cfg %d rxarm %d txbusy %d evq 0x%x dalepa 0x%x hwo %d/%d"
++	    " usb cfg %d rxarm %d txbusy %d evq 0x%x evtick %u dalepa 0x%x hwo %d/%d"
+ 	    " rx %llu tx %llu lost %u/%u stale %u/%u sp %u/%u err %u q %u\n",
+ 	    (int)ud.configured, (int)ud.rx_armed, (int)ud.tx_busy,
+-	    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DALEPENA),
++	    dwc_rd(GEVNTCOUNT) & 0xffff, ud.ev_ticks, dwc_rd(DALEPENA),
+ 	    (rx[3] & TRB_HWO) ? 1 : 0, (tx[3] & TRB_HWO) ? 1 : 0,
+ 	    ud.rx_frames, ud.tx_frames, ud.rx_lost, ud.tx_lost,
+ 	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
+ 	    ud.rx_arm_err, ud.txq_count);
+ }
++
++/*
++ * Called from the kick thread in sweet_ufs.c, the one context that keeps running
++ * when the USB event thread stops.
++ *
++ * The raw state proved the failure: GEVNTCOUNT sits at 0xc forever while both
++ * TRB HWO bits read 0 and the endpoint is still enabled - pending events nobody
++ * consumes, because the consumer thread is gone. The ring itself is a DMA buffer
++ * and the dispatch code touches no sleeping lock, so this thread can finish the
++ * job: dispatch the pending events itself. It only does so after the pending
++ * count failed to change across two samples (~2 s), so it never races a live
++ * event thread.
++ */
++void
++sweet_usb_watchdog(void)
++{
++	static uint32_t seen;
++	static uint32_t stuck;
++	uint32_t count;
++
++	if (ud.dma == 0 || !ud.configured) {
++		seen = 0;
++		stuck = 0;
++		return;
++	}
++	count = dwc_rd(GEVNTCOUNT) & 0xffff;
++	if (count == 0) {
++		seen = 0;
++		stuck = 0;
++		return;
++	}
++	if (count != seen) {
++		seen = count;
++		stuck = 0;
++		return;
++	}
++	if (++stuck < 2) {
++		return;
++	}
++	stuck = 0;
++	seen = 0;
++	ud_log("SWEET USB: watchdog drains stuck ring, count 0x%x evtick %u\n",
++	    count, ud.ev_ticks);
++	ud_sync(UD_EVT, UD_EVT_SIZE);
++	for (uint32_t done = 0; done < count; done += 4) {
++		uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
++		uint32_t peek = *(volatile uint32_t *)(ud.dma + UD_EVT +
++		    ((ud.evt_pos + 4) % UD_EVT_SIZE));
++
++		ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
++		if (ev != 0) {
++			ud_event(ev, peek);
++		}
++	}
++	dwc_wr(GEVNTCOUNT, count);
++	/* The TRB the dead thread never re-armed: HWO clear means we own it. */
++	{
++		volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
++
++		ud_sync(UD_TRB_RX, 16);
++		if (!(t[3] & TRB_HWO)) {
++			ud.rx_armed = false;
++			ud_rx_arm();
++		}
++	}
++}
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1766,6 +1766,11 @@
+ 		/* The USB driver's own watchdog lives in its event thread, which is
+ 		 * exactly what stops when the link dies - so report its state from here
+ 		 * every fifth spin (~10 s). */
++		{
++			extern void sweet_usb_watchdog(void);
++
++			sweet_usb_watchdog();
++		}
+ 		if ((n % 5) == 0) {
+ 			char usb[220];
+ 			extern void sweet_usb_state(char *out, int outlen);
