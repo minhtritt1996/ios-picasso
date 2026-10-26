@@ -15,7 +15,7 @@
 #
 # Needs the phone in recovery (adb) and a boot image already flashed.
 set -eu
-target=${1:-springboard}
+target=${1:-tzinit}
 cd "$(dirname "$0")/.."
 
 case "$target" in
@@ -42,7 +42,7 @@ containermanagerd) block=2103293 blocks=14 size=54112 ;;
 esac
 serial=${SERIAL:-f9f3d7b0}
 part=/dev/block/bootdevice/by-name/darwin
-shell_bin=tools/sweetsh/sweetsh-${SHELL_VARIANT:-plain}
+shell_bin=tools/sweetsh/sweetsh-${SHELL_VARIANT:-signed}
 [ -f "$shell_bin" ] || { echo "build the shell first: tools/sweetsh/build.sh" >&2; exit 1; }
 shell_size=$(stat -c %s "$shell_bin")
 [ "$shell_size" -le "$size" ] || { echo "shell ($shell_size B) does not fit in $size B" >&2; exit 1; }

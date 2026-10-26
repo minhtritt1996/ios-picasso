@@ -103,11 +103,23 @@ def main():
     pc = BASE + LC_AREA
 
     text_prot = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE
-    # Command layout depends only on whether the signature LC is reserved, so the
-    # segment can be built with its final vmsize before the body exists.
-    ncmds = 5 if sign else 4
-    cmds_len = SEG_CMD_SIZE * 2 + 24 + (8 + 4 + 68 * 4) + (16 if sign else 0)
-    filesize = LC_AREA + len(code)
+    ident = 'com.picasso.sweetsh'
+    # Every length is known before anything is emitted: the signature blob size
+    # follows from the number of hashed pages, which follows from dataoff, which
+    # follows from the code length. Computing it in one pass is what keeps the
+    # header, the segment command and the CodeDirectory consistent - patching any
+    # of them after signing invalidates the hashes.
+    code_end = LC_AREA + len(code)
+    if sign:
+        dataoff = code_end + ((-code_end) % PAGE)
+        nslots = dataoff // PAGE
+        cd_len = max(48 + len(ident) + 1 + 32 * nslots, CD_MIN)
+        sig_len = 20 + cd_len
+        filesize = dataoff
+        extra = struct.pack('<IIII', LC_CODE_SIGNATURE, 16, dataoff, sig_len)
+    else:
+        filesize = code_end
+        extra = b''
     vmsize = max(filesize, memsize)
     vmsize += (-vmsize) % PAGE
     cmds = b''.join([
@@ -115,31 +127,19 @@ def main():
         seg('__TEXT', BASE, vmsize, 0, filesize, text_prot),
         build_version(),
         unixthread(pc),
+        extra,
     ])
-    if sign:
-        cmds += struct.pack('<IIII', LC_CODE_SIGNATURE, 16, 0, 0)
-        filesize += 0                      # placeholder lives inside LC_AREA
+    ncmds = 4 + (1 if sign else 0)
+    cmds_len = len(cmds)
     header = struct.pack('<IiiIIIII', MAGIC, CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
                          MH_EXECUTE, ncmds, cmds_len, MH_NOUNDEFS, 0)
     blob = header + cmds
     if len(blob) > LC_AREA:
         sys.exit('load commands do not fit: %d > %d' % (len(blob), LC_AREA))
     body = blob + b'\0' * (LC_AREA - len(blob)) + code
-
     if sign:
-        dataoff = len(body) + ((-len(body)) % PAGE)
-        image = body + b'\0' * (dataoff - len(body))
-        sig = adhoc_signature(image, 'com.picasso.sweetsh')
-        lc_off = 32 + cmds_len - 16
-        image = image[:lc_off] + struct.pack('<IIII', LC_CODE_SIGNATURE, 16,
-                                            dataoff, len(sig)) + image[lc_off + 16:]
-        sig = adhoc_signature(image, 'com.picasso.sweetsh')   # LC bytes final
-        body = image + sig
-        # __TEXT filesize must cover the hashed image, and vmsize the file
-        if dataoff > filesize:
-            filesize = dataoff
-            text = seg('__TEXT', BASE, max(vmsize, filesize), 0, filesize, text_prot)
-            body = body[:32 + SEG_CMD_SIZE] + text + body[32 + 2 * SEG_CMD_SIZE:]
+        body += b'\0' * (dataoff - len(body))     # the blob never shares a page
+        body += adhoc_signature(body, ident)
 
     with open(out_path, 'wb') as f:
         f.write(body)
