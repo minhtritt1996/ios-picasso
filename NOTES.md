@@ -512,12 +512,15 @@ fault. That is the cheapest next experiment and it does not need the phone: run
 `sudo usbreset 1209:0001` (or unbind/bind `cdc_ether`) on the workstation while a
 boot is wedged. If the link recovers, the device was fine and usbnet stopped
 queueing URBs; if nothing changes, it is the device.
-**Kernel-side next instrument:** the kick thread in `sweet_ufs.c` survives every
-wedge (it keeps printing `SWEET HB`/`SWEET KICK`), while `ud_thread`'s own
-watchdog never fires - so export a `sweet_usb_state(char *buf, size_t)` from
-`sweet_usb.c` (configured, rx_armed, tx_busy, GEVNTCOUNT, DALEPENA, both TRB
-`HWO` bits, rx/tx/lost/stale counters) and have the kick thread append it to the
-ring every 10 s. Then one recovery read settles it.
+**Kernel-side instrument (0147, flashed as boot image md5 `16aa5a495656ffccbe9c841242985bbb`):**
+the kick thread in `sweet_ufs.c` survives every wedge, so it now appends
+`sweet_usb_state()` (configured, rx_armed, tx_busy, GEVNTCOUNT, DALEPENA, both
+TRB `HWO` bits, and the rx/tx/lost/stale/spurious/arm-error counters) to the ring
+every ~10 s as `SWEET USBSTATE n: usb cfg ... `. The 0147 boot died early
+(`rx 5 tx 27`, host `txerr 120`), so pulling the ring in recovery should finally
+say whether the RX TRB was armed, whether `configured` was still set, and which
+counter moved - the watchdogs inside the event thread never fired in any boot,
+which is itself the anomaly to explain.
 
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
