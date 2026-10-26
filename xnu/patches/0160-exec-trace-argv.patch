@@ -1,0 +1,31 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7424,8 +7424,26 @@
+ 				goto done;
+ 			}
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-			/* SWEET runs every iOS binary this way: one short line per exec. */
+-			printf("exec %s\n", p->p_name);
++			/*
++			 * SWEET runs every iOS binary this way: one short line per exec.
++			 * The first two arguments matter: launchd spawns everything through
++			 * xpcproxy, so argv[1] names the service actually being started -
++			 * the ring then shows which spawn the daemon phase dies on.
++			 */
++			{
++				char a0[40] = "";
++				char a1[64] = "";
++
++				if (imgp->ip_startargv != NULL && imgp->ip_argc > 0) {
++					strlcpy(a0, imgp->ip_startargv, sizeof(a0));
++					if (imgp->ip_argc > 1) {
++						size_t l0 = strlen(a0) + 1;
++
++						strlcpy(a1, imgp->ip_startargv + l0, sizeof(a1));
++					}
++				}
++				printf("exec %s argv %s %s\n", p->p_name, a0, a1);
++			}
+ #else
+ 			printf("Allowing spawn of iOS binary %s since it has "
+ 			    "com.apple.private.security.no-sandbox entitlement or unentitled_ios_sim_launch "
