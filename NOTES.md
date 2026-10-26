@@ -679,7 +679,23 @@ was computed and shipped but **not verified on the device** (the read-back was
 attempted after the phone left recovery, and `stat` still reported 112,960), so it
 has to be re-shipped and checked block by block.
 
-**Everything is in place on the phone except the daemon phase.**
+**0158 measured (boot image md5 `4c5bd70a3efc7ee41c9b8c44e1fcc9aa`, `cpus=8`).**
+No panic this time: the console fills with
+`failed to open /private/var/log/com.apple.xpc.launchd/launchd[1]` from many
+daemons - the boot *is* progressing, and every one of those lines is a **VFS write
+that cannot complete** (HFS+ create/append). The USB gadget enumerates
+(`usb0` up, host `tx_errors 0`, rx 16/tx 13) but the kernel control channel does not
+answer, so the RX worker or the command thread is stuck in VFS again.
+**Conclusion for the next session:** the systemic blocker is the HFS+ **VFS write
+path** - block writes work (the ring flusher beats), but any file creation or
+append hangs, which breaks log writing, `put`, and (through the RX worker) the
+control channel. Everything above it is in place: files installed and visible,
+signed SpringBoard at 98,584 bytes, authorized_keys planted, dropbear/dash built.
+Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
+`journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
+panic available for the rw-lock case.
+
+**Everything is in place on the phone except the daemon phase.****Everything is in place on the phone except the daemon phase.**
 Installed and *visible to the kernel* (`stat` answers with the right size):
 `/private/var/root/{sweetsh 16512, sh 167504, dropbear 285600, dbclient 268384,
 dropbearkey 203760}`, `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`
