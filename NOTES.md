@@ -647,7 +647,19 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**State at the end of this session (2026-10-26 late).**
+**REVERTED, phone is back to stock iOS.** All seven shipped block ranges were
+rewritten from the pristine image (md5-verified per range) and `SpringBoard` was
+restored (region md5 `09495bc9f3fcec0655ce17193c5c287d`), so the six catalog entries
+and the shell carrier are gone and the phone boots as before. Everything learned
+stays in this file, in the tools and in the patch series.
+**Panic address for the next session:** the console prints
+`Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1377` with a caller
+of `0xffffffe0007abfbd8` (17 hex digits - the real canonical form is
+`0xfffffe0007abfbd8`, inside `__TEXT_EXEC`). `tools/symbolize.py` does not resolve it
+(0xabbbd8 from the header), so the next step is to fix its segment/base arithmetic
+and then read which code path calls `lck_rw_lock_shared()` on a non-sleepable lock.
+
+**State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).**
 * Volume: pristine iOS root + the six catalog entries we created
   (`/private/var/root/{sweetsh,sh,dropbear,dbclient,dropbearkey}` and
   `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`) + the shell also written
