@@ -647,7 +647,32 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**Why no userland can be installed on this volume (measured, end of session).**
+**UFS lock leak confirmed from the ring, and what other ports do (research).**
+The last persisted ring says it in one line:
+`SWEET KICK 150: ... fage 300017 | cmd 1635 err 0 x0 lk 4/1 st 0` plus
+`SWEET USBSTATE 150: ... rxw 15/15 th 0 ... cmdt 1 cmdd 0`. Owner 4 is
+`UFS_LK_STRATEGY`: the VFS strategy thread holds the driver lock for the whole
+boot (fage 300 s = the flusher never flushed, stage 0), and the kernel command
+thread completed **zero** commands. USB is exonerated in the same line
+(`rxw 15/15`, counters moving). The wait it is stuck in parks on
+`assert_wait_deadline_with_leeway()` + `thread_block()` **while holding the
+mutex** and needs a kernel timer to wake it - and this port's own experience is
+that threads parked on a timeout freeze together, so the deadline is never
+re-evaluated and the lock is never dropped. `0155` replaces that wait with a spin
+on `mach_absolute_time()` (the way the kick thread already had to be written), so
+the 5 s deadline is always reachable, a stuck command returns ETIMEDOUT, the
+strategy loop breaks and `ufs_unlock()` runs - after which I/O **fails** instead of
+wedging the filesystem.
+Research, for the record: no public XNU-on-Snapdragon port documents a better
+strategy - the `ios-sweet` notes only mention an optional "spin-then-sleep" UFS
+wait and a log-flush interval, and neither is published. The reference to follow is
+Linux's `ufshcd`: the host lock is held only for ring bookkeeping, completion is
+signalled by an interrupt (or a polled completion object), and a timeout leads to
+`ufshcd_print_host_state` + `ufshcd_host_reset_and_restore`. Our polled equivalent
+already resets the host on timeout (`UTRLCLR` + `ufs_take_over_host`); what was
+missing was a timeout that can actually fire.
+
+**Why no userland can be installed on this volume (measured, end of session).****Why no userland can be installed on this volume (measured, end of session).**
 Three routes were tried and each is now closed with evidence:
 1. **Offline catalog surgery** - the records are written correctly (verified by
    reading them back through the fork path, byte-identical, and XNU sees the parent
