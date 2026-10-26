@@ -15,6 +15,7 @@ start dropbear itself:
   tools/picasso-ssh-up.py [--key ~/.ssh/picasso_key] [--timeout 60]
 """
 import argparse
+import os
 import subprocess
 import socket
 import sys
@@ -23,8 +24,12 @@ import time
 PHONE = ("192.168.7.2", 4444)
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
 def ecm_up():
-    subprocess.run(["python3", "tools/picasso-ecm.py", "up"], capture_output=True)
+    subprocess.run(["python3", os.path.join(HERE, "picasso-ecm.py"), "up"],
+                   capture_output=True)
 
 
 def shell(cmd, timeout=8):
@@ -43,7 +48,7 @@ def shell(cmd, timeout=8):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--key", default="/home/tritm/.ssh/picasso_key")
+    ap.add_argument("--key", default=os.path.expanduser("~/.ssh/picasso_key"))
     ap.add_argument("--timeout", type=int, default=60)
     args = ap.parse_args()
 
