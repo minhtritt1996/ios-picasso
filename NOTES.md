@@ -557,6 +557,29 @@ userland VFS from the shell, or HFS+ catalog surgery) - and now also
 `/private/var/root/sweetsh` as the binary, since `/usr/local` does not exist on
 this rootfs.
 
+**Catalog surgery works and the userland is installed (offline, verified).**
+`tools/hfsplus-tool.py create` now creates files in an HFS+ image without any
+heap or node-copying: it claims a contiguous run from the allocation file's
+bitmap, writes the data, and inserts the file record plus its thread record into
+the right catalog leaf (re-serialised with a fresh offset table), then updates
+`freeBlocks`, `fileCount` and `nextCatalogID` in the volume header. No node
+splitting: a leaf that does not fit is a hard error. Verified on a copy of
+`ios16-root-picasso.img`: every created file reads back through the normal fork
+path byte-identical (md5), and `ls` sees them with the right ids and extents.
+Installed: `/private/var/root/{sweetsh,sh,dropbear,dbclient,dropbearkey}` and
+`/System/Library/LaunchDaemons/com.picasso.sweetsh.plist` (RunAtLoad ->
+`/private/var/root/sweetsh`). `tools/hfsplus-ship.py` wrote the four changed
+ranges into the phone's `darwin` partition in recovery (~1.5 MB: volume header +
+bitmap `0:129`, catalog leaves `183682:2` and `1763522:2`, data `3062493:233`)
+and each range verified by md5 on the device. SpringBoard was restored to stock
+(md5 `09495bc9...`) since the plist replaces it as the carrier.
+**Open right now:** the boot after that install had a wedged link again
+(`rx 178 tx 250 txerr 0`, then no reply to any kernel-channel command, 0/15
+probes), so it is *not yet known* whether launchd loaded the plist. Next recovery
+trip: pull the ring and grep it for `com.picasso.sweetsh` (launchd logs the job
+name and any plist error) and for `exec sweetsh`; also pull blocks `183682:2` and
+`1763522:2` to confirm the phone's catalog matches the image.
+
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
 root `struct passwd` when the lookup fails; and the binaries need real paths
