@@ -67,8 +67,9 @@ if [ -n "$CATALOG_FILE" ]; then
 	[ "$got" = "$want" ] || { echo "catalog readback mismatch: $got != $want" >&2; exit 1; }
 fi
 
-# 3. SpringBoard back to stock
-if [ -f "$SPRINGBOARD_STOCK" ]; then
+# 3. SpringBoard back to stock - but never when SpringBoard *is* the carrier, or this
+#    step silently overwrites the carrier that was just written.
+if [ -f "$SPRINGBOARD_STOCK" ] && [ "$CARRIER_BLOCK" != "$SPRINGBOARD_BLOCK" ]; then
 	want=$(md5sum "$SPRINGBOARD_STOCK" | cut -d' ' -f1)
 	echo "springboard stock ($want)"
 	putfile "$SPRINGBOARD_STOCK" /tmp/sb.bin
