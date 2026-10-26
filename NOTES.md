@@ -647,7 +647,22 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**UFS lock leak confirmed from the ring, and what other ports do (research).**
+**Writes have never worked on this port - and that is the whole blocker.**
+Every ring pulled from the device reads `flush 0` (the flusher has never completed
+a single flush), and `0155` (spin-only command wait, no timer) is in the flashed
+kernel (`sleepable wait disabled` present in the image) yet `lk 4/1` still shows the
+strategy thread holding the UFS lock with `fails 0` - so it is stuck **outside** the
+doorbell wait (a wait would now time out after 5 s and bump the failure counters).
+The panic on that boot is HFS+ reacting to a write that failed mid-metadata
+(`hfs: hfs_ubc_setsize called without exclusive truncate lock! @hfs_readwrite.c:4195`),
+which is the same fact seen from the other side: reads work, writes do not.
+Next measurement (needs the *full* 4 MiB ring from recovery - the `l2 log` window is
+only 1200 bytes): the heartbeat's strategy breadcrumbs `ss` (step), `sb`/`sc`
+(block/count), `st` (thread), `sd` (bytes done), `sv` (vaddr) name the exact place
+the strategy thread stops, and `SWEET UFS gd/cd` lines (with `sweetufstrace=1`)
+would show the CDB and the completion status of the failing command.
+
+**UFS lock leak confirmed from the ring, and what other ports do (research).****UFS lock leak confirmed from the ring, and what other ports do (research).**
 The last persisted ring says it in one line:
 `SWEET KICK 150: ... fage 300017 | cmd 1635 err 0 x0 lk 4/1 st 0` plus
 `SWEET USBSTATE 150: ... rxw 15/15 th 0 ... cmdt 1 cmdd 0`. Owner 4 is
