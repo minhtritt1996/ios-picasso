@@ -53,7 +53,7 @@ jobs:
           ./configure --host=aarch64-apple-darwin || { tail -40 config.log; exit 1; }
           make -j"$(nproc)" || { tail -40 config.log; exit 1; }
           llvm-objdump --macho --private-headers src/dash | grep -E "MH_MAGIC|LC_CODE_SIGNATURE" | head -3
-          mkdir -p out && cp src/dash out/sh
+          mkdir -p "$GITHUB_WORKSPACE/out" && cp src/dash "$GITHUB_WORKSPACE/out/sh"
 
       - name: dropbear
         run: |
@@ -73,14 +73,15 @@ jobs:
           for b in dropbear dbclient dropbearkey; do
             llvm-objdump --macho --private-headers $b | grep -E "LC_CODE_SIGNATURE|LC_LOAD_DYLIB" | head -4
           done
-          cp dropbear dbclient dropbearkey ../out/
+          mkdir -p "$GITHUB_WORKSPACE/out" && cp dropbear dbclient dropbearkey "$GITHUB_WORKSPACE/out/"
 
       - name: Package
         run: |
           mkdir -p artifact/usr/local/bin artifact/usr/local/sbin
-          cp out/sh artifact/usr/local/bin/ 2>/dev/null || true
-          cp out/dropbear out/dbclient artifact/usr/local/sbin/ 2>/dev/null || true
-          cp out/dropbearkey artifact/usr/local/bin/ 2>/dev/null || true
+          ls -l "$GITHUB_WORKSPACE/out"
+          cp "$GITHUB_WORKSPACE"/out/sh artifact/usr/local/bin/
+          cp "$GITHUB_WORKSPACE"/out/dropbear "$GITHUB_WORKSPACE"/out/dbclient artifact/usr/local/sbin/
+          cp "$GITHUB_WORKSPACE"/out/dropbearkey artifact/usr/local/bin/
           ls -lR artifact
 
       - uses: actions/upload-artifact@v4
