@@ -705,7 +705,16 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**The gadget itself can disappear after a channel flood.** After the logback loop
+**0160 is flashed** (boot image `129e24b7d38450311a7dea54c608ff61`): the console
+now shows `exec dirs_cleaner argv dirs_cleaner /tmp`, so every spawn names its
+target. `tools/ring-report.py RING` turns one recovery `dd` into the answer - boot
+line, the spawn list with targets, the boot tasks that ran, the last lines before
+the boot stopped, and the final driver state - so the daemon-phase stall can be read
+without touching the command channel.
+**Phone state right now:** off, or booted without USB (`adb` empty, no `1209`
+device). Needs a power cycle into recovery to read that ring.
+
+**The gadget itself can disappear after a channel flood.****The gadget itself can disappear after a channel flood.** After the logback loop
 the host then reported `no gadget interface found` and `lsusb` showed the 1209 device
 gone while the phone was still booted, so the USB bring-up died, not just the command
 queue. Reboot the phone before blaming the driver: a fresh boot enumerates again.
