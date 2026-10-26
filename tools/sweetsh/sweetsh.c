@@ -198,12 +198,19 @@ readline(char *buf, int max)
 static void
 console(const char *s)
 {
+#ifdef SWEETSH_QUIET
+	(void)s;                        /* quiet build: writing to /dev/console and
+	                                 * sending datagrams both go through kernel
+	                                 * paths that have wedged the USB driver */
+	return;
+#else
 	i64 fd = sys3(SYS_open, (i64)"/dev/console", O_WRONLY, 0);
 
 	if (fd >= 0) {
 		sys3(SYS_write, fd, (i64)s, (i64)strlen_(s));
 		sys3(SYS_close, fd, 0, 0);
 	}
+#endif
 }
 
 struct sockaddr_in {
@@ -236,6 +243,11 @@ static void
 beacon(const char *msg)
 {
 	struct sockaddr_in sa;
+#ifdef SWEETSH_QUIET
+	(void)msg;
+	(void)sa;
+	return;
+#endif
 	i64 fd = sys3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
 
 	if (fd < 0) {
