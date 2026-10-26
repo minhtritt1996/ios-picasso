@@ -1,0 +1,58 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -90,6 +90,7 @@
+ }
+ 
+ static int ud_verbose;           /* sweetusbverbose=1: per-frame chatter */
++static int ud_rxw_panic;         /* sweetusbrxwpanic=1: panic if the RX worker stalls */
+ static vm_offset_t ud_gcc;       /* GCC base, for forcing USB clocks back on */
+ static uint64_t ud_stall_ticks;  /* 10 s expressed in absolute-time ticks */
+ 
+@@ -306,6 +307,10 @@
+ 	uint32_t    ev_live;            /* event-thread liveness prints */
+ 	uint32_t    probe_seen;         /* probe-thread prints */
+ 	uint32_t    probe_hb;           /* probe-thread heartbeat */
++	volatile uint64_t rxw_stamp;    /* last RX-worker progress (absolute) */
++	volatile uint32_t rxw_loops;    /* frames handed to the stack */
++	uint32_t    rxw_prints;         /* first-frame prints */
++	uint32_t    rxw_panic;          /* sweetusbrxwpanic=1 */
+ 	uint32_t    ctl_seen;           /* control-frame prints */
+ 	uint32_t    dev_ev;             /* device-event prints */
+ 	volatile uint32_t ev_ticks;     /* event-thread progress */
+@@ -737,9 +742,17 @@
+ 			lck_mtx_unlock(ud.lock);
+ 			continue;
+ 		}
++		ud.rxw_stamp = mach_absolute_time();
++		ud.rxw_loops++;
+ 		if (ud.ifp != NULL) {
+ 			mbuf_t m = NULL;
+ 			struct ifnet_stat_increment_param stats = {};
++			bool trace = ud.rxw_prints++ < 8;
++
++			if (trace) {
++				ud_log("SWEET USB: rxw %u enter ifnet_input len %u type 0x%02x%02x\n",
++				    ud.rxw_prints, len, frame[12], frame[13]);
++			}
+ 
+ 			if (mbuf_gethdr(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
+ 			    mbuf_mclget(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) == 0 &&
+@@ -756,6 +769,10 @@
+ 				stats.packets_in = 1;
+ 				stats.bytes_in = len;
+ 				(void)ifnet_input(ud.ifp, m, &stats);
++				if (trace) {
++					ud_log("SWEET USB: rxw %u ifnet_input returned\n",
++					    ud.rxw_prints);
++				}
+ 			} else if (m != NULL) {
+ 				mbuf_freem(m);
+ 			}
+@@ -1920,6 +1937,7 @@
+ 	PE_parse_boot_argn("sweetusbprobe", &ud_probe_on, sizeof(ud_probe_on));
+ 	PE_parse_boot_argn("sweetusbverbose", &ud_verbose, sizeof(ud_verbose));
+ 	PE_parse_boot_argn("sweetusbstallpanic", &ud_stall_panic, sizeof(ud_stall_panic));
++	PE_parse_boot_argn("sweetusbrxwpanic", &ud_rxw_panic, sizeof(ud_rxw_panic));
+ 	clock_interval_to_absolutetime_interval(10, NSEC_PER_SEC, &ud_stall_ticks);
+ 	if (kernel_thread_start(ud_cmd_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
