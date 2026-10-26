@@ -23,6 +23,11 @@ CARRIER_BLOCKS=${CARRIER_BLOCKS:-27}
 SPRINGBOARD_BLOCK=${SPRINGBOARD_BLOCK:-296602}
 SPRINGBOARD_BLOCKS=${SPRINGBOARD_BLOCKS:-28}
 SPRINGBOARD_STOCK=${SPRINGBOARD_STOCK:-/home/tritm/dump/backup/springboard.orig.region}
+# Optional catalog patch (a file record whose logicalSize must match the carrier
+# image, e.g. after replacing a binary with a shorter one).
+CATALOG_FILE=${CATALOG_FILE:-}
+CATALOG_BLOCK=${CATALOG_BLOCK:-0}
+CATALOG_BLOCKS=${CATALOG_BLOCKS:-2}
 cd "$(dirname "$0")/.."
 
 remote() { sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "$@"; }
@@ -50,6 +55,17 @@ got=$(remote "adb -s $SERIAL push /tmp/carrier.bin /tmp/carrier.bin >/dev/null 2
 	adb -s $SERIAL shell 'dd if=/tmp/carrier.bin of=/dev/block/bootdevice/by-name/darwin bs=4096 seek=$CARRIER_BLOCK conv=notrunc; sync;
 	dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=$CARRIER_BLOCK count=$CARRIER_BLOCKS 2>/dev/null | md5sum'" | cut -d' ' -f1)
 [ "$got" = "$want" ] || { echo "carrier readback mismatch: $got != $want" >&2; exit 1; }
+
+# 2b. catalog patch, when the carrier is shorter than the file it replaces
+if [ -n "$CATALOG_FILE" ]; then
+	want=$(md5sum "$CATALOG_FILE" | cut -d' ' -f1)
+	echo "catalog $CATALOG_FILE ($want) -> block $CATALOG_BLOCK x$CATALOG_BLOCKS"
+	putfile "$CATALOG_FILE" /tmp/catalog.bin
+	got=$(remote "adb -s $SERIAL push /tmp/catalog.bin /tmp/catalog.bin >/dev/null 2>&1;
+		adb -s $SERIAL shell 'dd if=/tmp/catalog.bin of=/dev/block/bootdevice/by-name/darwin bs=4096 seek=$CATALOG_BLOCK conv=notrunc; sync;
+		dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=$CATALOG_BLOCK count=$CATALOG_BLOCKS 2>/dev/null | md5sum'" | cut -d' ' -f1)
+	[ "$got" = "$want" ] || { echo "catalog readback mismatch: $got != $want" >&2; exit 1; }
+fi
 
 # 3. SpringBoard back to stock
 if [ -f "$SPRINGBOARD_STOCK" ]; then
