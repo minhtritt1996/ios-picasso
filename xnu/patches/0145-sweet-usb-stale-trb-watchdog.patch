@@ -1,0 +1,103 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -246,6 +246,8 @@
+ #define DEPCMD_SETEPCONFIG      1
+ #define DEPCMD_SETTRANSFRESOURCE 2
+ #define DEPCMD_SETSTALL         4
++#define DEPCMD_ENDTRANSFER      8
++#define DEPCMD_CLEARSTALL       5
+ #define DEPCMD_STARTTRANSFER    6
+ #define DEPCMD_DEPSTARTCFG      9
+ #define DEPCMD_CMDACT           (1u << 10)
+@@ -324,6 +326,10 @@
+ 	uint32_t    rx_spurious_armed;  /* completion for a TRB nobody armed */
+ 	uint32_t    rx_lost;            /* completions recovered from HWO */
+ 	uint32_t    tx_lost;
++	uint32_t    rx_stale;
++	uint32_t    tx_stale;
++	uint64_t    rx_arm_stamp;
++	uint64_t    tx_stamp;
+ 	bool        rx_armed;           /* the RX TRB is owned by the controller */
+ 	/* RX frames are queued here and handed to the stack by ud_rx_worker, so a
+ 	 * stack path that blocks cannot stop the event thread. */
+@@ -554,6 +560,11 @@
+ 	if (ud.configured) {
+ 		return;
+ 	}
++	/* Reconfiguring the endpoints discards their TRBs (and leaves HWO set), so
++	 * forget ownership before the first arm. */
++	ud.rx_armed = false;
++	ud.tx_busy = false;
++	ud.txq_head = ud.txq_tail = ud.txq_count = 0;
+ 	if (ud_epcmd(0, DEPCMD_DEPSTARTCFG | (2u << 16), 0, 0, 0) ||
+ 	    ud_epcmd(EP_RX, DEPCMD_SETEPCONFIG, (2u << 1) | (512u << 3), (1u << 8) | ((uint32_t)EP_RX << 25), 0) ||
+ 	    ud_epcmd(EP_RX, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
+@@ -658,6 +669,7 @@
+ 	int err = ud_start_trb(EP_RX, UD_TRB_RX, UD_RX, UD_FRAME_MAX, TRBCTL_NORMAL);
+ 	if (err == 0) {
+ 		ud.rx_armed = true;
++		ud.rx_arm_stamp = mach_absolute_time();
+ 	} else if (ud.rx_arm_err++ < 8) {
+ 		ud_log("SWEET USB: rx arm failed %d\n", err);
+ 	}
+@@ -828,6 +840,7 @@
+ 			((uint8_t *)(ud.dma + UD_TX))[len++] = 0;
+ 		}
+ 		ud.tx_busy = true;
++		ud.tx_stamp = mach_absolute_time();
+ 		ud.tx_frames++;
+ 		/* called with ud.lock held: drop the frame, never wedge the queue */
+ 		if (ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, (uint32_t)len, TRBCTL_NORMAL) != 0) {
+@@ -1171,6 +1184,44 @@
+ 					ud_rx_done();
+ 				}
+ 			}
++			if (ud.rx_armed && ud.rx_arm_stamp != 0) {
++				uint64_t age = mach_absolute_time() - ud.rx_arm_stamp;
++				uint64_t age_ns = 0;
++
++				absolutetime_to_nanoseconds(age, &age_ns);
++				if (age_ns > 2000000000ULL) {
++					/* A 1518-byte frame cannot take two seconds: the controller
++					 * dropped this TRB without an event (an endpoint
++					 * reconfiguration does exactly that and leaves HWO set, so
++					 * the bit test above cannot see it). Abort and re-arm. */
++					if (ud.rx_stale++ < 8) {
++						ud_log("SWEET USB: rx TRB stale %llu ms, abort and re-arm\n",
++						    age_ns / 1000000);
++					}
++					ud_epcmd(EP_RX, DEPCMD_ENDTRANSFER, 0, 0, 0);
++					ud_epcmd(EP_RX, DEPCMD_CLEARSTALL, 0, 0, 0);
++					ud.rx_armed = false;
++					ud_rx_arm();
++				}
++			}
++			if (ud.tx_busy && ud.tx_stamp != 0) {
++				uint64_t age = mach_absolute_time() - ud.tx_stamp;
++				uint64_t age_ns = 0;
++
++				absolutetime_to_nanoseconds(age, &age_ns);
++				if (age_ns > 2000000000ULL) {
++					if (ud.tx_stale++ < 8) {
++						ud_log("SWEET USB: tx TRB stale %llu ms, abort\n",
++						    age_ns / 1000000);
++					}
++					ud_epcmd(EP_TX, DEPCMD_ENDTRANSFER, 0, 0, 0);
++					ud_epcmd(EP_TX, DEPCMD_CLEARSTALL, 0, 0, 0);
++					lck_mtx_lock(ud.lock);
++					ud.tx_busy = false;
++					ud.txq_head = ud.txq_tail = ud.txq_count = 0;
++					lck_mtx_unlock(ud.lock);
++				}
++			}
+ 			if (ud.tx_busy) {
+ 				volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
+ 				ud_sync(UD_TRB_TX, 16);
+@@ -1604,6 +1655,7 @@
+ 			seq++;
+ 			snprintf((char *)f + 14, 40, "sweet-tx-probe %u", seq);
+ 			ud.tx_busy = true;
++			ud.tx_stamp = mach_absolute_time();
+ 			int err = ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, 60, TRBCTL_NORMAL);
+ 			if (ud.probes++ < 4) {
+ 				ud_log("SWEET USB: tx probe %u start err %d\n", seq, err);
