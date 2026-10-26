@@ -705,7 +705,16 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Two carrier shapes are queued for the next trip.** (a) the 98,586-byte image with
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The carrier must run before launchd stops.** With the shell installed at SpringBoard
+and at safetyalertsd, a boot that stalls leaves no `sweetsh.status` file at all after
+14 minutes: launchd stops spawning right after safetyalertsd and never reaches
+SpringBoard, so neither carrier runs. `backboardd` is spawned at #33, well before that
+point, and it is an ordinary daemon, so it is the carrier that can run in a stalled
+boot: `/usr/libexec/backboardd`, 1,184,848 bytes, 290 blocks at 2,101,702, image
+98,585 bytes with ident `com.apple.backboardd`, catalog `logicalSize` patch in block
+`1762858` (md5 `091bd56a831335f5319ad67302401591`), payload md5 `c6a9c44fc578c0d5046a5303c61ae62a`.
+
+**Two carrier shapes are queued for the next trip.** (a) the 98,586-byte image with
 the full-coverage signature (payload md5 `4e290674b8a3f5cbe7ee8220f6bfb61a` for
 SpringBoard, catalog already at 98,586); (b) `small.bin` - md5
 `be7003a431fc4a57827c3a27a6fd3105`, 32,920 bytes, ident `com.picasso.sweetsh`, written
