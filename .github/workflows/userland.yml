@@ -1,0 +1,89 @@
+name: userland
+
+# Build the userland the picasso XNU port is missing: the rootfs has no /bin/sh
+# and no sshd, so the USB-ECM shell can only poke files. A GitHub runner can
+# cross-build Darwin arm64 binaries: clang targets arm64-apple-ios against the
+# public iPhoneOS SDK, ld64.lld links them and signs ad-hoc (-adhoc_codesign),
+# which is exactly what the kernel's built-in AMFI accepts (it marks any signed
+# rootfs binary as a platform binary).
+#
+# Artifacts: dash (POSIX sh), dropbear + dropbearkey + dbclient.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/userland/**', '.github/workflows/userland.yml']
+
+jobs:
+  userland:
+    runs-on: ubuntu-latest
+    env:
+      SDK_TAG: master
+      IOS_MIN: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm zlib1g-dev bzip2
+          clang --version | head -2
+          ld64.lld --version || true
+
+      - name: iPhoneOS SDK
+        run: |
+          # theos/sdks keeps the SDKs Apple ships inside Xcode; the runner has no
+          # Xcode and the SDKs are never redistributed by us, only fetched here.
+          curl -sSL -o sdks.tar.gz https://github.com/theos/sdks/archive/refs/heads/${SDK_TAG}.tar.gz
+          tar xzf sdks.tar.gz
+          ls -d sdks-*/iPhoneOS*.sdk | sort -V | tail -3
+          SDK=$(ls -d sdks-*/iPhoneOS*.sdk | sort -V | tail -1)
+          test -f "$SDK/usr/lib/libSystem.tbd"
+          echo "SDK=$PWD/$SDK" >> "$GITHUB_ENV"
+          ls "$SDK/usr/lib" | head
+
+      - name: dash
+        run: |
+          curl -sSL -o dash.tar.gz https://deb.debian.org/debian/pool/main/d/dash/dash_0.5.12.orig.tar.gz
+          tar xzf dash.tar.gz
+          cd dash-0.5.12
+          export CC="clang --target=arm64-apple-ios${IOS_MIN} -isysroot $SDK"
+          export CFLAGS="-O2 -fno-stack-protector"
+          export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign,-platform_version,ios,${IOS_MIN},${IOS_MIN}"
+          ./configure --host=aarch64-apple-darwin || { tail -40 config.log; exit 1; }
+          make -j"$(nproc)" || { tail -40 config.log; exit 1; }
+          llvm-objdump --macho --private-headers src/dash | grep -E "MH_MAGIC|LC_CODE_SIGNATURE" | head -3
+          mkdir -p out && cp src/dash out/sh
+
+      - name: dropbear
+        run: |
+          curl -sSL -o dropbear.tar.gz https://github.com/mkj/dropbear/archive/refs/tags/DROPBEAR_2022.83.tar.gz
+          tar xzf dropbear.tar.gz
+          cd dropbear-DROPBEAR_2022.83
+          export CC="clang --target=arm64-apple-ios${IOS_MIN} -isysroot $SDK"
+          export CFLAGS="-O2 -fno-stack-protector -Wno-error"
+          export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign"
+          # no zlib in the SDK build, no syslog daemon in this port, and the port
+          # has no /etc/dropbear yet - the key files are generated on the phone
+          ./configure --host=aarch64-apple-darwin --disable-zlib --disable-syslog \
+                      --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp \
+                      --disable-wtmpx || { tail -60 config.log; exit 1; }
+          make -j"$(nproc)"
+          ls -l dropbear dbclient dropbearkey 2>/dev/null || { tail -60 config.log; exit 1; }
+          for b in dropbear dbclient dropbearkey; do
+            llvm-objdump --macho --private-headers $b | grep -E "LC_CODE_SIGNATURE|LC_LOAD_DYLIB" | head -4
+          done
+          cp dropbear dbclient dropbearkey ../out/
+
+      - name: Package
+        run: |
+          mkdir -p artifact/usr/local/bin artifact/usr/local/sbin
+          cp out/sh artifact/usr/local/bin/ 2>/dev/null || true
+          cp out/dropbear out/dbclient artifact/usr/local/sbin/ 2>/dev/null || true
+          cp out/dropbearkey artifact/usr/local/bin/ 2>/dev/null || true
+          ls -lR artifact
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: userland-arm64
+          path: artifact
