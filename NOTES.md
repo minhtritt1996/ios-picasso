@@ -456,7 +456,63 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-26 (2), latest)
+## Agent handoff / active work (2026-10-26 (3), latest)
+### >>> A shell RUNS on the phone. USB still wedges. <<<
+**Measured, on the phone, today:**
+1. A freestanding static arm64 Mach-O executes under this kernel **and launchd
+   spawns it**: with the shell installed at
+   `/System/Library/CoreServices/SpringBoard.app/SpringBoard` (signed, md5 see
+   `tools/sweetsh/build.sh`) the phone boots, the gadget enumerates and UDP to
+   `192.168.7.2:4444` is answered. The console photo showed `ls /` returning the
+   real HFS+ root (`Applications Developer Library System bin cores dev etc
+   private sbin tmp usr var`). Boot-task carriers (`tzinit`, `usermanagerd`)
+   still panic, so a normal daemon is the carrier that works.
+2. What the binary needed (each proven by a crash report or a refusal):
+   sp alignment in a naked entry stub; the single segment **rwx** (a store into
+   a global of an r-x segment is SIGBUS at `far = base + filesize`); `vmsize`
+   covering `.bss`; and a CodeDirectory the kernel accepts - 16 KiB page shift,
+   blob on a 16 KiB boundary, `codelimit == dataoff`, CD >= 108 bytes. A blob
+   that fails gives EBADEXEC, then `cs_invalid_page` removes execute permission
+   and the first instruction is SIGILL; `cs_enforcement_disable=1
+   amfi_get_out_of_my_way=1` are in the boot line anyway.
+3. Stub AMFI (`bsd/kern/sweet_amfi.c:259`) marks **any signed rootfs binary** as
+   a platform binary, so a valid signature also earns `CS_PLATFORM_BINARY`.
+4. `getdirentries64` on this kernel: `d_reclen` at offset 16, type at 20, name at
+   21, and the 16-bit name length is left **zero** - measure the name against
+   the record. Entry names must also go through the reply capture, not a raw
+   `write(1)` (which lands on /dev/console).
+5. No recovery needed to iterate any more: the shell has `w <file> <off> <hex>`
+   (patch bytes of an existing file, like `dd conv=notrunc`) and `reboot`, and
+   `tools/sweetsh-push.py` sends a whole image in 560-byte chunks. Self-install:
+   push the new build into a spare file (`/bin/ps`), execute it - it recognises
+   itself by comparing its mapped header with that file - and it overwrites the
+   carrier and reboots.
+6. The userland is built by CI (`.github/workflows/userland.yml`, artifact
+   `userland-arm64`): `sh` (dash 0.5.12, 167,504 B), `dropbear` (285,184),
+   `dbclient` (268,080), `dropbearkey` (203,760), all Mach-O arm64 with valid
+   ad-hoc signatures (README: ld64.lld signs with **4 KiB** pages, which this
+   kernel accepts - `ubc_subr.c:374`). Not installed yet: the rootfs has no
+   `/usr/local` and no way to create files from inside (see 8).
+**Still broken: the USB link wedges after a while.** Patch `0141` (event ring
+advanced one dword per event; the old `count % 16 ? 16 : 4` heuristic dropped
+three of every four buffered events) is IN the flashed kernel and clearly helped
+- the link carried hundreds of frames (host `rx 394 tx 425`) before stopping -
+but it still stops: gadget still on the bus, `l2 info` silent, host `txerr 240`.
+Next instrument: the kick thread in `sweet_ufs.c` ("SWEET HB ... fails 0 fage")
+survives, while `ud_thread`'s "ev alive" heartbeat stops, so add to the kick
+thread a call into `sweet_usb.c` that logs `ud.ev_ticks`, `ud.rxw_loops`,
+`GEVNTCOUNT`, DALEPENA and whether `ud.lock` can be taken (`lck_mtx_try_lock`)
+- that one line names the stuck thread. Then recover: ENDTRANSFER + CLEARSTALL
+on ep2/ep3 and re-arm, or a full DCTL Run/Stop cycle.
+**Next for SSH:** dropbear needs `getpwnam`, which goes through
+`opendirectoryd` (not running in this port) - patch it in CI to synthesise a
+root `struct passwd` when the lookup fails; and the binaries need real paths
+(`/usr/local/bin/sh`, `/usr/local/sbin/dropbear`), which needs HFS+ catalog
+surgery to create files (allocate blocks from the allocation bitmap, insert the
+catalog record, update the volume header) - the same work a real LaunchDaemon
+plist needs.
+
+## Agent handoff / previous (2026-10-26 (2))
 ### >>> USB is fixed; the shell is correct but no launchd carrier exists <<<
 **What works (measured):**
 - Patch `0139` (driver logs through `vsnprintf` + `sweet_log_append`, never
