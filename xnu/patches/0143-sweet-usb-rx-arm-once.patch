@@ -1,0 +1,73 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -319,7 +319,10 @@
+ 	uint32_t    ev_geo;             /* event-ring geometry prints */
+ 	uint32_t    ev_press;           /* event-ring pressure prints */
+ 	uint32_t    rx_spurious;
++	uint32_t    rx_arm_err;
+ 	uint32_t    tx_spurious;
++	uint32_t    rx_spurious_armed;  /* completion for a TRB nobody armed */
++	bool        rx_armed;           /* the RX TRB is owned by the controller */
+ 	/* RX frames are queued here and handed to the stack by ud_rx_worker, so a
+ 	 * stack path that blocks cannot stop the event thread. */
+ 	uint8_t     rxq_buf[UD_RXQ][UD_FRAME_MAX];
+@@ -642,7 +645,20 @@
+ static void
+ ud_rx_arm(void)
+ {
+-	ud_start_trb(EP_RX, UD_TRB_RX, UD_RX, UD_FRAME_MAX, TRBCTL_NORMAL);
++	/* Arming a TRB the controller still owns corrupts it and wedges the endpoint
++	 * for good (the host then sees every URB time out while the event ring stays
++	 * empty and DALEPENA still says the endpoint is enabled). Every path that
++	 * wants RX armed goes through here, so the flag is the single source of
++	 * truth for ownership. */
++	if (ud.rx_armed) {
++		return;
++	}
++	int err = ud_start_trb(EP_RX, UD_TRB_RX, UD_RX, UD_FRAME_MAX, TRBCTL_NORMAL);
++	if (err == 0) {
++		ud.rx_armed = true;
++	} else if (ud.rx_arm_err++ < 8) {
++		ud_log("SWEET USB: rx arm failed %d\n", err);
++	}
+ }
+ 
+ /* Control channel (see ud_cmd_exec below). */
+@@ -661,6 +677,14 @@
+ 		}
+ 		return;
+ 	}
++	if (!ud.rx_armed && ud.rx_spurious_armed++ < 8) {
++		/* A completion for a TRB nobody armed means the ring carried a duplicate
++		 * event; the payload below is stale, so do not hand it to the stack. */
++		ud_log("SWEET USB: rx completion with no armed TRB\n");
++		ud_rx_arm();
++		return;
++	}
++	ud.rx_armed = false;
+ 	uint32_t len = UD_FRAME_MAX - (t[2] & 0xffffff);
+ 	ud_sync(UD_RX, UD_FRAME_MAX);
+ 	if (len >= ETHER_HDR_LEN && len <= ETHER_MAX_LEN) {
+@@ -981,6 +1005,13 @@
+ 		}
+ 		if (type == 1) {        /* USB reset */
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
++			/* The core aborts every transfer on a reset, so the RX TRB is no
++			 * longer the controller's and must be re-armed. */
++			ud.rx_armed = false;
++			ud.tx_busy = false;
++			if (ud.configured) {
++				ud_rx_arm();
++			}
+ 			ud_log("SWEET USB: bus reset\n");
+ 		} else if (type == 2) { /* connect done */
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
+@@ -993,6 +1024,8 @@
+ 			}
+ 			ud_log("SWEET USB: connected, speed %u\n", speed);
+ 		} else if (type == 0) {
++			ud.rx_armed = false;
++			ud.tx_busy = false;
+ 			ud_log("SWEET USB: disconnect\n");
+ 		}
+ 		return;
