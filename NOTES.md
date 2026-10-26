@@ -494,7 +494,23 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
   others; launchd's daemon phase in this port stops at `xpcproxy` when
   SpringBoard's Mach services never appear, which is exactly what happens when
   SpringBoard is our shell.
-**Next step (designed, not started):** install our own LaunchDaemon *file* so
+**Phone state: fully stock again (verified by md5 on the device).**
+`/sbin/launchd` f9ad5d3d, `launchd_cache_loader` dbd8c7c7, `tzinit` 66c3d418,
+`usermanagerd` 69226d92, `runningboardd` d075871c, `OTACrashCopier` 1d1792c2,
+`/bin/ps` efb15b03, `/System/Library/xpc/launchd.plist` 098af57c,
+`SpringBoard` 09495bc9 (from the image). Nothing of ours is installed.
+**The remaining USB bug is independent of the shell:** with the stock rootfs the
+driver still stops in most boots - host counters sit at `rx 1 tx 13 txerr 60`,
+the device's `ev alive` counter freezes, while `SWEET KICK` heartbeats keep
+running. It is nondeterministic (some boots reach 184 s with `rx 76 tx 40`).
+Next instrument for it: the RX-worker/RX-ring panic in `0140` (boot
+`sweetusbrxwpanic=1 sweetusbstallpanic=1` with `sweetfb_noconsole=0`) plus
+`0140`'s per-frame `rxw N enter/returned ifnet_input` traces, read from the
+panic ring; the probe thread must be running (`sweetusbprobe=1`) for the stall
+checks to fire, and it currently stops printing after its first heartbeat, which
+is itself worth fixing first (move the heartbeat out of the probe thread).
+
+**Next step for the shell (designed, not started):** install our own LaunchDaemon *file* so
 launchd loads it like Bergamota's dropbear job: create
 `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist` in the HFS+ volume
 (needs catalog surgery: allocate blocks from the allocation bitmap, write the
