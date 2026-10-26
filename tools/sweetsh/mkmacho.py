@@ -2,12 +2,28 @@
 """Wrap a flat arm64 image in a static Mach-O executable.
 
 ld64.lld cannot emit a static (dyld-free) arm64 executable, and XNU accepts one
-only with MH_DYLDLINK clear and an LC_UNIXTHREAD carrying the entry state (this
-is a DEVELOPMENT kernel, where static binaries are allowed). So: link the code
-with an ELF linker at the address it will live at, dump the raw bytes, and write
-the Mach-O header by hand.
+only with MH_DYLDLINK clear and an LC_UNIXTHREAD carrying the entry state (this is
+a DEVELOPMENT kernel, where static binaries are allowed). So: link the code with
+an ELF linker at the address it will live at, dump the raw bytes, and write the
+Mach-O header by hand.
 
-  mkmacho.py RAW_BIN ENTRY_OFFSET SIZE_OUT
+Things this wrapper has to get right, each of which cost a boot:
+
+* XNU hands a static binary a stack pointer that is only 8-byte aligned; the
+  caller's entry stub aligns it before any compiler-generated frame code runs.
+* The single segment must be **writable**: the shell keeps globals (reply buffer,
+  counters) in the same flat image, and an r-x mapping turns the first store into
+  SIGBUS (protection failure) at far = base + filesize.
+* `vmsize` must cover .bss, which lives beyond the file bytes: pass the ELF's
+  memory extent with --memsize (tools/sweetsh/elfextent.py).
+* arm64 iOS uses 16 KiB pages (ARM_PGSHIFT 14): a CodeDirectory with the 4 KiB
+  shift invalidates every page, and a signature blob that shares a page with code
+  can never match its own hash - so the blob starts on a 16 KiB boundary.
+* sizeof(CS_CodeDirectory) in XNU is 108 bytes (the struct carries the fields of
+  every later version) and a shorter CodeDirectory is rejected as EBADEXEC, which
+  silently drops the signature and makes the kernel remove execute permission.
+
+  mkmacho.py RAW_BIN OUT [--memsize N] [--sign]
 """
 import hashlib
 import struct
@@ -22,131 +38,114 @@ LC_SEGMENT_64 = 0x19
 LC_UNIXTHREAD = 0x5
 LC_BUILD_VERSION = 0x32
 LC_CODE_SIGNATURE = 0x1d
+ARM_THREAD_STATE64 = 6
+VM_PROT_READ = 1
+VM_PROT_WRITE = 2
+VM_PROT_EXECUTE = 4
 CSMAGIC_EMBEDDED_SIGNATURE = 0xfade0cc0
 CSMAGIC_CODEDIRECTORY = 0xfade0c02
 CSSLOT_CODEDIRECTORY = 0
-PAGE = 16384          # XNU arm64 iOS page size (ARM_PGSHIFT 14)
 CS_ADHOC = 0x2
-ARM_THREAD_STATE64 = 6
-VM_PROT_READ = 1
-VM_PROT_EXECUTE = 4
+PAGE = 16384                      # XNU arm64 iOS page size (ARM_PGSHIFT 14)
+CD_MIN = 108                      # sizeof(CS_CodeDirectory) in this XNU
 
 BASE = 0x100000000
-LC_AREA = 0x1000              # space reserved for the load commands
+LC_AREA = 0x1000                  # space reserved for the load commands
+SEG_CMD_SIZE = 72
 
 
-def seg(name, vmaddr, vmsize, fileoff, filesize, maxprot, initprot):
-    return struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, 72, name.encode(),
-                       vmaddr, vmsize, fileoff, filesize, maxprot, initprot, 0, 0)
+def seg(name, vmaddr, vmsize, fileoff, filesize, prot):
+    return struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, SEG_CMD_SIZE, name.encode(),
+                       vmaddr, vmsize, fileoff, filesize, prot, prot, 0, 0)
 
 
 def unixthread(pc):
-    x = [0] * 29
-    fp = lr = sp = 0
-    cpsr = 0
-    state = struct.pack('<29Q4QII', *x, fp, lr, sp, pc, cpsr, 0)
+    state = struct.pack('<29Q4QII', *([0] * 29), 0, 0, 0, pc, 0, 0)
     payload = struct.pack('<II', ARM_THREAD_STATE64, len(state) // 4) + state
     return struct.pack('<II', LC_UNIXTHREAD, 8 + len(payload)) + payload
 
 
 def build_version():
-    # platform iossimulator=7, minos 14.0, sdk 14.0
     return struct.pack('<IIIIII', LC_BUILD_VERSION, 24, 7, 14 << 16, 14 << 16, 0)
 
 
 def adhoc_signature(image, ident):
-    """Ad-hoc SuperBlob + CodeDirectory (SHA-256, 16 KiB pages) for `image`.
-
-    arm64 iOS refuses unsigned code on enforcing configurations; an ad-hoc
-    signature (no authority, CS_ADHOC) is the cheapest way to look signed.
-
-    XNU on arm64 iOS uses 16 KiB pages (ARM_PGSHIFT 14) and hashes code with the
-    *kernel* page size: a 4 KiB CodeDirectory made every page invalid and the
-    kernel then removed execute permission, so the first instruction faulted as
-    SIGILL (cs_invalid_page(0x100000000)). The caller also page-aligns the blob
-    so it never shares a hashed page with code.
-    """
+    """Ad-hoc SuperBlob + CodeDirectory (SHA-256, 16 KiB pages) for `image`."""
     page = PAGE
     paginated = image + b'\0' * ((-len(image)) % page)
     slots = [hashlib.sha256(paginated[i:i + page]).digest()
              for i in range(0, len(paginated), page)]
     ident_b = ident.encode() + b'\0'
-    # CS_CodeDirectory, version 0x20100:
-    #   magic length version flags hashOffset identOffset nSpecialSlots
-    #   nCodeSlots codeLimit  (9 * 4)  hashSize hashType platform pageSize (4)
-    #   spare2 scatterOffset  (2 * 4)  -> identifier at 48
     ident_offset = 48
     hash_offset = ident_offset + len(ident_b)
-    # sizeof(CS_CodeDirectory) in XNU is 108 bytes (the struct carries the
-    # fields of every later version), and cs_validate_codedirectory() rejects a
-    # blob shorter than that: pad past the hash slots.
-    cd_len = max(hash_offset + 32 * len(slots), 128)
+    cd_len = max(hash_offset + 32 * len(slots), CD_MIN)
     cd = b''.join([
         struct.pack('>IIIIIIIII', CSMAGIC_CODEDIRECTORY, cd_len, 0x20100, CS_ADHOC,
                     hash_offset, ident_offset, 0, len(slots), len(image)),
-        struct.pack('>BBBB', 32, 2, 0, 14),     # hashSize, hashType=sha256, platform, pageSize=16 KiB
-        struct.pack('>I', 0),                   # spare2
-        struct.pack('>I', 0),                   # scatterOffset
+        struct.pack('>BBBB', 32, 2, 0, 14),          # sha256, 16 KiB pages
+        struct.pack('>I', 0),                        # spare2
+        struct.pack('>I', 0),                        # scatterOffset
         ident_b,
         b''.join(slots),
         b'\0' * (cd_len - hash_offset - 32 * len(slots)),
     ])
-    assert len(cd) == cd_len, (len(cd), cd_len)
-    blob = struct.pack('>III', CSMAGIC_EMBEDDED_SIGNATURE, 20 + len(cd), 1) + \
-        struct.pack('>II', CSSLOT_CODEDIRECTORY, 20) + cd
-    return blob
+    body = struct.pack('>IIII', CSMAGIC_EMBEDDED_SIGNATURE, 20 + len(cd), 1,
+                       CSSLOT_CODEDIRECTORY) + struct.pack('>I', 20) + cd
+    return body
 
 
 def main():
     raw_path, out_path = sys.argv[1], sys.argv[2]
-    entry_off = 0
-    sign = len(sys.argv) > 3 and sys.argv[3] == '--sign'
+    args = sys.argv[3:]
+    sign = '--sign' in args
+    memsize = int(args[args.index('--memsize') + 1], 0) if '--memsize' in args else 0
     code = open(raw_path, 'rb').read()
-    pc = BASE + LC_AREA + entry_off
+    pc = BASE + LC_AREA
 
-    image = b''.join([
-        struct.pack('<II', 0, 0),           # placeholder replaced below
-    ])
-    segs = [
-        seg('__PAGEZERO', 0, BASE, 0, 0, 0, 0),
-        seg('__TEXT', BASE, LC_AREA + len(code), 0, LC_AREA + len(code),
-            VM_PROT_READ | VM_PROT_EXECUTE, VM_PROT_READ | VM_PROT_EXECUTE),
+    text_prot = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE
+    # Command layout depends only on whether the signature LC is reserved, so the
+    # segment can be built with its final vmsize before the body exists.
+    ncmds = 5 if sign else 4
+    cmds_len = SEG_CMD_SIZE * 2 + 24 + (8 + 4 + 68 * 4) + (16 if sign else 0)
+    filesize = LC_AREA + len(code)
+    vmsize = max(filesize, memsize)
+    vmsize += (-vmsize) % PAGE
+    cmds = b''.join([
+        seg('__PAGEZERO', 0, BASE, 0, 0, 0),
+        seg('__TEXT', BASE, vmsize, 0, filesize, text_prot),
         build_version(),
         unixthread(pc),
-    ]
-    cmds = b''.join(segs)
-    if len(cmds) > LC_AREA:
-        sys.exit('load commands do not fit: %d > %d' % (len(cmds), LC_AREA))
-
-    ncmds = 4 if not sign else 5
-    sizeofcmds = len(cmds) + (16 if sign else 0)
+    ])
+    if sign:
+        cmds += struct.pack('<IIII', LC_CODE_SIGNATURE, 16, 0, 0)
+        filesize += 0                      # placeholder lives inside LC_AREA
     header = struct.pack('<IiiIIIII', MAGIC, CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
-                         MH_EXECUTE, ncmds, sizeofcmds, MH_NOUNDEFS, 0)
+                         MH_EXECUTE, ncmds, cmds_len, MH_NOUNDEFS, 0)
     blob = header + cmds
-    blob += b'\0' * (LC_AREA - len(blob))
-    if sign:
-        # reserve the 16 bytes of LC_CODE_SIGNATURE inside the load-command area
-        blob = blob[:32] + cmds + b'\0' * 16 + blob[32 + len(cmds):]
-    body = blob + code
+    if len(blob) > LC_AREA:
+        sys.exit('load commands do not fit: %d > %d' % (len(blob), LC_AREA))
+    body = blob + b'\0' * (LC_AREA - len(blob)) + code
 
     if sign:
-        # The signature size depends only on dataoff (one hash per 4 KiB page)
-        # and dataoff only on the bytes before it, so a single pass is enough.
-        # The signature blob must start on a page boundary: with a 16 KiB page
-        # size the blob would otherwise share the last hashed page with code, and
-        # the hash of that page could never match (it contains the blob itself).
         dataoff = len(body) + ((-len(body)) % PAGE)
         image = body + b'\0' * (dataoff - len(body))
         sig = adhoc_signature(image, 'com.picasso.sweetsh')
-        lc = struct.pack('<IIII', LC_CODE_SIGNATURE, 16, dataoff, len(sig))
-        image = image[:32] + cmds + lc + image[32 + len(cmds) + 16:]
-        assert len(image) == dataoff, (len(image), dataoff)
-        sig = adhoc_signature(image, 'com.picasso.sweetsh')     # LC bytes final
+        lc_off = 32 + cmds_len - 16
+        image = image[:lc_off] + struct.pack('<IIII', LC_CODE_SIGNATURE, 16,
+                                            dataoff, len(sig)) + image[lc_off + 16:]
+        sig = adhoc_signature(image, 'com.picasso.sweetsh')   # LC bytes final
         body = image + sig
+        # __TEXT filesize must cover the hashed image, and vmsize the file
+        if dataoff > filesize:
+            filesize = dataoff
+            text = seg('__TEXT', BASE, max(vmsize, filesize), 0, filesize, text_prot)
+            body = body[:32 + SEG_CMD_SIZE] + text + body[32 + 2 * SEG_CMD_SIZE:]
 
     with open(out_path, 'wb') as f:
         f.write(body)
-    print('%s: %d bytes, entry 0x%x%s' % (out_path, len(body), pc, ', ad-hoc signed' if sign else ''))
+    print('%s: %d bytes, entry 0x%x, vmsize %d, filesize %d, %s%s' % (
+        out_path, len(body), pc, vmsize, filesize,
+        'rwx', ', ad-hoc signed' if sign else ''))
 
 
 if __name__ == '__main__':
