@@ -41,7 +41,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True)
     ap.add_argument("--dest", required=True)
-    ap.add_argument("--chunk", type=int, default=512)
+    ap.add_argument("--chunk", type=int, default=768)
     ap.add_argument("--reboot", action="store_true")
     args = ap.parse_args()
 

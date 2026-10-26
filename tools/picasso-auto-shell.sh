@@ -78,7 +78,7 @@ while [ $i -lt $((HOURS * 240)) ]; do
 	# Normal boot with a live kernel command channel: replace amfid from the kernel.
 	if onhost 'cd /tmp; python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ecm.py l2 info 2>/dev/null | grep -q "configured"'; then
 		echo "=== $(date +%T) L2 channel answers: writing the shell over /usr/libexec/amfid"
-		onhost "cd /tmp && python3 picasso-install-binary-over-l2.py --binary $(basename "$BIN") --dest /usr/libexec/amfid --chunk 384 --reboot 2>&1 | tail -8"
+		onhost "cd /tmp && python3 picasso-install-binary-over-l2.py --binary $(basename "$BIN") --dest /usr/libexec/amfid --reboot 2>&1 | tail -8"
 		sleep 30
 		if wait_shell; then finish; exit 0; fi
 		echo "=== shell did not answer after the L2 install"
