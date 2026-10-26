@@ -603,7 +603,27 @@ GPT head/tail and the `boot` partition. `boot`, `recovery`, `modem`, `persist` a
 the backups were not touched, so the phone still boots stock Android when the stock
 `boot` image is flashed back.
 
-**USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
+**Lesson that cost a volume: never ship blocks computed from an old snapshot onto
+a live filesystem.** The first install edited a *copy* of
+`ios16-root-picasso.img` and shipped the volume header, the allocation bitmap, two
+catalog leaves and the data blocks. The boot then printed
+`hfs_mark_inconsistent: Runtime corruption detected on iOSRoot, fsck will be
+forced`, `cat_delete() failed to delete thread record`, and
+`BlockMarkFreeInternal() trying to free unallocated blocks` - because the device
+had allocated blocks in the meantime (iOS's own bookkeeping plus the two files the
+`put` experiments created), so our bitmap and counters no longer described the
+live volume. The kernel then discarded the records, which is why `stat
+/private/var/root/dropbear` returned ENOENT while `stat /private/var/root`,
+`.ssh` and `Library` all worked: same tree, our entries gone.
+The tool already supports the right way: `HFS_REMOTE="<cmd that dd's the
+partition to stdout>"` makes it fetch every range it needs from the *live* phone
+into a sparse image, so `create` computes the edit against the current catalog,
+bitmap and volume header, and only the blocks it actually changed are shipped.
+Recovery of the volume: rewrite the four ranges from the snapshot (volume header +
+bitmap `0:129`, catalog leaves `183682:2` and `1763522:2`, data `3062493:233`),
+which returns it to the exact state it booted from.
+
+**USB IS FIXED - measured.****USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
 the kernel control channel answered **379 of 379 requests over 180 s with zero
 misses** (`l2 info`), where 0149 managed 3 replies and died at 46 s and every
 earlier boot died within seconds. The last hole was the drain trigger in `0148`:
