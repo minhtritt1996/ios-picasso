@@ -309,10 +309,35 @@ def _file_record(cnid, size, extents):
     return body
 
 
+def _folder_record(cnid, valence, parent, name):
+    body = struct.pack('>HHII', 1, 0, valence, cnid)      # type, flags, valence, id
+    body += struct.pack('>IIIII', DATE, DATE, DATE, DATE, 0)
+    body += _perms()
+    body += b'\0' * 32                                    # userInfo + finderInfo
+    body += struct.pack('>II', 0, 0)
+    return _catalog_key(parent, name) + body
+
+
+def _folder_thread(cnid, parent, name):
+    body = struct.pack('>HHI', 3, 0, parent)
+    body += struct.pack('>H', len(name)) + name.encode('utf-16-be')
+    return _catalog_key(cnid, '') + body
+
+
 def _file_thread(cnid, parent, name):
     body = struct.pack('>HHI', CAT_FILE_THREAD, 0, parent)
     body += struct.pack('>H', len(name)) + name.encode('utf-16-be')
     return body
+
+
+def _merge(blocks):
+    out = []
+    for b in blocks:
+        if out and b == out[-1][1] + 1:
+            out[-1][1] = b
+        else:
+            out.append([b, b])
+    return out
 
 
 def _alloc_run(vol, nblocks):
@@ -543,7 +568,19 @@ def main():
                     packed = _node_pack(fwd, back, kind, height, recs, node_size)
                     _fork_write(vol, vol.catalog, vol.catalog_size, node_no * node_size, packed)
                     print('# %s: logicalSize %d -> %d' % (path, old, newsize))
-                    print('  bs=4096 skip=%d count=1' % ((node_no * node_size) // vol.blocksize))
+                    # Map the catalog's *logical* node offset through its extents to
+                    # the block on disk; printing the logical offset and shipping it
+                    # writes an unrelated block.
+                    loff = node_no * node_size
+                    pos = 0
+                    for start_block, count in vol.catalog:
+                        span = count * vol.blocksize
+                        if loff < pos + span:
+                            print('  bs=4096 skip=%d count=%d' % (
+                                start_block + (loff - pos) // vol.blocksize,
+                                (node_size + vol.blocksize - 1) // vol.blocksize))
+                            break
+                        pos += span
                     done = True
                     break
             node_no = fwd
@@ -565,6 +602,28 @@ def main():
         vol.f.flush()
         print('# attributes 0x%08x (journaling off, marked unmounted)' % attr)
         print('  bs=4096 skip=0 count=1')
+    elif cmd == 'mkd':
+        # Create a folder. iOS needs /private/var/log/com.apple.xpc.launchd to exist
+        # before launchd can log its spawn decisions, and that log is the only way
+        # to see why a spawn stalls.
+        folder, name = sys.argv[3], sys.argv[4]
+        got = find(vol, folder)
+        if not got or got[1] is None:
+            sys.exit('no such folder: %s' % folder)
+        parent_id = struct.unpack('>I', got[1][8:12])[0]
+        cnid = struct.unpack('>I', vol.vh[VH_NEXT_CNID:VH_NEXT_CNID + 4])[0]
+        folder_count = struct.unpack('>I', vol.vh[VH_FOLDER_COUNT:VH_FOLDER_COUNT + 4])[0]
+        _insert(vol, [(_catalog_key(parent_id, name), _folder_record(cnid, 0, parent_id, name)),
+                      (_catalog_key(cnid, ''), _folder_thread(cnid, parent_id, name))])
+        vol.write(1024 + VH_FOLDER_COUNT, struct.pack('>I', folder_count + 1))
+        vol.write(1024 + VH_NEXT_CNID, struct.pack('>I', cnid + 1))
+        vol.f.flush()
+        print('# folder %s/%s created, cnid %d' % (folder, name, cnid))
+        for b in sorted(_insert.changed | {1024 // vol.blocksize}):
+            pass
+        print('  bs=4096 skip=%d count=1' % (1024 // vol.blocksize))
+        for lo, hi in _merge(sorted(_insert.changed)):
+            print('  bs=4096 skip=%d count=%d' % (lo, hi - lo + 1))
     elif cmd == 'create':
         folder = sys.argv[3]
         files = [tuple(a.split('=', 1)) for a in sys.argv[4:]]

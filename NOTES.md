@@ -705,7 +705,36 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**Everything is in place on the phone except the daemon phase.****Everything is in place on the phone except the daemon phase.**
+**Carriers tried tonight (2026-10-26, each measured):**
+* **boot task** (`/usr/libexec/sysstatuscheck`, signed with `--ident
+  com.apple.sysstatuscheck` - the kernel compares a boot task's signing identifier
+  with its expected name and panics otherwise, `observed=com.picasso.sweetsh
+  expected=com.apple.sysstatuscheck`): it *runs* ("Doing boot task sysstatuscheck"
+  in the ring) but launchd then asks the platform to restart
+  (`IOServicePH::systemHalt`, `Halt/Restart Timed Out @PlatformExpert.cpp:884`) -
+  this port cannot reset the SoC, so that is a panic. A boot task must exit, and our
+  server must not, so the fork-and-exit that would fix it depends on `fork()`
+  working, which is unproven here.
+* **PID 1** (`/sbin/launchd` replaced, `--ident com.apple.launchd`): the boot halts
+  within seconds (`debug_log_init: Error!! gPanicBase is still not initialized`,
+  then `systemHalt`). Do **not** start the shell as initproc: the first version
+  forked and exited, which kills the system outright, and the second (pid-1 guard)
+  still never reached USB configuration.
+* **`amfid`**: useless as a carrier - it is demand-launched, so with code signing
+  bypassed it never runs at all.
+* **`SpringBoard`** (daemon, RunAtLoad, in launchd's cache) remains the only carrier
+  that ever worked, and it needs launchd's daemon phase, which stalls: the ring ends
+  with ~46 `exec xpcproxy` lines, no target exec afterwards, no crash record. So
+  `xpcproxy` dies before re-exec'ing its target and launchd keeps retrying.
+**Instrument prepared for that stall:** launchd cannot write its own log because
+`/private/var/log/com.apple.xpc.launchd/` does not exist, so
+`hfsplus-tool.py mkd /private/var/log com.apple.xpc.launchd` creates the directory
+offline (ranges `0:1`, `183682:2`, `1761792:2`, `1763522:2` in `ios7.img`). Once
+those are shipped, launchd logs every spawn decision and the log can be read over
+the link with `l2 cat /private/var/log/com.apple.xpc.launchd/launchd.log` - that names
+the daemon whose spawn wedges the daemon phase.
+
+**Everything is in place on the phone except the daemon phase.****Everything is in place on the phone except the daemon phase.****Everything is in place on the phone except the daemon phase.**
 Installed and *visible to the kernel* (`stat` answers with the right size):
 `/private/var/root/{sweetsh 16512, sh 167504, dropbear 285600, dbclient 268384,
 dropbearkey 203760}`, `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`
