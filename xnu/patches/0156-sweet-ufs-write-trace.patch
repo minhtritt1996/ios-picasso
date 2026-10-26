@@ -1,0 +1,51 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -116,6 +116,8 @@
+ 	bool cache;                             /* boot-arg ufscache=1 */
+ 	bool wait;                              /* boot-arg ufswait=1 */
+ 	bool trace;                             /* boot-arg sweetufstrace=1 */
++	uint32_t wr_prints;
++	uint32_t wr_done;
+ 	bool direct;                            /* boot-arg sweetdirect=1 */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+@@ -390,6 +392,14 @@
+ 		    cdb[0], (unsigned long long)su.cmd_lba, su.cmd_count, len,
+ 		    (unsigned)(len ? (utrd->prdt & 0xffff) : 0));
+ 	}
++	if (write && su.wr_prints++ < 8) {
++		sweet_tracef("SWEET UFS WR %u: lba 0x%llx c %u len %u dst 0x%llx cdb %02x %02x %02x"
++		    " upiu %02x dw0 0x%08x prdt %u\n",
++		    su.wr_prints, (unsigned long long)((uint64_t)cdb[2] << 24 | (uint64_t)cdb[3] << 16 |
++		    (uint64_t)cdb[4] << 8 | cdb[5]), (unsigned)(cdb[7] << 8 | cdb[8]), len,
++		    (unsigned long long)(uintptr_t)dst, cdb[0], cdb[1], cdb[2],
++		    ucd->cmd[1], utrd->dw0, (unsigned)(utrd->prdt & 0xffff));
++	}
+ 	ufs_wr(REG_UTRLDBR, 1);
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+@@ -414,6 +424,12 @@
+ 			/* A slot the controller latched but never fetched or
+ 			 * completed leaves the doorbell set for good; re-arming
+ 			 * the request list lets the next command through. */
++			if (write) {
++				sweet_tracef("SWEET UFS WR TIMEOUT: iters %llu UTRLDBR 0x%x IS 0x%x"
++				    " UTRD dw0 0x%08x dw2 0x%08x HCS 0x%x\n",
++				    (unsigned long long)su.poll_iters, ufs_rd(REG_UTRLDBR),
++				    ufs_rd(REG_IS), utrd->dw0, utrd->dw2, ufs_rd(REG_HCS));
++			}
+ 			ufs_wr(REG_UTRLCLR, ~1u);
+ 			su.host_resets++;
+ 			(void)ufs_take_over_host();
+@@ -425,6 +441,11 @@
+ 		__builtin_arm_isb(0xf);
+ 	}
+ 	__builtin_arm_dsb(0xf);
++	if (write && su.wr_done++ < 8) {
++		sweet_tracef("SWEET UFS WR DONE %u: dw2 0x%08x ocs %u it %llu IS 0x%x\n",
++		    su.wr_done, utrd->dw2, utrd->dw2 & 0xff,
++		    (unsigned long long)su.poll_iters, ufs_rd(REG_IS));
++	}
+ 	if (su.trace) {
+ 		sweet_tracef("SWEET UFS cd: op 0x%02x lba 0x%llx ocs %u it %llu\n",
+ 		    cdb[0], (unsigned long long)su.cmd_lba, utrd->dw2 & 0xff,
