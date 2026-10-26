@@ -493,17 +493,21 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    ad-hoc signatures (README: ld64.lld signs with **4 KiB** pages, which this
    kernel accepts - `ubc_subr.c:374`). Not installed yet: the rootfs has no
    `/usr/local` and no way to create files from inside (see 8).
-**Still broken: the USB link wedges after a while.** Patch `0141` (event ring
-advanced one dword per event; the old `count % 16 ? 16 : 4` heuristic dropped
-three of every four buffered events) is IN the flashed kernel and clearly helped
-- the link carried hundreds of frames (host `rx 394 tx 425`) before stopping -
-but it still stops: gadget still on the bus, `l2 info` silent, host `txerr 240`.
-Next instrument: the kick thread in `sweet_ufs.c` ("SWEET HB ... fails 0 fage")
-survives, while `ud_thread`'s "ev alive" heartbeat stops, so add to the kick
-thread a call into `sweet_usb.c` that logs `ud.ev_ticks`, `ud.rxw_loops`,
-`GEVNTCOUNT`, DALEPENA and whether `ud.lock` can be taken (`lck_mtx_try_lock`)
-- that one line names the stuck thread. Then recover: ENDTRANSFER + CLEARSTALL
-on ep2/ep3 and re-arm, or a full DCTL Run/Stop cycle.
+**USB wedge: root cause found in the ring log (0143).** The log pulled from
+`darwin` before flashing 0142 shows the shape exactly: `SWEET USB: ev alive
+65..79` (the event thread was running), `GEVNTCOUNT 0x0` every second, DALEPENA
+`0x2f`, GCTL unchanged, **DSTS' frame number still ticking**, `rx 424 tx 393`
+frozen, `SWEET HB` heartbeats continuous. An empty event ring plus a live frame
+counter plus host URBs timing out means the device is NAKing forever: the RX
+endpoint has no TRB left, so every completion path re-arming the single RX TRB
+unconditionally had overwritten the TRB the controller was still filling (a
+duplicate completion during a burst does it). `0143` makes `ud_rx_arm()`
+idempotent behind `ud.rx_armed`, drops a completion that arrives with no armed
+TRB instead of feeding a stale frame to the stack, and clears the flag on bus
+reset/disconnect. `0142` (drain the ring without sleeping, log ring pressure) is
+the companion change: the poll loop slept 1 ms after every batch, capping the
+drain rate far below a host burst.
+
 **Next for SSH:** dropbear needs `getpwnam`, which goes through
 `opendirectoryd` (not running in this port) - patch it in CI to synthesise a
 root `struct passwd` when the lookup fails; and the binaries need real paths
