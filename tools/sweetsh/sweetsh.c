@@ -28,6 +28,8 @@ typedef unsigned int u32;
 #define SYS_execve   59
 #define SYS_dup2     90
 #define SYS_select   93
+#define SYS_recvfrom 29
+#define SYS_sendto   133
 #define SYS_connect  98
 #define SYS_socket   97
 #define SYS_bind     104
@@ -63,6 +65,41 @@ sys3(i64 n, i64 a, i64 b, i64 c)
 }
 
 static i64
+sys5(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e)
+{
+	register i64 x16 __asm__("x16") = n;
+	register i64 x0 __asm__("x0") = a;
+	register i64 x1 __asm__("x1") = b;
+	register i64 x2 __asm__("x2") = c;
+	register i64 x3 __asm__("x3") = d;
+	register i64 x4 __asm__("x4") = e;
+
+	__asm__ volatile("svc #0x80"
+	    : "+r"(x0)
+	    : "r"(x16), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+	    : "memory");
+	return x0;
+}
+
+static i64
+sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f)
+{
+	register i64 x16 __asm__("x16") = n;
+	register i64 x0 __asm__("x0") = a;
+	register i64 x1 __asm__("x1") = b;
+	register i64 x2 __asm__("x2") = c;
+	register i64 x3 __asm__("x3") = d;
+	register i64 x4 __asm__("x4") = e;
+	register i64 x5 __asm__("x5") = f;
+
+	__asm__ volatile("svc #0x80"
+	    : "+r"(x0)
+	    : "r"(x16), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+	    : "memory");
+	return x0;
+}
+
+static i64
 sys4(i64 n, i64 a, i64 b, i64 c, i64 d)
 {
 	register i64 x16 __asm__("x16") = n;
@@ -91,7 +128,12 @@ strlen_(const char *s)
 static void
 puts_(const char *s)
 {
+#ifdef SWEETSH_UDP_ONLY
+	extern void udp_emit(const char *s, int n);
+	udp_emit(s, (int)strlen_(s));
+#else
 	sys3(SYS_write, 1, (i64)s, (i64)strlen_(s));
+#endif
 }
 
 static void
@@ -547,6 +589,76 @@ _start(void)
 
 /* Accept connections forever; each one gets a child with the socket on
  * fd 0/1/2 and the REPL on the other end. */
+/* UDP mode: one command per datagram to 192.168.7.2:4444, one datagram back.
+ * The TCP path (bind/listen/accept) has wedged the USB driver within seconds on
+ * this port while UDP traffic has always been fine, so the shell serves its REPL
+ * over datagrams instead: the command is executed with stdout collected into the
+ * reply buffer. */
+static char udp_out[1200];
+static int udp_out_len;
+
+static void
+udp_begin(void)
+{
+	udp_out_len = 0;
+}
+
+void
+udp_emit(const char *s, int n)
+{
+	for (int i = 0; i < n && udp_out_len < (int)sizeof(udp_out) - 1; i++) {
+		udp_out[udp_out_len++] = s[i];
+	}
+}
+
+static void
+serve_udp(void)
+{
+	struct sockaddr_in sa;
+	i64 fd = -1;
+
+	for (;;) {
+		fd = sys3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
+		if (fd < 0) {
+			sleep_ms(500);
+			continue;
+		}
+		for (int i = 0; i < (int)sizeof(sa); i++) {
+			((char *)&sa)[i] = 0;
+		}
+		sa.sin_len = sizeof(sa);
+		sa.sin_family = AF_INET;
+		sa.sin_port = (unsigned short)((4444 >> 8) | ((4444 & 0xff) << 8));
+		sa.sin_addr = 0;
+		if (sys3(SYS_bind, fd, (i64)&sa, sizeof(sa)) == 0) {
+			break;
+		}
+		sys3(SYS_close, fd, 0, 0);
+		sleep_ms(500);
+	}
+	for (;;) {
+		char cmd[512];
+		struct sockaddr_in from;
+		i64 fromlen = sizeof(from);
+		i64 n = sys6(SYS_recvfrom, fd, (i64)cmd, sizeof(cmd) - 1, 0,
+		    (i64)&from, (i64)&fromlen);
+
+		if (n <= 0) {
+			sleep_ms(20);
+			continue;
+		}
+		cmd[n] = 0;
+		char *nl = cmd;
+		while (*nl && *nl != '\n' && *nl != '\r') {
+			nl++;
+		}
+		*nl = 0;
+		udp_begin();
+		(void)run(cmd);                 /* output goes to udp_out */
+		sys6(SYS_sendto, fd, (i64)udp_out, udp_out_len, 0, (i64)&from, fromlen);
+	}
+}
+
 static void
 serve(i64 lfd)
 {
@@ -582,6 +694,11 @@ cstart(void)
 	 * It also runs before the network stack has an interface, so binding can
 	 * fail at first - retry instead of falling through to a REPL that would
 	 * hit EOF on the console and exit. */
+#ifdef SWEETSH_UDP_ONLY
+	for (;;) {
+		serve_udp();            /* never returns */
+	}
+#endif
 #ifdef SWEETSH_DELAY_MS
 	/* test build: stay inert for a while so a wedge can be attributed to the
 	 * process existing rather than to its socket calls */
