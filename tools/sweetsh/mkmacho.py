@@ -77,7 +77,10 @@ def adhoc_signature(image, ident):
     #   spare2 scatterOffset  (2 * 4)  -> identifier at 48
     ident_offset = 48
     hash_offset = ident_offset + len(ident_b)
-    cd_len = hash_offset + 32 * len(slots)
+    # sizeof(CS_CodeDirectory) in XNU is 108 bytes (the struct carries the
+    # fields of every later version), and cs_validate_codedirectory() rejects a
+    # blob shorter than that: pad past the hash slots.
+    cd_len = max(hash_offset + 32 * len(slots), 128)
     cd = b''.join([
         struct.pack('>IIIIIIIII', CSMAGIC_CODEDIRECTORY, cd_len, 0x20100, CS_ADHOC,
                     hash_offset, ident_offset, 0, len(slots), len(image)),
@@ -86,6 +89,7 @@ def adhoc_signature(image, ident):
         struct.pack('>I', 0),                   # scatterOffset
         ident_b,
         b''.join(slots),
+        b'\0' * (cd_len - hash_offset - 32 * len(slots)),
     ])
     assert len(cd) == cd_len, (len(cd), cd_len)
     blob = struct.pack('>III', CSMAGIC_EMBEDDED_SIGNATURE, 20 + len(cd), 1) + \
