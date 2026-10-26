@@ -679,7 +679,17 @@ was computed and shipped but **not verified on the device** (the read-back was
 attempted after the phone left recovery, and `stat` still reported 112,960), so it
 has to be re-shipped and checked block by block.
 
-**0158 measured (boot image md5 `4c5bd70a3efc7ee41c9b8c44e1fcc9aa`, `cpus=8`).**
+**Ring of the 0158 boot (pulled in recovery, `sweetboot=0158`, `seq 6 beats 6`,
+`lk 0/0`, `err 0`, `fails 0`, 66 execs):** launchd runs the boot tasks
+(`launchd_cache_loader`, `mount`, `mount_hfs`, `mobile_obliterator`, `tzinit`,
+`usermanagerd`, `sysstatuscheck`, `seputil`, `prng_seedctl`), then `xpcproxy` 46
+times - and **never execs SpringBoard**, with no panic and no crash in the ring. The
+flusher beat 6 times and then went quiet (`fage` 50 s) while `lk` stayed `0/0`, so
+this boot simply parked in the boot-task phase, which is the same stall this port
+has shown from the beginning. Since SpringBoard is the only carrier launchd will run
+for us, the shell cannot start until the daemon phase is reached.
+
+**0158 measured (boot image md5 `4c5bd70a3efc7ee41c9b8c44e1fcc9aa`, `cpus=8`).****0158 measured (boot image md5 `4c5bd70a3efc7ee41c9b8c44e1fcc9aa`, `cpus=8`).**
 No panic this time: the console fills with
 `failed to open /private/var/log/com.apple.xpc.launchd/launchd[1]` from many
 daemons - the boot *is* progressing, and every one of those lines is a **VFS write
