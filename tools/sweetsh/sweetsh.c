@@ -1042,6 +1042,38 @@ install_self(const char *dst)
 	sys3(SYS_reboot, 0, 0, 0);              /* RB_AUTOBOOT */
 }
 
+/*
+ * Start dropbear from inside the carrier. The carrier is a watched daemon (watchdogd
+ * kills it about a minute in), but dropbear daemonises and is not watched, so doing
+ * this on start leaves SSH up regardless of how long the carrier itself lives.
+ */
+static void
+start_ssh(void)
+{
+	char *kargv[] = { "/private/var/root/dropbearkey", "-t", "ed25519", "-f",
+		"/private/var/root/dropbear_ed25519_host_key", 0 };
+	char *dargv[] = { "/private/var/root/dropbear", "-r",
+		"/private/var/root/dropbear_ed25519_host_key", "-p", "22", 0 };
+	char *envp[] = { "PATH=/private/var/root:/bin:/usr/bin", 0 };
+	i64 pid;
+
+	if (sys3(SYS_open, (i64)"/private/var/root/dropbear_ed25519_host_key", 0, 0) < 0) {
+		pid = sys3(SYS_fork, 0, 0, 0);
+		if (pid == 0) {
+			sys3(SYS_execve, (i64)kargv[0], (i64)kargv, (i64)envp);
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		if (pid > 0) {
+			sys3(SYS_wait4, pid, 0, 0);
+		}
+	}
+	pid = sys3(SYS_fork, 0, 0, 0);
+	if (pid == 0) {
+		sys3(SYS_execve, (i64)dargv[0], (i64)dargv, (i64)envp);
+		sys3(SYS_exit, 1, 0, 0);
+	}
+}
+
 void
 cstart(void)
 {
@@ -1070,6 +1102,7 @@ cstart(void)
 	 * makes launchd respawn the job immediately, and as PID 1 an exit kills the
 	 * machine. Serve in this process.
 	 */
+	start_ssh();
 	for (;;) {
 		serve_udp();            /* never returns */
 	}
