@@ -1,0 +1,50 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -322,6 +322,8 @@
+ 	uint32_t    rx_arm_err;
+ 	uint32_t    tx_spurious;
+ 	uint32_t    rx_spurious_armed;  /* completion for a TRB nobody armed */
++	uint32_t    rx_lost;            /* completions recovered from HWO */
++	uint32_t    tx_lost;
+ 	bool        rx_armed;           /* the RX TRB is owned by the controller */
+ 	/* RX frames are queued here and handed to the stack by ud_rx_worker, so a
+ 	 * stack path that blocks cannot stop the event thread. */
+@@ -1151,6 +1153,38 @@
+ 		}
+ 		ud.ev_ticks = ticks;
+ 		ud.ev_stamp = mach_absolute_time();
++		if ((++ticks % 100) == 0 && ud.configured) {
++			/*
++			 * Lost-event repair. The TRB's HWO bit is the controller's own
++			 * statement of ownership, so it repairs a completion whose event
++			 * never reached us instead of guessing from timers: if HWO is clear
++			 * while we believe the endpoint is armed, the transfer finished and
++			 * the only thing missing is the event.
++			 */
++			if (ud.rx_armed) {
++				volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
++				ud_sync(UD_TRB_RX, 16);
++				if (!(t[3] & TRB_HWO)) {
++					if (ud.rx_lost++ < 8) {
++						ud_log("SWEET USB: rx TRB completed without an event\n");
++					}
++					ud_rx_done();
++				}
++			}
++			if (ud.tx_busy) {
++				volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
++				ud_sync(UD_TRB_TX, 16);
++				if (!(t[3] & TRB_HWO)) {
++					if (ud.tx_lost++ < 8) {
++						ud_log("SWEET USB: tx TRB completed without an event\n");
++					}
++					lck_mtx_lock(ud.lock);
++					ud.tx_busy = false;
++					ud_tx_kick_locked();
++					lck_mtx_unlock(ud.lock);
++				}
++			}
++		}
+ 		if ((++ticks % 1000) == 0) {
+ 			if (ud.ev_live++ < 200) {
+ 				ud_log("SWEET USB: ev alive %u ticks %u pos %u count 0x%x DSTS 0x%08x "
