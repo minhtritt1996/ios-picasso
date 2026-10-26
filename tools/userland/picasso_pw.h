@@ -21,6 +21,7 @@
 
 extern struct passwd *getpwnam(const char *);
 
+__attribute__((unused))
 static struct passwd *picasso_getpwnam(const char *name)
 {
 	static struct passwd pw;
