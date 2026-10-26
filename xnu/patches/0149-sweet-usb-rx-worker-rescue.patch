@@ -1,0 +1,96 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -310,6 +310,10 @@
+ 	uint32_t    probe_seen;         /* probe-thread prints */
+ 	uint32_t    probe_hb;           /* probe-thread heartbeat */
+ 	volatile uint64_t rxw_stamp;    /* last RX-worker progress (absolute) */
++	volatile uint64_t rxw_enter;    /* frames handed to ifnet_input */
++	volatile uint64_t rxw_returned; /* ... and how many came back */
++	volatile uint32_t rxw_threads;  /* workers started (rescues included) */
++	uint32_t    rxw_rescues;
+ 	volatile uint32_t rxw_loops;    /* frames handed to the stack */
+ 	uint32_t    rxw_prints;         /* first-frame prints */
+ 	uint32_t    rxw_panic;          /* sweetusbrxwpanic=1 */
+@@ -828,7 +832,10 @@
+ 				    mbuf_len(m) - ETHER_HDR_LEN);
+ 				stats.packets_in = 1;
+ 				stats.bytes_in = len;
++				ud.rxw_stamp = mach_absolute_time();
++				os_atomic_inc(&ud.rxw_enter, relaxed);
+ 				(void)ifnet_input(ud.ifp, m, &stats);
++				os_atomic_inc(&ud.rxw_returned, relaxed);
+ 				if (trace) {
+ 					ud_log("SWEET USB: rxw %u ifnet_input returned\n",
+ 					    ud.rxw_prints);
+@@ -2137,10 +2144,12 @@
+ 		return;
+ 	}
+ 	snprintf(out, outlen,
+-	    " usb cfg %d rxarm %d txbusy %d evq 0x%x evtick %u dalepa 0x%x hwo %d/%d"
+-	    " rx %llu tx %llu lost %u/%u stale %u/%u sp %u/%u err %u q %u\n",
++	    " usb cfg %d rxarm %d txbusy %d evq 0x%x evtick %u rxw %llu/%llu th %u"
++	    " dalepa 0x%x hwo %d/%d rx %llu tx %llu lost %u/%u stale %u/%u"
++	    " sp %u/%u err %u q %u\n",
+ 	    (int)ud.configured, (int)ud.rx_armed, (int)ud.tx_busy,
+-	    dwc_rd(GEVNTCOUNT) & 0xffff, ud.ev_ticks, dwc_rd(DALEPENA),
++	    dwc_rd(GEVNTCOUNT) & 0xffff, ud.ev_ticks, ud.rxw_enter, ud.rxw_returned,
++	    ud.rxw_threads, dwc_rd(DALEPENA),
+ 	    (rx[3] & TRB_HWO) ? 1 : 0, (tx[3] & TRB_HWO) ? 1 : 0,
+ 	    ud.rx_frames, ud.tx_frames, ud.rx_lost, ud.tx_lost,
+ 	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
+@@ -2212,3 +2221,39 @@
+ 		}
+ 	}
+ }
++
++/*
++ * A single blocking ifnet_input() starves the whole receive side: the worker
++ * thread never returns, so no further frame - control frames included - is ever
++ * dispatched, while the USB stack itself stays healthy (the ring still drains,
++ * the TRB stays armed). Rather than guess where the stack blocks, start another
++ * worker: the stuck one leaks, the queue keeps draining. Bounded so a pathological
++ * stack cannot spawn threads forever.
++ */
++void
++sweet_usb_rx_rescue(void)
++{
++	if (ud.dma == 0 || !ud.configured || ud.rxw_threads >= 4) {
++		return;
++	}
++	if (ud.rxw_enter == ud.rxw_returned) {
++		return;
++	}
++	uint64_t age = mach_absolute_time() - ud.rxw_stamp;
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(age, &ns);
++	if (ns < 2000000000ULL) {
++		return;
++	}
++	thread_t t = NULL;
++
++	if (kernel_thread_start(ud_rx_worker, NULL, &t) == KERN_SUCCESS) {
++		thread_deallocate(t);
++		os_atomic_inc(&ud.rxw_threads, relaxed);
++		if (ud.rxw_rescues++ < 8) {
++			ud_log("SWEET USB: rx worker stuck %llu ms, started worker %u\n",
++			    ns / 1000000, ud.rxw_threads);
++		}
++	}
++}
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1766,6 +1766,13 @@
+ 		/* The USB driver's own watchdog lives in its event thread, which is
+ 		 * exactly what stops when the link dies - so report its state from here
+ 		 * every fifth spin (~10 s). */
++		{
++			extern void sweet_usb_watchdog(void);
++			extern void sweet_usb_rx_rescue(void);
++
++			sweet_usb_watchdog();
++			sweet_usb_rx_rescue();
++		}
+ 		if ((n % 5) == 0) {
+ 			char usb[220];
+ 			extern void sweet_usb_state(char *out, int outlen);
