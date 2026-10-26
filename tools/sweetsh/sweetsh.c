@@ -27,6 +27,7 @@ typedef unsigned int u32;
 #define SYS_getpid   20
 #define SYS_execve   59
 #define SYS_dup2     90
+#define SYS_select   93
 #define SYS_connect  98
 #define SYS_socket   97
 #define SYS_bind     104
@@ -170,7 +171,7 @@ readline(char *buf, int max)
 		i64 r = sys3(SYS_read, 0, (i64)&c, 1);
 
 		if (r <= 0) {
-			return n;
+			return -1;              /* EOF/error: never exit on this */
 		}
 		if (c == '\r') {
 			continue;
@@ -212,6 +213,24 @@ struct sockaddr_in {
 	unsigned int sin_addr;
 	char pad[8];
 };
+
+/* select(0, NULL, NULL, NULL, &tv) is the portable way to sleep without libc. */
+static void
+sleep_ms(long ms)
+{
+	struct timeval { long sec; long usec; } tv = { ms / 1000, (ms % 1000) * 1000 };
+	register long x16 __asm__("x16") = SYS_select;
+	register long x0 __asm__("x0") = 0;
+	register long x1 __asm__("x1") = 0;
+	register long x2 __asm__("x2") = 0;
+	register long x3 __asm__("x3") = 0;
+	register long x4 __asm__("x4") = (long)&tv;
+
+	__asm__ volatile("svc #0x80"
+	    : "+r"(x0)
+	    : "r"(x16), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+	    : "memory");
+}
 
 static void
 beacon(const char *msg)
@@ -482,9 +501,9 @@ repl(void)
 	banner();
 	for (;;) {
 		puts_("# ");
-		if (readline(line, sizeof(line)) == 0) {
+		if (readline(line, sizeof(line)) < 0) {
 			puts_("\r\n");
-			sys3(SYS_exit, 0, 0, 0);
+			return;                 /* caller decides: child exits, PID 1 waits */
 		}
 		if (run(line)) {
 			sys3(SYS_exit, 0, 0, 0);
@@ -512,23 +531,16 @@ _start(void)
 		"brk #1\n\t");
 }
 
-void
-cstart(void)
+/* Accept connections forever; each one gets a child with the socket on
+ * fd 0/1/2 and the REPL on the other end. */
+static void
+serve(i64 lfd)
 {
-	/* launchd may hand us a socket on fd 0 (inetd style): then just serve it. */
-	beacon("sweetsh: start\n");
-	i64 lfd = listen_4444();
-
-	beacon_num("sweetsh: listen fd", lfd);
-	console("sweetsh: up, listening on 4444\r\n");
-	if (lfd < 0) {
-		repl();
-	}
 	for (;;) {
 		i64 cfd = sys3(SYS_accept, lfd, 0, 0);
 
 		if (cfd < 0) {
-			beacon_num("sweetsh: accept err", cfd);
+			sleep_ms(50);
 			continue;
 		}
 		beacon("sweetsh: client connected\n");
@@ -545,5 +557,27 @@ cstart(void)
 			sys3(SYS_exit, 0, 0, 0);
 		}
 		sys3(SYS_close, cfd, 0, 0);
+	}
+}
+
+void
+cstart(void)
+{
+	/* As PID 1 this process must never exit: the kernel panics with
+	 * "initproc failed ... handshake structure not initialized" if it does.
+	 * It also runs before the network stack has an interface, so binding can
+	 * fail at first - retry instead of falling through to a REPL that would
+	 * hit EOF on the console and exit. */
+	for (;;) {
+		i64 lfd = listen_4444();
+
+		if (lfd >= 0) {
+			beacon_num("sweetsh: listening", 4444);
+			console("sweetsh: up, listening on 4444\r\n");
+			serve(lfd);             /* never returns */
+		}
+		console("sweetsh: bind 4444 failed, retrying\r\n");
+		beacon_num("sweetsh: bind err", lfd);
+		sleep_ms(1000);
 	}
 }
