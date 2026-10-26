@@ -705,7 +705,21 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-**PROVEN with 0160: launchd does exec our shell.** `tools/ring-report.py` on the
+**0161 fixed the event thread, and the daemon stall has a name.**
+`0161` (no timer in the event thread's idle path) took the loop counter from a
+frozen ~5,400 to **3,005,234 iterations** with `evs 6`, i.e. the event thread now
+survives the whole boot and the control channel keeps answering - that was the same
+timer trap that held the UFS lock. With the thread alive the boot still stops in
+the daemon phase, and the 0160 spawn list names the last service started:
+`exec xpcproxy argv xpcproxy com.apple.safetyalertsd` - that spawn is where it
+wedges, and `rx 37 tx 0` in the same window explains why ping never answers
+(the kernel never emits a frame because the boot never gets past it).
+Next: our shell also replaces `/usr/libexec/safetyalertsd` (361,280 bytes, 89
+blocks at 2,136,943; image 98,588 bytes, ident `com.apple.safetyalertsd`, catalog
+`logicalSize` patched via `setsize`, block `1762886`), so the daemon that blocks the
+phase becomes another carrier that runs earlier than SpringBoard and never exits.
+
+**PROVEN with 0160: launchd does exec our shell.****PROVEN with 0160: launchd does exec our shell.** `tools/ring-report.py` on the
 0160 boot lists 76 spawns with their targets
 (`exec xpcproxy argv xpcproxy com.apple.backboardd`, `...containermanagerd`,
 `...mobile.lockdown`, ...) and then `exec SpringBoard` - after which the ring keeps
