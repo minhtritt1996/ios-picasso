@@ -1,0 +1,47 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -394,13 +394,18 @@
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
+-	bool sleepable = su.wait && su.ready && ml_get_interrupts_enabled() &&
+-	    !ml_at_interrupt_context() && get_preemption_level() == 0;
+-	uint64_t spin_until = 0, sleep_interval = 0;
+-	if (sleepable) {
+-		nanoseconds_to_absolutetime(CMD_SPIN_NS, &spin_until);
+-		spin_until += mach_absolute_time();
+-		nanoseconds_to_absolutetime(CMD_SLEEP_NS, &sleep_interval);
++	/*
++	 * Never sleep here, and never call delay(): this thread holds the driver
++	 * lock, and on this port a thread parked on a kernel timeout can stay parked
++	 * for ever - the heartbeat's `lk N/M` breadcrumb then shows the lock owned by
++	 * the strategy path for good (measured: `lk 4/1`), after which every other
++	 * I/O waits forever, which is what makes vnode_open() and the ring flusher
++	 * (fage growing to 90 s) hang. Spinning on the raw clock keeps the deadline
++	 * below reachable, so a stuck command returns ETIMEDOUT and releases the lock.
++	 */
++	if (su.wait) {
++		su.wait = false;
++		sweet_tracef("SWEET UFS: sleepable wait disabled, spinning\n");
+ 	}
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+ 		uint64_t now = mach_absolute_time();
+@@ -416,16 +421,8 @@
+ 			su.err_serial++;
+ 			return ETIMEDOUT;
+ 		}
+-		if (sleepable && now >= spin_until) {
+-			uint64_t wake = now + MIN(sleep_interval, deadline - now);
+-			/* Keep the mutex: slot 0 and the bounce buffer are still owned. */
+-			if (assert_wait_deadline_with_leeway((event_t)&su.wait, THREAD_UNINT,
+-			    TIMEOUT_URGENCY_SYS_CRITICAL, wake, 0) == THREAD_WAITING) {
+-				thread_block(THREAD_CONTINUE_NULL);
+-			}
+-		} else {
+-			delay(1);
+-		}
++		/* Raw spin: no timers, no sleep, no lock drop. */
++		__builtin_arm_isb(0xf);
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	if (su.trace) {
