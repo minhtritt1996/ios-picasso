@@ -366,19 +366,17 @@ def _insert(vol, records):
     if not leaves:
         raise SystemExit('no catalog leaves')
 
-    def key_of(rec):
-        """Ordering key: (parentID, case-folded name).
-
-        HFS+ orders a catalog key by parent first and then by the *name* with its
-        own case-insensitive collation; comparing the raw key bytes would put the
-        2-byte keyLength first, i.e. sort by name length, and the kernel's binary
-        search then lands on a different record and returns ENOENT even though the
-        entry is on disk (exactly what 'stat /private/var/root/dropbear' did).
-        For the ASCII names a rootfs entry has, folding A-Z is the fast path of
-        XNU's FastUnicodeCompare.
-        """
+    def key_bytes_of(rec):
         keylen = struct.unpack('>H', rec[0:2])[0]
-        key = rec[2:2 + keylen]
+        return rec[2:2 + keylen]
+
+    def order_key(key):
+        """(parentID, case-folded name) - HFS+'s ordering, not raw bytes.
+
+        Comparing the raw key would put the 2-byte keyLength first, sorting by name
+        length, so the kernel's binary search lands elsewhere and returns ENOENT
+        even though the record is on disk.
+        """
         parent, = struct.unpack('>I', key[0:4])
         namelen = struct.unpack('>H', key[4:6])[0]
         name = key[6:6 + 2 * namelen]
@@ -387,18 +385,19 @@ def _insert(vol, records):
     dirty = {}
     for key, body in records:
         rec = key + body
+        want = order_key(key)
         target = None
         for leaf in leaves:
-            keys = [key_of(r) for r in leaf['recs']]
-            if not keys or keys[-1] >= key:
+            keys = [order_key(key_bytes_of(r)) for r in leaf['recs']]
+            if not keys or keys[-1] >= want:
                 target = leaf
                 break
         if target is None:
             target = leaves[-1]
-        keys = [key_of(r) for r in target['recs']]
+        keys = [order_key(key_bytes_of(r)) for r in target['recs']]
         pos = len(keys)
         for i, k in enumerate(keys):
-            if k >= key:
+            if k >= want:
                 pos = i
                 break
         target['recs'].insert(pos, rec)

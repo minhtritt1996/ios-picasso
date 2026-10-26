@@ -1,0 +1,85 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1420,7 +1420,6 @@
+ {
+ 	static uint8_t bin[1200];
+ 	vfs_context_t ctx = vfs_context_kernel();
+-	struct vnode_attr va;
+ 	vnode_t vp = NULL;
+ 	int n = ud_b64(b64, bin, sizeof(bin));
+ 	int err;
+@@ -1429,25 +1428,49 @@
+ 		snprintf(out, outsz, "bad base64 (max %zu bytes per command)\n", sizeof(bin));
+ 		return EINVAL;
+ 	}
+-	err = vnode_open(path, O_CREAT | O_TRUNC | O_RDWR, 0644, 0, &vp, ctx);
++	/*
++	 * No O_TRUNC and no IO_SYNC: a chunked install writes one chunk per command,
++	 * and forcing the device on every single one of them is what wedged this
++	 * port's UFS path (the command thread stopped answering after ~20 chunks).
++	 * The size is set once by `putend`, and the data is on disk once the write
++	 * completes; `sync` still works if a caller wants a barrier.
++	 */
++	err = vnode_open(path, O_CREAT | O_RDWR, 0755, 0, &vp, ctx);
+ 	if (err != 0) {
+ 		snprintf(out, outsz, "%s: open error %d\n", path, err);
+ 		return err;
+ 	}
+-	VATTR_INIT(&va);
+-	VATTR_SET(&va, va_data_size, off + n);
+-	err = vnode_setattr(vp, &va, ctx);
+-	if (err == 0) {
+-		err = vn_rdwr(UIO_WRITE, vp, (caddr_t)bin, n, off, UIO_SYSSPACE,
+-		    IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ctx), NULL,
+-		    vfs_context_proc(ctx));
+-	}
++	err = vn_rdwr(UIO_WRITE, vp, (caddr_t)bin, n, off, UIO_SYSSPACE,
++	    IO_NODELOCKED | IO_UNIT, vfs_context_ucred(ctx), NULL,
++	    vfs_context_proc(ctx));
+ 	vnode_close(vp, FWRITE, ctx);
+ 	snprintf(out, outsz, "%s: %s off %lld len %d\n", path,
+ 	    err == 0 ? "written" : "write error", off, n);
++	return err;
++}
++
++/* Set the final size of a file written with `put`, then flush its data. */
++static int
++ud_putend(const char *path, off_t size, char *out, size_t outsz)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	struct vnode_attr va;
++	vnode_t vp = NULL;
++	int err = vnode_open(path, O_RDWR, 0, 0, &vp, ctx);
++
+ 	if (err != 0) {
+-		snprintf(out, outsz, "%s: error %d at off %lld\n", path, err, off);
++		snprintf(out, outsz, "%s: open error %d\n", path, err);
++		return err;
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_data_size, size);
++	err = vnode_setattr(vp, &va, ctx);
++	if (err == 0) {
++		err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
+ 	}
++	vnode_close(vp, FWRITE, ctx);
++	snprintf(out, outsz, "%s: size %lld %s\n", path, size,
++	    err == 0 ? "set" : "error");
+ 	return err;
+ }
+ 
+@@ -1496,6 +1519,14 @@
+ 		if (ud_cat(path, len, out, sizeof(out)) < 0) {
+ 			snprintf(out, sizeof(out), "%s: read failed\n", path);
+ 		}
++	} else if (strncmp(buf, "putend ", 7) == 0) {
++		char path[200];
++		strlcpy(path, buf + 7, sizeof(path));
++		char *sp = strchr(path, ' ');
++		if (sp != NULL) {
++			*sp = 0;
++			ud_putend(path, (off_t)ud_atoll(sp + 1), out, sizeof(out));
++		}
+ 	} else if (strncmp(buf, "put ", 4) == 0) {
+ 		char path[256];
+ 		char *sp;
