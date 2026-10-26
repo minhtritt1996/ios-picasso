@@ -705,7 +705,22 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The launchd cache is the missing piece, and it is now patched in the image.**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**With the cache entry present, the spawn still needs an AMFI bypass.** The cache edit
+itself is sound - the plist rebuild keeps every key (522 entries plus our two) and its
+size fits the extent - but a boot with it plus the restored `/private/var/root` records
+still produced no `/private/var/root/sweetsh.status` and no UDP 4444 answer. The
+sequence of this port is the explanation: every binary we run at boot only ran while
+`amfid` itself was our shell, and the last install put stock `amfid` back (along with
+the other three carriers). Stock amfid validates, and an ad-hoc signature is not
+accepted, so launchd can spawn `com.picasso.sweetsh` and amfid kills it. The port also
+has no cache signature story: `/System/Library/xpc/launchd.plist` is paired with a
+19,006-byte `launchd.plist.sig` that we cannot mint, yet the job list launchd executes
+matches the cache contents, so the cache is read and our entry is honoured as far as
+the file lookup; the kill is afterwards. Carrier payload ready:
+`/tmp/carrier-sweetsh.bin` (the 5-block shell plus zero fill, 35 blocks, md5
+14aa247a4e97d5ac) for amfid's range `2099019:35`.
+
+**The launchd cache is the missing piece, and it is now patched in the image.****The launchd cache is the missing piece, and it is now patched in the image.**
 ios-flame's HANDOFF states it plainly ("new jobs must be keyed under
 /System/Library/LaunchDaemons/ in /System/Library/xpc/launchd.plist, a
 /Library/LaunchDaemons key was ignored"), and our own cache read confirms the shape:
