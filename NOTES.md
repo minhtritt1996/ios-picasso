@@ -647,7 +647,27 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**USB IS FIXED - measured.****USB IS FIXED - measured.****USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
+**Two process fixes at the end of the session (2026-10-26).**
+1. `0149` and `0151` were being **silently skipped** by CI: both carried a
+   `sweet_ufs.c` hunk generated against a base taken before `0148`, so
+   `patch does not apply` and the kernels built since then had no RX-worker rescue
+   and no command-thread rescue - which also explains why the `rx worker stuck` and
+   `command stuck` lines never appeared in any ring. The hooks now live in
+   `0154-sweet-ufs-kick-hooks.patch` (watchdog + both rescues), `0149`/`0151` keep
+   only their `sweet_usb.c` parts, and every `Applying patch` line should be
+   checked - a skipped patch still produces a kernel.
+2. The 17 GB image cycle (copy, edit, push, dd = ~25 min per attempt) is
+   **abandoned**. `0153` makes the kernel's `put` usable for installs: `O_CREAT`
+   without `O_TRUNC`, no `IO_SYNC` per chunk (that is what wedged this port's UFS
+   after ~20 chunks), and a new `putend <path> <size>` that sets the size and fsyncs
+   once. dash (167 KB) or dropbear (285 KB) then install over the link in about a
+   minute, with no recovery round trip.
+   The catalog-ordering bug found on the way (`_insert` compared raw key bytes, so
+   records were ordered by name *length* and XNU returned ENOENT on a byte-identical
+   volume) stays fixed in `tools/hfsplus-tool.py`, but that route is now only for
+   reading and restoring.
+
+**USB IS FIXED - measured.****USB IS FIXED - measured.****USB IS FIXED - measured.****USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
 the kernel control channel answered **379 of 379 requests over 180 s with zero
 misses** (`l2 info`), where 0149 managed 3 replies and died at 46 s and every
 earlier boot died within seconds. The last hole was the drain trigger in `0148`:
