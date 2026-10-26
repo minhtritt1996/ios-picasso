@@ -50,11 +50,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--key", default=os.path.expanduser("~/.ssh/picasso_key"))
     ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--check", action="store_true",
+                    help="exit 0 if the shell answers, no other output")
     args = ap.parse_args()
 
     if shell("help") is None:
-        print("shell does not answer on %s:%d - nothing to do" % PHONE)
+        if not args.check:
+            print("shell does not answer on %s:%d - nothing to do" % PHONE)
         return 1
+    if args.check:
+        return 0
 
     steps = [
         "/private/var/root/dropbearkey -t ed25519 -f /private/var/root/dropbear_ed25519_host_key",

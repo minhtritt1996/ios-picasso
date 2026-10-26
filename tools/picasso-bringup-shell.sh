@@ -15,7 +15,12 @@ SERIAL=${SERIAL:-f9f3d7b0}
 CARRIER=${CARRIER:-/tmp/carrier-sweetsh.bin}
 HOSTKEY=/private/var/root/dropbear_ed25519_host_key
 
-remote() { sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "$@"; }
+# REMOTE=local drives a phone attached to this machine.
+remote() {
+	if [ "$REMOTE" = local ]; then sh -c "$*"; else
+		sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "$@"
+	fi
+}
 onhost() { sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no "$REMOTE" "cd /tmp; $*"; }
 
 remote "adb -s $SERIAL get-state" >/dev/null 2>&1 || {
@@ -56,4 +61,8 @@ echo "shell answers on UDP 4444"
 # the host-key and dropbear steps are exactly what picasso-ssh-up.py does: it sends
 # dropbearkey, checks the directory, starts dropbear and then tries an ssh login.
 echo "SSH check:"
-onhost "cd /tmp; python3 picasso-ssh-up.py" 2>&1 | tail -14
+if [ "$REMOTE" = local ]; then
+		python3 tools/picasso-ssh-up.py 2>&1 | tail -14
+	else
+		onhost "cd /tmp; python3 picasso-ssh-up.py" 2>&1 | tail -14
+	fi

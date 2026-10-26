@@ -38,18 +38,18 @@ hostprep() {
 		"$BIN" "$REMOTE:/tmp/" 2>/dev/null
 }
 
+# Where the shell-side helpers live on the host we drive from.
+if [ "$REMOTE" = local ]; then
+	HOSTDIR=$PWD/tools
+else
+	HOSTDIR=/tmp
+fi
+
 wait_shell() {
 	i=0
 	while [ $i -lt 40 ]; do
 		i=$((i + 1))
-		if [ "$(onhost 'cd /tmp; python3 picasso-ecm.py up >/dev/null 2>&1; python3 - <<"PY" 2>/dev/null
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
-try:
-    s.sendto(b"help", ("192.168.7.2", 4444)); s.recvfrom(2048); print(1)
-except OSError:
-    print(0)
-PY' 2>/dev/null | tail -1)" = 1 ]; then
+		if onhost "cd $HOSTDIR && python3 picasso-ecm.py up >/dev/null 2>&1 && python3 picasso-ssh-up.py --check"; then
 			return 0
 		fi
 		sleep 20
@@ -59,7 +59,7 @@ PY' 2>/dev/null | tail -1)" = 1 ]; then
 
 finish() {
 	echo "=== shell is up, starting dropbear and checking SSH"
-	onhost 'cd /tmp; python3 picasso-ssh-up.py 2>&1 | tail -12'
+	onhost "cd $HOSTDIR; python3 picasso-ssh-up.py 2>&1 | tail -12"
 }
 
 echo "=== $(date +%T) watching, ${HOURS}h"
@@ -70,15 +70,15 @@ while [ $i -lt $((HOURS * 240)) ]; do
 
 	if onhost "adb devices 2>/dev/null | grep -q recovery"; then
 		echo "=== $(date +%T) recovery: installing the carrier"
-		tools/picasso-bringup-shell.sh 2>&1 | tail -20
+		REMOTE=$REMOTE tools/picasso-bringup-shell.sh 2>&1 | tail -20
 		finish
 		exit 0
 	fi
 
 	# Normal boot with a live kernel command channel: replace amfid from the kernel.
-	if onhost 'cd /tmp; python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ecm.py l2 info 2>/dev/null | grep -q "configured"'; then
+	if onhost "cd $HOSTDIR; python3 picasso-ecm.py up >/dev/null 2>&1; python3 picasso-ecm.py l2 info 2>/dev/null | grep -q configured"; then
 		echo "=== $(date +%T) L2 channel answers: writing the shell over /usr/libexec/amfid"
-		onhost "cd /tmp && python3 picasso-install-binary-over-l2.py --binary $(basename "$BIN") --dest /usr/libexec/amfid --reboot 2>&1 | tail -8"
+		onhost "cd $HOSTDIR && python3 picasso-install-binary-over-l2.py --binary $(basename "$BIN") --dest /usr/libexec/amfid --reboot 2>&1 | tail -8"
 		sleep 30
 		if wait_shell; then finish; exit 0; fi
 		echo "=== shell did not answer after the L2 install"
