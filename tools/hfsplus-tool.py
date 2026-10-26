@@ -602,6 +602,60 @@ def main():
         vol.f.flush()
         print('# attributes 0x%08x (journaling off, marked unmounted)' % attr)
         print('  bs=4096 skip=0 count=1')
+    elif cmd == 'writefile':
+        # Replace an existing file's content and size. A bplist cannot be padded,
+        # so the launchd cache has to be rebuilt and its logicalSize adjusted - the
+        # extent stays, and the new content must fit inside it.
+        path, local = sys.argv[3], sys.argv[4]
+        data = open(local, 'rb').read()
+        folder, _, name = path.rpartition('/')
+        got = find(vol, folder or '/')
+        if not got or got[1] is None:
+            sys.exit('no such folder: %s' % folder)
+        folder_id = struct.unpack('>I', got[1][8:12])[0]
+        node_size = vol.node_size
+        node_no = vol.first_leaf
+        done = False
+        while node_no and not done:
+            raw = vol.fork_read(vol.catalog, vol.catalog_size, node_no * node_size, node_size)
+            fwd, back, kind, height, recs = _node_unpack(raw)
+            for i, rec in enumerate(recs):
+                keylen = struct.unpack('>H', rec[0:2])[0]
+                key = rec[2:2 + keylen]
+                parent, = struct.unpack('>I', key[0:4])
+                nl = struct.unpack('>H', key[4:6])[0]
+                rname = key[6:6 + 2 * nl].decode('utf-16-be', 'replace')
+                if parent != folder_id or rname != name:
+                    continue
+                body = bytearray(rec[2 + keylen:])
+                if struct.unpack('>H', body[0:2])[0] != 2:
+                    sys.exit('%s is not a file' % path)
+                forks, _size = fork_of(bytes(body))
+                capacity = sum(c for _s, c in forks) * vol.blocksize
+                if len(data) > capacity:
+                    sys.exit('%s: %d bytes do not fit in %d' % (path, len(data), capacity))
+                _fork_write(vol, forks, capacity, 0, data)
+                struct.pack_into('>Q', body, 88, len(data))
+                recs[i] = rec[:2 + keylen] + bytes(body)
+                _fork_write(vol, vol.catalog, vol.catalog_size, node_no * node_size,
+                            _node_pack(fwd, back, kind, height, recs, node_size))
+                print('# %s: wrote %d bytes (capacity %d), logicalSize -> %d' % (
+                    path, len(data), capacity, len(data)))
+                loff = node_no * node_size
+                pos = 0
+                for start_block, count in vol.catalog:
+                    span = count * vol.blocksize
+                    if loff < pos + span:
+                        print('  bs=4096 skip=%d count=%d' % (
+                            start_block + (loff - pos) // vol.blocksize,
+                            (node_size + vol.blocksize - 1) // vol.blocksize))
+                        break
+                    pos += span
+                done = True
+                break
+            node_no = fwd
+        if not done:
+            sys.exit('record not found: %s' % path)
     elif cmd == 'mkd':
         # Create a folder. iOS needs /private/var/log/com.apple.xpc.launchd to exist
         # before launchd can log its spawn decisions, and that log is the only way

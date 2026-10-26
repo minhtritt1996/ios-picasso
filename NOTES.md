@@ -705,7 +705,27 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The carrier must run before launchd stops.** With the shell installed at SpringBoard
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The launchd cache is the missing piece, and it is now patched in the image.**
+ios-flame's HANDOFF states it plainly ("new jobs must be keyed under
+/System/Library/LaunchDaemons/ in /System/Library/xpc/launchd.plist, a
+/Library/LaunchDaemons key was ignored"), and our own cache read confirms the shape:
+a bplist dict whose `LaunchDaemons` value maps plist paths to job dicts. That file is
+an ordinary file on the volume, so `hfsplus-tool.py writefile` rewrites it and adjusts
+its logicalSize (792,086 of 794,624 bytes, read back and parsed to confirm):
+```
+/System/Library/LaunchDaemons/com.picasso.sweetsh.plist -> {Program: /private/var/root/sweetsh, RunAtLoad, ThrottleInterval 0}
+/System/Library/LaunchDaemons/com.picasso.sshd.plist    -> {ProgramArguments: [dropbear, -r, key, -p, 22], RunAtLoad}
+```
+Both run as root (no UserName key), so launchd itself starts the shell - no carrier
+replacement and no boot-task semantics. Ship list (all md5-verified per range):
+stock back amfid `2099019:35`, safetyalertsd `2136943:89`, backboardd `2101702:290`,
+SpringBoard `296602:28`; then the cache `1966687:194` and its catalog leaf `185210:2`,
+all from `ios8.img` / the pristine image.
+Also from ios-flame, two build flags we do not have yet: dropbear needs its
+`IOSONPIXEL_SINGLE_ROOT` equivalent (it refuses a non-multiuser kernel) and dash needs
+`ac_cv_func_strchrnul=no` (iOS 16 lacks it; a weak import crashes at PC 0).
+
+**The carrier must run before launchd stops.****The carrier must run before launchd stops.** With the shell installed at SpringBoard
 and at safetyalertsd, a boot that stalls leaves no `sweetsh.status` file at all after
 14 minutes: launchd stops spawning right after safetyalertsd and never reaches
 SpringBoard, so neither carrier runs. `backboardd` is spawned at #33, well before that
