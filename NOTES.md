@@ -456,7 +456,50 @@ both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the o
    putc path (stage before/after `IOLockLock` and around the fb store). If KICK stops with the
    console, the wedge is in UFS/the lock instead.
 
-## Agent handoff / active work (2026-10-26, later)
+## Agent handoff / active work (2026-10-26, latest)
+### >>> 2026-10-26 (picasso): USB fixed, shell executes only with enforcement off <<<
+**USB is stable now.** Patch `0139` (all driver output through `vsnprintf` +
+`sys/sweet_log_append`, never `printf`) removed the console-lock deadlock that
+killed the DWC3 event thread. Measured after it: `ping` 3/3 0% loss, control
+channel `rx 415 tx 313 busy 0`, ring readable over USB (`ringpos`/`logback`,
+`tools/picasso-ecm.py`), kernel heartbeats to t≈300 s.
+**Shell executes, then is killed by code signing.** Replacing SpringBoard's file
+content with `tools/sweetsh/sweetsh-quiet-signed` makes launchd exec it (kernel
+trace `exec SpringBoard`, `mh 0x100000000`), and the ring then shows:
+```
+proc 26: load code signature error 4 for file "SpringBoard"
+SWEET EXIT SpringBoard pid 26 rv 0x4
+CRASH SpringBoard[26] sig 4 ... pc 0x100001000
+CODE SIGNING: cs_invalid_page(0x100000000) ... allowing (remove VALID) page
+```
+sig 4 = SIGILL on the first instruction: the kernel invalidated page 0 and
+removed execute permission. Two real bugs were found and fixed on the way
+(`tools/sweetsh/mkmacho.py`): the CodeDirectory must use the kernel **16 KiB**
+page shift (14), and the signature blob must start on a 16 KiB boundary so it
+never shares a hashed page with code; page hashes now verify 1/1.
+**Missing piece: `cs_enforcement_disable=1`** (and `amfi_get_out_of_my_way=1`),
+which makes XNU set `CS_CONFIG_ALLOW_ANY_SIGNATURE` +
+`CS_CONFIG_ENFORCEMENT_DISABLED` - without it even a correct ad-hoc signature
+leaves the pages invalid. The arg was dropped while bisecting towards the rev11
+cmdline and has to go back into the boot line.
+**Other launchd facts learned:** an entry added to
+`/System/Library/xpc/launchd.plist` is not spawned; replacing
+`launchd_cache_loader` makes launchd panic ("boot task is not a platform
+binary"); replacing `/sbin/launchd` fails because the *init* exec needs a stack
+the kernel cannot allocate for PID 1 (`EXEC_EXIT_REASON_STACK_ALLOC`), which
+also panics; replacing an on-demand daemon (runningboardd) never runs because
+nothing looks up its Mach service. SpringBoard is the one binary launchd always
+execs (RunAtLoad, `exec SpringBoard` in every boot) and it is now our shell.
+**Next:** flash with
+`... sweetvfsprobe=0 cs_enforcement_disable=1 amfi_get_out_of_my_way=1` and boot;
+`python3 tools/picasso-ecm.py up` then `tcp 4444 help` should give a root-ish
+(mobile) shell. Restore points: `dump/backup/{launchd,springboard,runningboardd,
+launchd_cache_loader,bin-ps,otacrash,launchd.plist}.region`.
+NB: the original SpringBoard content was overwritten twice and its first backup
+was deleted by mistake; the untouched binary is in the iPhone X 16.7.16 rootfs
+image (`/run/media/dipa/android/ios-sweet-ipsw/ios16-root-20H392-v9.img`).
+
+## Agent handoff / previous (2026-10-26, later)
 ### >>> 2026-10-26 (picasso): USB TX path wedges the link; shell ready but launchd
 ### refuses the boot-task route <<<
 **Where the bring-up stands.** Everything except a *stable* USB link works:
