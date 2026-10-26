@@ -53,11 +53,12 @@ done
 echo "shell answers on UDP 4444"
 
 # 3. make the dropbear host key and start the daemon from the shell itself, then prove
-# SSH. keygen prints to stdout, so it writes the file with -f and we check for it after.
+# SSH. The shell execs anything that is not one of its own commands, so these are sent
+# as plain command lines; keygen writes the file with -f and we read it back after.
 onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
-	python3 picasso-ecm.py l2 exec '/private/var/root/dropbearkey -t ed25519 -f $HOSTKEY' 120 2>/dev/null | tail -2"
+	python3 picasso-ecm.py l2 '/private/var/root/dropbearkey -t ed25519 -f $HOSTKEY' 120 2>/dev/null | tail -2"
 onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
-	python3 picasso-ecm.py l2 exec '/private/var/root/dropbear -r $HOSTKEY -p 22' 120 2>/dev/null | tail -2"
+	python3 picasso-ecm.py l2 '/private/var/root/dropbear -r $HOSTKEY -p 22' 120 2>/dev/null | tail -2"
 sleep 5
 onhost "python3 picasso-ecm.py up >/dev/null 2>&1;
 	python3 picasso-ecm.py l2 cat $HOSTKEY 120 2>/dev/null | head -2" | head -2
