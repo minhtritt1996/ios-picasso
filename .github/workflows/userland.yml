@@ -53,7 +53,7 @@ jobs:
           ./configure --host=aarch64-apple-darwin || { tail -40 config.log; exit 1; }
           # The account wrapper is needed only while compiling and linking, so it
           # is force-included here rather than during configure.
-          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h" || { tail -40 config.log; exit 1; }
+          make -j"$(nproc)" || { tail -40 config.log; exit 1; }
           llvm-objdump --macho --private-headers src/dash | grep -E "MH_MAGIC|LC_CODE_SIGNATURE" | head -3
           mkdir -p "$GITHUB_WORKSPACE/out" && cp src/dash "$GITHUB_WORKSPACE/out/sh"
 
@@ -75,8 +75,9 @@ jobs:
                       --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp \
                       --disable-wtmpx || { tail -60 config.log; exit 1; }
           # The account wrapper is needed only while compiling and linking, so it
-          # is force-included here rather than during configure.
-          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h"
+          # is force-included here rather than during configure (and only for
+          # dropbear - dash does not do account lookups).
+          make -j"$(nproc)" CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tools/userland/picasso_pw.h" || { tail -40 config.log; exit 1; }
           ls -l dropbear dbclient dropbearkey 2>/dev/null || { tail -60 config.log; exit 1; }
           for b in dropbear dbclient dropbearkey; do
             llvm-objdump --macho --private-headers $b | grep -E "LC_CODE_SIGNATURE|LC_LOAD_DYLIB" | head -4
