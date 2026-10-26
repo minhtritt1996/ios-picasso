@@ -23,7 +23,11 @@ Things this wrapper has to get right, each of which cost a boot:
   every later version) and a shorter CodeDirectory is rejected as EBADEXEC, which
   silently drops the signature and makes the kernel remove execute permission.
 
-  mkmacho.py RAW_BIN OUT [--memsize N] [--sign]
+  mkmacho.py RAW_BIN OUT [--memsize N] [--sign] [--ident NAME]
+
+The identifier lands in the CodeDirectory and iOS compares it with the
+expected name for a launchd \*boot task\* ('code signing identity mismatch
+for a boot-task ... observed=... expected=com.apple.sysstatuscheck').
 """
 import hashlib
 import struct
@@ -103,7 +107,7 @@ def main():
     pc = BASE + LC_AREA
 
     text_prot = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE
-    ident = 'com.picasso.sweetsh'
+    ident = args[args.index('--ident') + 1] if '--ident' in args else 'com.picasso.sweetsh'
     # Every length is known before anything is emitted: the signature blob size
     # follows from the number of hashed pages, which follows from dataoff, which
     # follows from the code length. Computing it in one pass is what keeps the
