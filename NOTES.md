@@ -594,6 +594,35 @@ starves the receive side. A 150 s soak of the kernel channel on that build still
 wedged after 46 s (3 replies), so the rescue either did not help or never fired -
 the ring says which.
 
+**USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
+the kernel control channel answered **379 of 379 requests over 180 s with zero
+misses** (`l2 info`), where 0149 managed 3 replies and died at 46 s and every
+earlier boot died within seconds. The last hole was the drain trigger in `0148`:
+it waited for `GEVNTCOUNT` to hold still, which under load never happens, so the
+ring was never drained exactly while it filled, overflowed at 1024 events and the
+controller stopped (`rx` frozen at 23). `0150` uses the event thread's own loop
+counter as the liveness signal instead: while `ev_ticks` advances that thread owns
+the ring, and once it stops the kick thread drains every call. The full set that
+got here: `0141` one dword per event, `0142` drain without sleeping, `0143` arm the
+RX TRB once, `0144` HWO-based lost-event repair, `0145` stale-TRB abort,
+`0146` reconfigure after a bus reset, `0147`/`0148`/`0150` drain from the kick
+thread, `0149` RX-worker counters and rescue.
+
+**The remaining blocker is this port's VFS/UFS, not USB.** With the link healthy,
+`l2 info` (no VFS) answers indefinitely, but any command that touches a file -
+`stat`, `cat`, `put` - wedges the command thread: after three `stat` calls the
+channel stopped answering entirely, and earlier a 16 KB `put` created a 169-byte
+file and then killed the channel. The same subsystem is why the boot often stalls
+at the `exec xpcproxy` phase before launchd reaches the daemon phase, so the
+installed LaunchDaemon plist has still never been exercised.
+**Catalog surgery caveat to check next:** the files created offline are visible to
+`tools/hfsplus-tool.py` and their blocks are on the device (md5-verified), but a
+`stat /private/var/root/dropbear` from the running kernel answered ENOENT before
+the channel wedged. Either the records are not what XNU's HFS+ expects (compare a
+record we wrote against an Apple-written one field by field, especially
+`textEncoding`, the permissions block and the thread record) or the lookup never
+got that far. That is the single thing to settle before the plist can work.
+
 **Verified on the device:** the shipped catalog really contains `sweetsh`,
 `sh`, `dropbear`, `dbclient`, `dropbearkey` and `com.picasso.sweetsh.plist`.
 
