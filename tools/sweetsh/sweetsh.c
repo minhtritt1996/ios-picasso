@@ -382,7 +382,10 @@ banner(void)
 	    "anything else is exec'd as /bin, /sbin, /usr/bin, /usr/libexec or a path.\r\n\r\n");
 }
 
-/* struct dirent (64-bit ino): d_ino(8) d_reclen(2) d_type(1) d_namlen(1) name */
+/* getdirentries64 returns __DARWIN_STRUCT_DIRENTRY (bsd/sys/dirent.h):
+ * d_ino(8) d_seekoff(8) d_reclen(2) d_namlen(2) d_type(1) then the name, so
+ * the header is 21 bytes - the 32-bit-inode layout (reclen at 8) prints one
+ * nameless "? " line and stops. */
 static void
 ls_(const char *path)
 {
@@ -403,10 +406,10 @@ ls_(const char *path)
 			break;
 		}
 		for (i64 off = 0; off < n;) {
-			unsigned short reclen = *(unsigned short *)(buf + off + 8);
-			unsigned char type = (unsigned char)buf[off + 10];
-			unsigned char namlen = (unsigned char)buf[off + 11];
-			const char *name = buf + off + 12;
+			unsigned short reclen = *(unsigned short *)(buf + off + 16);
+			unsigned short namlen = *(unsigned short *)(buf + off + 18);
+			unsigned char type = (unsigned char)buf[off + 20];
+			const char *name = buf + off + 21;
 
 			if (reclen == 0) {
 				break;
