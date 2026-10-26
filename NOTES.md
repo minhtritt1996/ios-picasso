@@ -679,7 +679,27 @@ was computed and shipped but **not verified on the device** (the read-back was
 attempted after the phone left recovery, and `stat` still reported 112,960), so it
 has to be re-shipped and checked block by block.
 
-**State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).**
+**Everything is in place on the phone except the daemon phase.**
+Installed and *visible to the kernel* (`stat` answers with the right size):
+`/private/var/root/{sweetsh 16512, sh 167504, dropbear 285600, dbclient 268384,
+dropbearkey 203760}`, `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`
+(463), and our public key planted inside the stock
+`/private/var/root/.ssh/authorized_keys` (498 bytes, key line + blank padding).
+`SpringBoard` was replaced by a shell image of **98,584 bytes** whose ad-hoc
+signature covers the whole file (blob page-aligned, `logicalSize` patched in the
+catalog with `hfsplus-tool.py setsize`) - `stat` now reports `size 98584`, which
+fixes the `unexpected exec of non-platform binary` panic from the 112,960-byte
+attempt. UFS writes work (`beats 10`), the control channel answers, and the ring can
+be paged over the link with `l2 logback N`.
+**What is missing:** the boot with `cpus=1` never reached the daemon phase in ~6
+minutes (`exec remoted/amfid/xpcproxy` and then nothing), so launchd has not exec'd
+SpringBoard yet and the shell has not answered on UDP 4444.
+**Next move:** flash the kernel from CI run `40321830882` (patch `0158`), which makes
+`lock_rw`'s panic print the lock, the caller and its caller - then boot `cpus=8`,
+where the boot is fast, and read who trips the non-sleepable rw lock; that panic is
+the only thing between "files in place" and "launchd runs the shell".
+
+**State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).****State at the end of this session (2026-10-26 late).**
 * Volume: pristine iOS root + the six catalog entries we created
   (`/private/var/root/{sweetsh,sh,dropbear,dbclient,dropbearkey}` and
   `/System/Library/LaunchDaemons/com.picasso.sweetsh.plist`) + the shell also written
