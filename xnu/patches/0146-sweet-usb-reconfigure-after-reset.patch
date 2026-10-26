@@ -1,0 +1,41 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1041,14 +1041,22 @@
+ 		}
+ 		if (type == 1) {        /* USB reset */
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
+-			/* The core aborts every transfer on a reset, so the RX TRB is no
+-			 * longer the controller's and must be re-armed. */
++			/*
++			 * A bus reset wipes the endpoint configuration in the core, and
++			 * ud_configure() is a no-op while ud.configured is set - so leaving
++			 * the flag alone meant the re-enumeration's SET_CONFIGURATION was
++			 * ignored, no endpoint was ever configured again and both bulk
++			 * endpoints stayed dead for the rest of the boot (the ring showed
++			 * exactly that: two bus resets, then rx frozen with tx 0). Forget
++			 * the configuration and let the next SET_CONFIGURATION rebuild it.
++			 */
+ 			ud.rx_armed = false;
++			lck_mtx_lock(ud.lock);
+ 			ud.tx_busy = false;
+-			if (ud.configured) {
+-				ud_rx_arm();
+-			}
+-			ud_log("SWEET USB: bus reset\n");
++			ud_txq_drain();
++			lck_mtx_unlock(ud.lock);
++			ud.configured = false;
++			ud_log("SWEET USB: bus reset, configuration dropped\n");
+ 		} else if (type == 2) { /* connect done */
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
+ 			/* ep0 max packet: 64 at high/full speed (modify action) */
+@@ -1062,7 +1070,8 @@
+ 		} else if (type == 0) {
+ 			ud.rx_armed = false;
+ 			ud.tx_busy = false;
+-			ud_log("SWEET USB: disconnect\n");
++			ud.configured = false;
++			ud_log("SWEET USB: disconnect, configuration dropped\n");
+ 		}
+ 		return;
+ 	}
