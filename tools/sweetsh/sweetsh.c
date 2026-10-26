@@ -251,6 +251,42 @@ readline(char *buf, int max)
 
 /* Write a line to /dev/console when it exists: that is how this binary shows up
  * in the kernel console ring, which the host reads through the USB driver. */
+/* Always-on console line (quiet build included) with a single integer, so a
+ * process that runs but cannot bind says so instead of looking absent. */
+static void
+console_always_num(const char *prefix, i64 v, const char *suffix)
+{
+	char buf[96];
+	int n = 0;
+
+	while (prefix && *prefix && n < 60) {
+		buf[n++] = *prefix++;
+	}
+	char digits[24];
+	int d = 0;
+	unsigned long long u = (v < 0) ? (unsigned long long)(-v) : (unsigned long long)v;
+
+	if (v < 0 && n < 62) {
+		buf[n++] = '-';
+	}
+	do {
+		digits[d++] = (char)('0' + (u % 10));
+		u /= 10;
+	} while (u && d < 20);
+	while (d > 0 && n < 80) {
+		buf[n++] = digits[--d];
+	}
+	while (suffix && *suffix && n < 90) {
+		buf[n++] = *suffix++;
+	}
+	buf[n] = 0;
+	i64 fd = sys3(SYS_open, (i64)"/dev/console", O_WRONLY, 0);
+	if (fd >= 0) {
+		sys3(SYS_write, fd, (i64)buf, n);
+		sys3(SYS_close, fd, 0, 0);
+	}
+}
+
 static void
 console(const char *s)
 {
@@ -819,9 +855,19 @@ serve_udp(void)
 	struct sockaddr_in sa;
 	i64 fd = -1;
 
+	/* Lifecycle lines go to /dev/console (and therefore the kernel ring) even in
+	 * the quiet build: without them a shell that runs but never binds is
+	 * indistinguishable from a shell that never ran. */
+	long bind_tries = 0;
+	i64 last_err = 0;
+
 	for (;;) {
 		fd = sys3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
 		if (fd < 0) {
+			last_err = fd;
+			if (++bind_tries == 1 || (bind_tries % 20) == 0) {
+				console_always_num("sweetsh: socket failed ", fd, "\r\n");
+			}
 			sleep_ms(500);
 			continue;
 		}
@@ -832,12 +878,20 @@ serve_udp(void)
 		sa.sin_family = AF_INET;
 		sa.sin_port = (unsigned short)((4444 >> 8) | ((4444 & 0xff) << 8));
 		sa.sin_addr = 0;
-		if (sys3(SYS_bind, fd, (i64)&sa, sizeof(sa)) == 0) {
+		i64 berr2 = sys3(SYS_bind, fd, (i64)&sa, sizeof(sa));
+
+		if (berr2 == 0) {
+			console_always_num("sweetsh: bound udp 4444 after tries ", bind_tries + 1, "\r\n");
 			break;
+		}
+		last_err = berr2;
+		if (++bind_tries == 1 || (bind_tries % 20) == 0) {
+			console_always_num("sweetsh: bind failed ", berr2, "\r\n");
 		}
 		sys3(SYS_close, fd, 0, 0);
 		sleep_ms(500);
 	}
+	console_always_num("sweetsh: serving, last err ", last_err, "\r\n");
 	for (;;) {
 		char cmd[1200];
 		struct sockaddr_in from;
@@ -961,6 +1015,18 @@ cstart(void)
 	if (running_from("/bin/ps")) {
 		install_self("/System/Library/CoreServices/SpringBoard.app/SpringBoard");
 	}
+	/*
+	 * Started as a launchd boot task, this process must exit: a boot task that
+	 * stays alive is killed, and the exit makes launchd ask the platform to
+	 * restart - which this port cannot do ("Halt/Restart Timed Out"
+	 * @PlatformExpert.cpp:884 panic). Fork, let the parent exit cleanly, and serve
+	 * from the child.
+	 */
+	/*
+	 * No fork(): as a launchd *daemon* (the carrier that works) an exiting parent
+	 * makes launchd respawn the job immediately, and as PID 1 an exit kills the
+	 * machine. Serve in this process.
+	 */
 	for (;;) {
 		serve_udp();            /* never returns */
 	}
