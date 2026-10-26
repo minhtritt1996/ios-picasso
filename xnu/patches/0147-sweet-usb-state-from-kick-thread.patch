@@ -1,0 +1,59 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -107,6 +107,32 @@
+ 	return v;
+ }
+ 
++/*
++ * Raw driver state for the kick thread, which keeps running when the USB event
++ * thread stops: reading it from there is the only way to see what the endpoint
++ * ownership flags actually say at the moment the link goes quiet.
++ */
++void
++sweet_usb_state(char *out, int outlen)
++{
++	volatile uint32_t *rx = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
++	volatile uint32_t *tx = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
++
++	if (ud.dma == 0) {
++		snprintf(out, outlen, " usb=notstarted\n");
++		return;
++	}
++	snprintf(out, outlen,
++	    " usb cfg %d rxarm %d txbusy %d evq 0x%x dalepa 0x%x hwo %d/%d"
++	    " rx %llu tx %llu lost %u/%u stale %u/%u sp %u/%u err %u q %u\n",
++	    (int)ud.configured, (int)ud.rx_armed, (int)ud.tx_busy,
++	    dwc_rd(GEVNTCOUNT) & 0xffff, dwc_rd(DALEPENA),
++	    (rx[3] & TRB_HWO) ? 1 : 0, (tx[3] & TRB_HWO) ? 1 : 0,
++	    ud.rx_frames, ud.tx_frames, ud.rx_lost, ud.tx_lost,
++	    ud.rx_stale, ud.tx_stale, ud.rx_spurious, ud.tx_spurious,
++	    ud.rx_arm_err, ud.txq_count);
++}
++
+ void
+ sweet_usb_probe(void)
+ {
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1763,6 +1763,21 @@
+ 		if (len > 0) {
+ 			sweet_log_append(line, MIN(len, (int)sizeof(line) - 1));
+ 		}
++		/* The USB driver's own watchdog lives in its event thread, which is
++		 * exactly what stops when the link dies - so report its state from here
++		 * every fifth spin (~10 s). */
++		if ((n % 5) == 0) {
++			char usb[220];
++			extern void sweet_usb_state(char *out, int outlen);
++
++			usb[0] = 0;
++			sweet_usb_state(usb, sizeof(usb));
++			len = snprintf(line, sizeof(line), "SWEET USBSTATE %u:", n);
++			if (len > 0) {
++				sweet_log_append(line, MIN(len, (int)sizeof(line) - 1));
++				sweet_log_append(usb, (int)strlen(usb));
++			}
++		}
+ 		sweet_kick_n++;
+ 		/* Every five spins (~10 s) put the ring on the partition, without the
+ 		 * driver lock and without any timeout sleep: this thread keeps
