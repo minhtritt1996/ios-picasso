@@ -28,6 +28,7 @@ CTL_TYPE = 0x88b6
 
 SIOCSIFADDR = 0x8916
 SIOCSIFNETMASK = 0x891c
+SIOCGIFADDR = 0x8915
 SIOCGIFFLAGS = 0x8913
 SIOCSIFFLAGS = 0x8914
 IFF_UP = 0x1
@@ -66,17 +67,39 @@ def if_up(iface):
     fcntl.ioctl(s, SIOCSIFFLAGS, ifr)
 
 
+def get_addr(iface):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ifr = struct.pack('16sH14s', iface.encode()[:15], 0, b'\0' * 14)
+    res = fcntl.ioctl(s, SIOCGIFADDR, ifr)
+    return socket.inet_ntoa(res[20:24])
+
+
 def cmd_up():
+    """Bring the gadget interface up with 192.168.7.1/24, verifying it stuck.
+
+    The interface is re-created every time the phone re-enumerates (each boot,
+    each recovery round trip), and an address set before that lands on a stale
+    netdev - which then looks exactly like a dead link. Check and re-apply.
+    """
     iface = find_iface()
     if not iface:
         sys.exit("no gadget interface found (is the phone running XNU with sweetusb=2?)")
     if_up(iface)
     try:
-        set_addr(iface, OUR_IP, "255.255.255.0")
-    except OSError as e:
-        if e.errno != 17:               # EEXIST: already addressed
-            raise
-    print("%s up, %s/24" % (iface, OUR_IP))
+        have = get_addr(iface)
+    except OSError:
+        have = None
+    if have != OUR_IP:
+        try:
+            set_addr(iface, OUR_IP, "255.255.255.0")
+        except OSError as e:
+            if e.errno != 17:           # EEXIST
+                raise
+        try:
+            have = get_addr(iface)
+        except OSError:
+            have = None
+    print("%s up, %s/24%s" % (iface, OUR_IP, "" if have == OUR_IP else " (ADDRESS MISSING)"))
     return iface
 
 
