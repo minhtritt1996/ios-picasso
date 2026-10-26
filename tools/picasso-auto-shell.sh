@@ -16,16 +16,26 @@ HOURS=${1:-6}
 BIN=tools/sweetsh/sweetsh-udp-signed
 KEY="${KEY:-/root/.ssh/picasso_key}"
 
+REMOTE=${REMOTE:-root@100.121.254.115}
+
+# REMOTE=local drives the phone from this machine instead of over ssh.
 onhost() {
-	sshpass -p "${REMOTE_PASS:-k60}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
-		"${REMOTE:-root@100.121.254.115}" "$@"
+	if [ "$REMOTE" = local ]; then
+		sh -c "$*"
+	else
+		sshpass -p "${REMOTE_PASS:-k60}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+			"$REMOTE" "$@"
+	fi
 }
 
 # Everything the host side needs, pushed once.
 hostprep() {
+	if [ "$REMOTE" = local ]; then
+		return 0        # already here
+	fi
 	sshpass -p "${REMOTE_PASS:-k60}" scp -o StrictHostKeyChecking=no -q \
 		tools/picasso-ecm.py tools/picasso-ssh-up.py tools/picasso-install-binary-over-l2.py \
-		"$BIN" "${REMOTE:-root@100.121.254.115}:/tmp/" 2>/dev/null
+		"$BIN" "$REMOTE:/tmp/" 2>/dev/null
 }
 
 wait_shell() {
