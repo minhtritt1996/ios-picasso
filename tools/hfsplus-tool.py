@@ -385,7 +385,7 @@ def _insert(vol, records):
     dirty = {}
     for key, body in records:
         rec = key + body
-        want = order_key(key)
+        want = order_key(key_bytes_of(rec))   # strip the 2-byte keyLength first
         target = None
         for leaf in leaves:
             keys = [order_key(key_bytes_of(r)) for r in leaf['recs']]
@@ -400,6 +400,10 @@ def _insert(vol, records):
             if k >= want:
                 pos = i
                 break
+        if os.environ.get('HFSCREATE_DEBUG'):
+            print('# insert %r into leaf %d at %d of %d, leaf first %r last %r' % (
+                want, target['no'], pos, len(keys),
+                keys[0] if keys else None, keys[-1] if keys else None), file=sys.stderr)
         target['recs'].insert(pos, rec)
         leaf_records += 1
         dirty[target['no']] = target
@@ -444,6 +448,10 @@ def create(vol, folder_path, files):
     if not got or got[1] is None:
         raise SystemExit('no such folder: %s' % folder_path)
     folder_id = struct.unpack('>I', got[1][8:12])[0]
+    if os.environ.get('HFSCREATE_DEBUG'):
+        print('# folder %s -> record type %d body[0:16] %s id %d' % (
+            folder_path, struct.unpack('>H', got[1][0:2])[0], got[1][:16].hex(' '), folder_id),
+            file=sys.stderr)
     cnid = struct.unpack('>I', vol.vh[VH_NEXT_CNID:VH_NEXT_CNID + 4])[0]
     free_blocks = struct.unpack('>I', vol.vh[VH_FREE_BLOCKS:VH_FREE_BLOCKS + 4])[0]
     file_count = struct.unpack('>I', vol.vh[VH_FILE_COUNT:VH_FILE_COUNT + 4])[0]
@@ -503,6 +511,22 @@ def main():
                     print('f %-40s id %-9d %8d bytes ext %s' % (name, fid, size, forks))
                 else:
                     print('d %-40s id %d' % (name, fid))
+    elif cmd == 'unjournal':
+        # A journaled volume replays its journal at mount, which silently undoes
+        # any offline edit (the records were on disk, yet XNU answered ENOENT and
+        # the volume stayed consistent). Clearing the journaled bit and marking the
+        # volume cleanly unmounted makes XNU mount it as a plain HFS+ volume, so
+        # offline catalog work survives.
+        vh = bytearray(vol.read(1024, 512))
+        attr, = struct.unpack('>I', vh[4:8])
+        print('# attributes 0x%08x (journaled %s, unmounted %s)' % (
+            attr, bool(attr & 0x2000), bool(attr & 0x100)))
+        attr = (attr & ~0x2000) | 0x100
+        struct.pack_into('>I', vh, 4, attr)
+        vol.write(1024, bytes(vh))
+        vol.f.flush()
+        print('# attributes 0x%08x (journaling off, marked unmounted)' % attr)
+        print('  bs=4096 skip=0 count=1')
     elif cmd == 'create':
         folder = sys.argv[3]
         files = [tuple(a.split('=', 1)) for a in sys.argv[4:]]

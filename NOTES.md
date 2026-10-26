@@ -647,7 +647,30 @@ surgery keeps its value for reading and for restores, and the live-edit path
 (`HFS_REMOTE`) is now fast enough to use if an offline edit is ever needed again,
 but it must always be computed against the live volume and shipped as a delta.
 
-**Writes have never worked on this port - and that is the whole blocker.**
+**How the two reference ports get SSH without runtime writes (research).**
+* **Bergamota / ios-sweet** (`ry-diffusion/Bergamota`, Poco F1, same driver family):
+  `ssh root@192.168.7.2`, dropbear, key-only - and the userland is **baked into the
+  HFS+ image on the host** (`mkiosroot-macos.sh`, macOS mounts HFS+ for real) before
+  the image is flashed. Nothing is installed at runtime.
+* **HackiOS** (`oosexgang/hackios-xnu-kernel`): `mount the iOS volume read only` and
+  give the writable part **to a RAM disk**, so the kernel never writes the UFS
+  volume at all; `tools/darwin-write.py` writes images into a *scratch area after*
+  the iOS volume, from Android.
+Both avoid the one thing this port cannot do yet: write HFS+ from XNU.
+**Our catalog surgery is now correct** - the last bug was that `_insert` passed the
+full key (with the 2-byte keyLength) to `order_key`, which expects the key after the
+prefix, so every record was ordered as if its parent were `keyLength<<16|...`
+(`'sh'` before `'dropbear'`, appended at the end of the leaf). With that fixed the
+records go into the right leaf at the right offset
+(`insert (306661,'dropbear') into leaf 18850 at 34 of 51`) and the directory lists in
+HFS+ order (`.ssh, dbclient, dropbear, dropbearkey, Library, sh, sweetsh`).
+**Not yet proven on the phone**: the boot after shipping that image panicked with
+`Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1377`, which is a
+kernel invariant tripped on a VFS path, not a statement about the records. Phone was
+put back to the pristine volume and the known-good kernel `0152`
+(`shim-boot.img` md5 `c4f03939af4f19a6c752c6f0bf678685`) as the last step.
+
+**Writes have never worked on this port - and that is the whole blocker.****Writes have never worked on this port - and that is the whole blocker.**
 Every ring pulled from the device reads `flush 0` (the flusher has never completed
 a single flush), and `0155` (spin-only command wait, no timer) is in the flashed
 kernel (`sleepable wait disabled` present in the image) yet `lk 4/1` still shows the
