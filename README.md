@@ -1,9 +1,13 @@
 # XNU (iOS 16) + a Darwin userland on the Redmi K30 5G — picasso / SM7250
 
 Bring-up of XNU 8796.141.3 (Darwin 22, iOS 16 userland) on a Snapdragon 765G
-phone, booted as a temporary `boot` image on top of the stock Android bootloader:
-no partition table changes, no firmware replacement, the iOS root lives inside the
-existing `userdata` partition.
+phone, booted as a temporary `boot` image on top of the stock Android bootloader.
+
+The phone's LUN0 partition table **was modified once, deliberately**: `userdata`
+was shrunk and a new `darwin` partition created to hold the iOS root (see
+*Partitioning* below, and `tools/gpt-add.py`). `boot`, `recovery`, the firmware
+partitions (`modem`, `persist`, …) and the backups are untouched, so the phone
+still returns to a stock Android by flashing back the stock `boot` image.
 
 This file is the overview: what works today, how it is built, flashed and
 debugged, and what is still open. `NOTES.md` is the engineering log (every
@@ -33,6 +37,23 @@ The two things that still block end-to-end use are *not* USB: this port's
 **VFS/UFS path wedges** under load (it kills the kernel command thread, and it is
 why launchd often never reaches its daemon phase), and launchd's **platform-binary
 handshake** rejects our binary as a *boot task* (a normal daemon is fine).
+
+## Partitioning
+
+The iOS root lives in its own GPT partition, added by shrinking `userdata`:
+
+| Item | Value |
+|---|---|
+| Partition name | `darwin` (`/dev/block/by-name/darwin`, `sda35` = LUN0) |
+| Extent | blocks 25,701,120 … 30,944,251 (4096-byte blocks, 21.5 GB) |
+| Filesystem | HFSX, 4096-byte allocation blocks, 4,194,304 blocks = 16 GiB used |
+| Mounted as | the root, via `rd=ufsroot0 ufsroot=darwin` |
+| Kernel log ring | the **last 1025 blocks** of the partition (`skip=5242106`) |
+| Written by | `tools/gpt-add.py add HEAD.bin TAIL.bin darwin <GiB> ...` — recomputes the GPT header and entry-array CRCs, so nothing else moves |
+| Safety | `tools/picasso-backup.sh` first dumps the LUN0 GPT head/tail and the `boot` partition |
+
+Everything else on LUN0 is still Android's `userdata`; the firmware partitions on
+the other LUNs (e.g. `modem` on LUN4) were never touched.
 
 ## What is installed on the phone
 

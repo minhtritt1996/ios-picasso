@@ -594,6 +594,15 @@ starves the receive side. A 150 s soak of the kernel channel on that build still
 wedged after 46 s (3 replies), so the rescue either did not help or never fired -
 the ring says which.
 
+**Storage layout (user-approved, once):** the phone's LUN0 GPT was modified to
+carve a dedicated `darwin` partition out of `userdata` — blocks
+25,701,120..30,944,251 (21.5 GB), HFSX with 4096-byte blocks and a 16 GiB volume,
+mounted as the root with `rd=ufsroot0 ufsroot=darwin`; the ring is its last 1025
+blocks. Created with `tools/gpt-add.py` after `tools/picasso-backup.sh` dumped the
+GPT head/tail and the `boot` partition. `boot`, `recovery`, `modem`, `persist` and
+the backups were not touched, so the phone still boots stock Android when the stock
+`boot` image is flashed back.
+
 **USB IS FIXED - measured.** Boot image `0150` (md5 `b370449feb29e41523289e991d905b45`):
 the kernel control channel answered **379 of 379 requests over 180 s with zero
 misses** (`l2 info`), where 0149 managed 3 replies and died at 46 s and every
