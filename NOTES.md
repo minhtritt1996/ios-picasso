@@ -5389,3 +5389,39 @@ adb pull on k60, then scp to this host. scp directly from k60 fails - the file i
   md5 `02b29b5220ae43d87aeb5d9aeab437bf`, staged on k60 as `/tmp/shim-boot-0174.img`.
 - State: waiting for the phone to be in recovery to flash that image, then test
   `ping 192.168.7.2` + port 22 + `l2 log | grep "SWEET VFS"`.
+
+## 2026-10-28 06:20 - kernel panics fixed; SSH still down; rootfs image drift found
+
+### Kernel (commits 6e2478b / run 40543959935 success; flashed md5 edf75ca1...)
+- 0174 (rewritten): `vfs_busy()` refuses a mount whose `mnt_rwlock` was never `lck_rw_init`ed
+  (`!lck_rw_is_sleepable()`; helper in osfmk/kern/lock_rw.{h,c}), and
+  `lookup_traverse_mountpoints()` drops a bogus `dp->v_mountedhere` (NULLs the field, undoes
+  `mnt_crossref++` itself, NEVER calls `mount_dropcrossref()` - that would zfree() a fake mount).
+  Kernel now survives: ring shows
+  `SWEET VFS: bogus v_mountedhere dp ... type 2 tag 16 mp ... op 0 vtable ... flags 0x0 crossref 1`
+  and ping 3/3, RTT 0.5 ms. Previously it died at `_VFS_ROOT+0x2c` (FAR=0x18, mnt_op NULL).
+- Do NOT take a non-sleepable rwlock with preemption disabled: DEVELOPMENT kernels track holders,
+  so the later `lck_rw_done()` panics "RW lock ... not held by ...". Refuse instead.
+- 0175: `sweet_log_early_flush()` now writes the blocks that hold data (`total_blks`, capped by
+  DMA_BOUNCE/UFS_BLOCK = 4) instead of always block 0..1, and the tick limit is 1024.
+  Ring header `total` is now real (was 13,765 with 8 KiB of fresh bytes); always cut reads at
+  `total`, bytes beyond it are the previous boot.
+
+### Userland / SSH (still blocked)
+- launchd loads `/System/Library/xpc/launchd.plist` (unsecure cache); it references
+  `/private/var/root/xsweetsh` and `/System/Library/LaunchDaemons/000-sweetsh.plist`.
+- The carrier runs (`sweetsh:` lines) but UDP 4444 replies never arrive -> UDP to BSD sockets does
+  not deliver on this port; TCP 4444 in the quiet build also never listens.
+- `dropbear` is a valid arm64 Mach-O (magic cffaedfe, 285,376 B, 0755) but never listens on 22.
+  Newest carrier build (tools/sweetsh, `sweetsh-udp-signed`, 32,920 B) execs
+  `/private/var/root/dropbear -F -R -p 22` with /dev/console dup2'ed onto 1/2 before the exec, so
+  dropbear's own diagnostics must appear in the ring. It was just flashed (data range only).
+
+### CRITICAL: the device rootfs is NOT ios8.img any more
+Reading blocks from `darwin` in recovery vs the local images:
+  blk 3062710 (xsweetsh data) == ios8.img  -> our data writes DO land
+  blk 1761792 (catalog leaf)  != ios8.img  -> the kernel rewrites catalog nodes, so a raw catalog
+                                             write is lost and `stat` keeps reporting the OLD size
+Therefore: replace files ONLY at the same size (data blocks, no catalog change), or pull the
+device's darwin (16 GB) and edit that copy. Size-changing installs (e.g. the 16,512-byte TCP
+carrier) silently do nothing.
