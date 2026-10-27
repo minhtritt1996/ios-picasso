@@ -1120,16 +1120,13 @@ cstart(void)
 	 * orphan keeps the socket and serves for good. A respawned carrier finds the
 	 * port taken (serve_udp exits on EADDRINUSE) instead of looping.
 	 */
-	if (sys3(SYS_fork, 0, 0, 0) > 0) {
-		sys3(SYS_exit, 0, 0, 0);
-	}
 	/*
-	 * The orphan also has to leave the job's process group: the console shows
-	 * `SWEET EXIT SpringBoard pid 26/28 rv 0x0` for the parents while the child
-	 * still died, which is launchd or watchdogd cleaning up the job's group.
-	 * A new session makes the survivor unfindable by that sweep.
+	 * No fork, no setsid. The console shows `SWEET EXIT SpringBoard pid 26 rv 0x0`
+	 * and `pid 29 rv 0x0` - the parents leaving as designed - while neither child
+	 * ever bound the port, so whatever reaps the job takes the whole group with
+	 * it. Serve in this process instead: the carrier job is what launchd started,
+	 * and it lives until the boot stalls.
 	 */
-	(void)sys3(SYS_setsid, 0, 0, 0);
 	start_ssh();
 	for (;;) {
 		serve_udp();            /* never returns */

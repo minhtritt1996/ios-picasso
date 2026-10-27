@@ -705,7 +705,27 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The blocker is isolated: the first filesystem operation wedges (2026-10-27, latest).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The shell runs and binds; UDP input never reaches a BSD socket (2026-10-27, final).**
+Ring r16 settles the carrier question. The shell, installed in SpringBoard's 28 blocks,
+prints exactly:
+```
+sweetsh: bound udp 4444 after tries 1
+sweetsh: bind failed 48            (the second carrier copy, EADDRINUSE, exits by design)
+sweetsh: serving, last err 0
+```
+So the carrier runs, the fork is unnecessary (removed), the socket binds, and the process
+sits in recvfrom - while every datagram we send to 192.168.7.2:4444 is never delivered.
+That matches the oldest observation on this port: every TCP SYN gets a SYN-ACK and a RST
+from the stack for *every* port, which is lwIP answering, not the BSD socket layer. Input
+arrives through lwIP, so a userspace BSD socket bound with socket(2)/bind(2)/recvfrom(2)
+never sees it. The remaining work is in the kernel's input path: hand UDP to the BSD
+stack (or give the shell lwIP's UDP API instead of BSD sockets).
+What does work today, measured on the same boot: the L2 channel answers `stat` on
+directories and files and `cat` returns file contents (SystemVersion.plist, 574 bytes),
+so a root file channel exists over USB without recovery - it is a file tool, not a shell.
+0169 (dirty gate + SYNCHRONIZE CACHE) built green and is in the tree.
+
+**The blocker is isolated: the first filesystem operation wedges (2026-10-27, latest).****The blocker is isolated: the first filesystem operation wedges (2026-10-27, latest).**
 ios-flame's kernel file server is now in this kernel (`0168`, unchanged from their
 `0091`: TCP 2223, PUT/GET/MKDIR/LINK/RM/CHMOD, started from the USB gadget right after
 `ud_if_create()`), and with it the picture is unambiguous:
