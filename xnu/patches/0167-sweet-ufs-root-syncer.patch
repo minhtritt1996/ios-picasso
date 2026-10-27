@@ -1,6 +1,14 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -1756,7 +1756,46 @@
+@@ -24,6 +24,7 @@
+ #include <sys/buf.h>
+ #include <sys/conf.h>
+ #include <sys/disk.h>
++#include <sys/mount.h>
+ #include <sys/errno.h>
+ #include <sys/proc.h>
+ #include <sys/uio.h>
+@@ -1756,7 +1757,46 @@
   */
  static int sweet_hb_console = 1;
  
@@ -47,7 +55,7 @@
  sweet_ufs_watchdog(__unused void *arg, __unused wait_result_t wr)
  {
  	uint32_t tick = 0;
-@@ -1927,6 +1966,7 @@
+@@ -1927,6 +1967,7 @@
  {
  	thread_t thread;
  
