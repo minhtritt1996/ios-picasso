@@ -705,7 +705,20 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The carrier works; the kernel wedges ~90 s into every boot (2026-10-27 final).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**0167's naive syncer makes it worse: do not repeat it (2026-10-27).**
+Bergamota's patch 0222 names our wedge correctly - the root is a non-journaled HFS+ and it
+is the root, so HFS never starts its syncer and dirty pages pile up until one large flush
+wedges the UFS. The minimal form I tried (a kernel thread calling VFS_SYNC(MNT_WAIT) on
+every writable mount every 5 s) hangs the boot *earlier*: with 0167 flashed, the network
+never comes up at all (ping 0/100) and the shell never appears, where 0166 at least
+reached ~60 spawns and answered a few hundred milliseconds of ping. Their version differs
+in three ways that matter: SYNCHRONIZE CACHE instead of a bare VFS sync, a `su.dirty` gate
+so the device is only touched when something was written, and it does not run while the
+driver lock is held by a command. Anything further along this line should port 0221+0222
+rather than approximate them.
+Flash 0166 (`/tmp/art166/kernel.development.sweet`) back before the next experiment.
+
+**The carrier works; the kernel wedges ~90 s into every boot (2026-10-27 final).****The carrier works; the kernel wedges ~90 s into every boot (2026-10-27 final).**
 What is proven on hardware now:
 - A root command channel over USB works without recovery. SpringBoard is the carrier
   that launchd execs directly, and with our shell written into its 28-block file
