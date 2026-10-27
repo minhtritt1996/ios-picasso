@@ -705,7 +705,34 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The boot hang is one UFS read the controller never fetches (2026-10-27).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Where the port stands after the 0163/0165 round (2026-10-27 late).**
+Verified on hardware, in this order:
+- hfsplus-tool.py wrote every record 0644; launchd will not start a job whose Program
+  is not executable. Fixed (files are 0755 now, `stat` over the L2 channel confirms
+  `/private/var/root/xsweetsh: type 1 mode 0755 size 32920`).
+- Shipping catalog *pieces* over the phone's own catalog is what produced the
+  `Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1306` panic. A whole
+  image write (`ios8.img`, 17 GB over adb push + dd, 599 s + 136 s, md5 spot-checked)
+  is coherent and boots: launchd delivers the cache ("Cache sent to launchd
+  successfully"), runs `Early boot complete`, and spawns ~60 daemons including
+  `com.apple.backboardd`.
+- 0163 (re-kick the UFS doorbell) fixed the earlier hang outright: before it the boot
+  stopped after `launchd (system)` with 2 spawns; after it the boot walks the whole
+  daemon list and every WRITE completes (`age 0 ms`, `err 0`).
+- The remaining wedge is at the daemon phase: the console stops at `prng_seedctl`, ping
+  stops answering and nothing reacts, and `ios8.img` carries the `backboardd` carrier
+  (our shell in that file's 290 blocks, md5 `71c8215bfd3ce72b8b6640a523b98c2b`), so the
+  stall is in the kernel's I/O path, not in launchd's job list.
+- The persistent ring is unusable now: since the coherent image restore the ring area
+  at the end of darwin is no longer free, so the flusher never writes a fresh ring
+  (`flush counter 0`, content is from an older boot). The framebuffer console is the
+  only live channel; read it by photographing the screen.
+Next kernel work, in order: (0165 already added a 3-try retry around ufs_scsi) find why
+a single command can stay fetched-but-uncompleted across a host reset; compare with
+HakiOS's `xnu/files/bsd/dev/hakios.ufshc.c` (bounded spin 40 us + IOSleep(1) + poller,
+`hc_spin_us`); consider making the ring flusher skip blocks whose allocation changed.
+
+**The boot hang is one UFS read the controller never fetches (2026-10-27).**
 Ring r11 is 4,455 heartbeat lines and one signal:
 `SWEET HB 22: cmd 6824 lba 0x1acc6f3 n 60 lun 0 op 0x28 age 32410 ms | err 0 x0`,
 i.e. a 30 KiB READ10 sat for 32 s with no ocs while the wait loop polled UTRLDBR -
