@@ -18,7 +18,7 @@
  }
  
  /*
-@@ -1468,6 +1470,54 @@
+@@ -1468,6 +1470,58 @@
  	uint32_t version, size;
  	uint64_t total, seq;
  };
@@ -39,12 +39,14 @@
 +	uint32_t off, blk, n;
 +
 +	if (sweet_log_started_g || !su.ready || !su.writable || su.nblocks == 0 ||
-+	    ml_at_interrupt_context() || !ml_get_interrupts_enabled() ||
-+	    get_preemption_level() != 0) {
++	    ml_at_interrupt_context() || !ml_get_interrupts_enabled()) {
 +		return;
 +	}
-+	/* at most every 64 appends: enough to cover early boot, cheap enough to keep */
-+	if (++sweet_log_early_tick % 64 != 0) {
++	/* only the first 64 appends: that is the prologue, the part worth keeping. The
++	 * preemption check is gone - it is never 0 on this path, which is why the first
++	 * version wrote nothing at all. ufs_lock is a try-lock below, so a busy driver
++	 * simply means the next append tries again. */
++	if (++sweet_log_early_tick > 64) {
 +		return;
 +	}
 +	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
@@ -56,7 +58,9 @@
 +	if (blk + n > SWEET_LOG_SIZE / UFS_BLOCK) {
 +		n = (uint32_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk);
 +	}
-+	ufs_lock(UFS_LK_FLUSH);
++	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++		return;
++	}
 +	memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
 +	if (ufs_write_blocks(base + 1 + blk, n) == 0) {
 +		struct sweet_log_header h = {
