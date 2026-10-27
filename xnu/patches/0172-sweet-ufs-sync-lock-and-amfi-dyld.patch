@@ -1,0 +1,145 @@
+--- a/bsd/dev/sweet_ufs.c	2026-10-27 12:48:09.000000000 +0700
++++ b/bsd/dev/sweet_ufs.c	2026-10-27 13:44:59.077999373 +0700
+@@ -1489,11 +1489,17 @@
+ 	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0) {
+ 		return ENXIO;
+ 	}
+-	if (!force && su.cmd_start) {
++	if (!force) {
++		/* Never dump without sweet_ufs_lock unless a single command has
++		 * genuinely been stuck for > 15 s (when su.cmd_start == 0 the lock
++		 * holder is between commands or in memcpy on the bounce buffer). */
++		if (su.cmd_start == 0) {
++			return EBUSY;
++		}
+ 		uint64_t ns = 0;
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - su.cmd_start, &ns);
+-		if (ns < 10ull * NSEC_PER_SEC) {
+-			return EBUSY;           /* a command may still be in flight */
++		if (ns < 15ull * NSEC_PER_SEC) {
++			return EBUSY;           /* a command is still in flight */
+ 		}
+ 	}
+ 	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+@@ -1790,16 +1796,34 @@
+ static void
+ sweet_ufs_syncer(__unused void *arg, __unused wait_result_t wr)
+ {
++	uint32_t vfssync = 0;
++
++	PE_parse_boot_argn("ufsvfssync", &vfssync, sizeof(vfssync));
+ 	for (;;) {
+ 		(void)tsleep(&sweet_sync_chan, PZERO, "sweetsync", hz * 5);
+-		(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
++		if (!su.dirty) {
++			continue;
++		}
++		if (vfssync) {
++			(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
++		}
+ 		/*
+-		 * A VFS sync pushes the pages into the driver; the device may still hold
+-		 * them in its write cache. SYNCHRONIZE CACHE is the same command Bergamota
+-		 * issues here (its 0222), and su.dirty keeps it to boots that wrote.
++		 * ufs_sync_cache() issues a command in slot 0 and uses su.dma, so it
++		 * MUST hold sweet_ufs_lock (calling it unlocked races with any active
++		 * read/write and corrupts the UCD/UTRD). Use try_lock so the syncer
++		 * never queues behind an active command.
+ 		 */
+-		if (su.dirty && ufs_sync_cache() == 0) {
+-			su.dirty = false;
++		if (lck_mtx_try_lock(&sweet_ufs_lock)) {
++			su.lock_owner = UFS_LK_SYNC;
++			su.lock_users++;
++			su.lock_tid = (uint32_t)thread_tid(current_thread());
++			if (su.dirty && ufs_sync_cache() == 0) {
++				su.dirty = false;
++			}
++			su.lock_users--;
++			su.lock_owner = 0;
++			su.lock_tid = 0;
++			lck_mtx_unlock(&sweet_ufs_lock);
+ 		}
+ 	}
+ }
+@@ -1970,7 +1994,12 @@
+ 		 * hang watchdog could fire, so nothing else writes the log). */
+ 		if (++dump_every >= 5) {
+ 			dump_every = 0;
+-			if (os_atomic_load(&sweet_log_total, relaxed) != last_dump) {
++			/* Only dump from the kick thread when the normal flusher has not
++			 * flushed for > 15 s (or never started). Running it every 10 s on a
++			 * healthy boot duplicates the 4 MiB ring write and contends for the
++			 * UFS lock against normal filesystem I/O. */
++			if ((sweet_log_last_g == 0 || age > 15000) &&
++			    os_atomic_load(&sweet_log_total, relaxed) != last_dump) {
+ 				int de = sweet_ufs_emergency_dump();
+ 				if (de == 0) {
+ 					last_dump = os_atomic_load(&sweet_log_total, relaxed);
+--- a/bsd/kern/sweet_amfi.c	2026-10-27 12:48:08.000000000 +0700
++++ b/bsd/kern/sweet_amfi.c	2026-10-27 13:45:11.595931915 +0700
+@@ -305,8 +305,55 @@
+ 	}
+ }
+ 
++/*
++ * Policy "AMFI" syscalls. dyld asks amfi_check_dyld_policy_self (call 0x5a,
++ * arg = { u64 input flags, user pointer to u64 output flags }) what the
++ * process may do; on error it gets 0 = nothing, and with nothing every
++ * @rpath/@executable_path/@loader_path load fails ("security policy does not
++ * allow @ path expansion"): any app with embedded frameworks. Grant @ paths
++ * always, and DYLD_* variables, fallback paths, interposing, failed
++ * insertions and LC_DYLD_ENVIRONMENT unless the process is restricted
++ * (__RESTRICT segment) or FairPlay encrypted, like a development device.
++ * Other calls fail with ENOPOLICY as before the policy had this name.
++ */
++#define SWEET_AMFI_DYLD_POLICY_SELF     0x5a
++#define SWEET_AMFI_DYLD_IN_RESTRICTED   (1ULL << 1)
++#define SWEET_AMFI_DYLD_IN_ENCRYPTED    (1ULL << 2)
++#define SWEET_AMFI_DYLD_AT_PATH         (1ULL << 0)
++#define SWEET_AMFI_DYLD_DEVELOPMENT     0xfaULL         /* path vars, fallback, print, insert failures, interpose, embedded vars */
++
++static uint64_t sweet_amfi_seen[2];
++
++static int
++sweet_amfi_syscall(struct proc *p, int call, user_addr_t arg)
++{
++	if (call >= 0 && call < 128 && !(sweet_amfi_seen[call / 64] & (1ULL << (call % 64)))) {
++		sweet_amfi_seen[call / 64] |= 1ULL << (call % 64);
++		char name[32];
++		proc_name(proc_pid(p), name, sizeof(name));
++		printf("SWEET AMFI: %s syscall %d\n", name, call);
++	}
++	if (call != SWEET_AMFI_DYLD_POLICY_SELF) {
++		return ENOPOLICY;
++	}
++	struct {
++		uint64_t input;
++		uint64_t output;        /* user pointer */
++	} args;
++	int error = copyin(arg, &args, sizeof(args));
++	if (error) {
++		return error;
++	}
++	uint64_t out = SWEET_AMFI_DYLD_AT_PATH;
++	if (!(args.input & (SWEET_AMFI_DYLD_IN_RESTRICTED | SWEET_AMFI_DYLD_IN_ENCRYPTED))) {
++		out |= SWEET_AMFI_DYLD_DEVELOPMENT;
++	}
++	return copyout(&out, (user_addr_t)args.output, sizeof(out));
++}
++
+ static const struct mac_policy_ops sweet_amfi_mac_ops = {
+ 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
++	.mpo_policy_syscall = sweet_amfi_syscall,
+ };
+ 
+ /*
+@@ -360,7 +407,7 @@
+ static mac_policy_handle_t sweet_sandbox_mac_handle;
+ 
+ static struct mac_policy_conf sweet_amfi_mac_conf = {
+-	.mpc_name = "SWEET AMFI",
++	.mpc_name = "AMFI",     /* __mac_syscall("AMFI", ...) finds it by this name */
+ 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
+ 	.mpc_ops = &sweet_amfi_mac_ops,
+ };

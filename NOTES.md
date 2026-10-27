@@ -705,23 +705,36 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-### >>> Branch agy: Root causes of shell hang & SSH stall solved (2026-10-27) <<<
-1. **Root cause of `fork()` child never answering / hanging shell**:
+### >>> Branch agy: Root causes of shell hang, SSH stall & UFS/VFS wedge solved (2026-10-27) <<<
+1. **Root cause of `fork()` child never answering / hanging shell (`tools/sweetsh/sweetsh.c`)**:
    - In Darwin arm64, `SYS_fork` returns:
      - In parent: `x0 = child_pid`, `x1 = 0`
      - In child:  `x0 = parent_pid`, `x1 = 1`
    - `sweetsh` used generic `sys3()`, which only returns `x0`. Thus, in the child, `sys3` returned `parent_pid > 0`!
-   - Consequently, the child NEVER entered `if (pid == 0) execve(...)`. Instead, both parent and child entered `if (pid > 0) wait4(...)` and waited on each other forever!
+   - Consequently, the child NEVER entered `if (pid == 0) execve(...)`. Instead, both parent and child entered `if (pid > 0) wait4(...)` and waited on each other forever whenever a non-builtin command (including `ls` after the `ls` builtin was disabled in `404600b`) or `start_ssh()` ran.
    - Fixed: `sys_fork()` inspects `x1`: if `x1 != 0` returns 0 (child), otherwise returns `x0` (parent).
-   - This unblocks both command execution (`/bin/...`) and `start_ssh()` spawning `dropbearkey` and `dropbear`.
-2. **Root cause of `ls` name missing and hanging**:
+2. **Root cause of `ls` name missing and hanging (`tools/sweetsh/sweetsh.c`)**:
    - `namlen` calculation used `(unsigned)(name + namlen - buf) < (unsigned)reclen`. Since `name = buf + off + 21`, as soon as `off > 0`, `off + 21 > reclen`, yielding `namlen = 0` (producing nameless `d ` entries).
    - When `reclen == 0`, `break` only exited the inner loop, spinning in the outer loop forever.
-   - Fixed: relative offset `(21 + namlen) < reclen` and outer loop termination on `reclen == 0`.
-3. **SSH / Dropbear unblocked**:
-   - `start_ssh()` now properly runs `dropbearkey` and `dropbear` without child deadlock.
-   - Builtin `ssh` added to shell REPL, and `start_ssh()` called in both TCP and UDP modes.
-   - Added `ac_cv_func_strchrnul=no` to `dash` in `userland.yml` to prevent weak-import crash on iOS 16.
+   - Fixed: relative offset `(21 + namlen) < reclen`, outer loop termination on `reclen == 0`, and re-enabled the `ls` builtin.
+3. **Root causes of Dropbear SSH failing to start or authenticate (`tools/userland/patch-dropbear.py`, `tools/userland/picasso_pw.h`, `tools/sweetsh/sweetsh.c`)**:
+   - Compared with `ios-flame` (`https://github.com/NWylynko/ios-flame.git`) and inspected Dropbear 2022.83 source:
+     - `start_ssh()` was not called in TCP mode and spawned `dropbearkey -f /private/var/root/dropbear_ed25519_host_key` before `dropbear`, which performs `O_CREAT` on HFS+ and blocks in `wait4()`.
+     - `picasso_pw.h` called the real `getpwnam()`/`getpwuid()` first, which queries `opendirectoryd` over Mach IPC (not running on this port). Replaced with pure static synthesis returning `/private/var/root/sh` (or `/bin/sh` if absent) and `NULL` for `getgrnam()`.
+     - `svr-auth.c` `checkusername()` calls `getusershell()` and rejects `/private/var/root/sh` with `"User 'root' has invalid shell, rejected"` because `/private/var/root/sh` is not in `/etc/shells`.
+     - `svr-main.c` opens `/var/run/dropbear.pid` with `"w"` (`O_CREAT`) right before entering its `select()` accept loop.
+     - `common-session.c` checks `getuid()` and calls `dropbear_exit("Couldn't set non-blocking")` if `DROPBEAR_SVR_MULTIUSER` is enabled; `sshpty.c` `pty_setowner()` attempts `chown`/`chmod` on the PTY.
+   - Fixed via `tools/userland/patch-dropbear.py` + `.github/workflows/userland.yml`:
+     - Configures `DROPBEAR_SVR_MULTIUSER 0`, `DROPBEAR_REEXEC 0`, `PICASSO_SINGLE_ROOT 1`.
+     - Skips `/var/run/dropbear.pid` creation and `getusershell()` validation.
+     - Compiles in an ephemeral `ed25519` host key (generated at build time by host `dropbearkey`) and the workstation's public key (`tools/userland/picasso_key.pub`) as fallbacks when disk keys cannot be read, so `dropbear -R -p 22` needs zero disk writes and zero `dropbearkey` child processes to accept SSH logins.
+     - Verified end-to-end on localhost (`dropbear -F -p 127.0.0.1:22222` with no key files on disk -> `ssh -p 22222 -i ~/.ssh/picasso_key root@127.0.0.1` succeeds and runs commands).
+4. **Root causes of kernel UFS/VFS periodic stalls & missing AMFI dyld policy (`xnu/patches/0172-sweet-ufs-sync-lock-and-amfi-dyld.patch`)**:
+   - In `sweet_ufs_syncer()` (`0167`/`0169`), `ufs_sync_cache()` was called **without holding `sweet_ufs_lock`**, overwriting slot 0's `utrd`/`ucd` in `su.dma` and ringing `REG_UTRLDBR` while another thread was in the middle of a read/write.
+   - `sweet_ufs_syncer()` called `vfs_iterate(0, sweet_sync_mount, NULL)` -> `VFS_SYNC(mp, MNT_WAIT)` unconditionally every 5 seconds even when `su.dirty == false`.
+   - In `sweet_ufs_dump_ring(false)` (called every 10s by `sweet_ufs_kick`), when `lck_mtx_try_lock(&sweet_ufs_lock)` failed, `if (!force && su.cmd_start)` only checked `su.cmd_start != 0`. If the lock holder was between `ufs_scsi` chunks, inside `memcpy` on `bounce`, or inside `ufs_sync_cache()`, `su.cmd_start` was 0 and `sweet_ufs_kick` proceeded **unlocked**, corrupting `bounce` and slot 0! Furthermore, `sweet_ufs_kick` called `sweet_ufs_emergency_dump()` every 10s even when `sweet_log_thread` was alive (`fage < 15000 ms`).
+   - In `bsd/kern/sweet_amfi.c`, ported `ios-flame` patch `0114-flame-amfi-dyld-policy.patch`: changed MAC policy name from `"SWEET AMFI"` to `"AMFI"` and registered `.mpo_policy_syscall = sweet_amfi_syscall` so `amfi_check_dyld_policy_self()` (syscall `0x5a`) returns `0x5f` (`DYLD_AMFI_FAKE`) instead of `ENOSYS`.
+   - Validated `0172-sweet-ufs-sync-lock-and-amfi-dyld.patch` with `tools/check-patch.sh` against CI run `40457215707`'s `buildtree.tgz` (`OK: applies cleanly`) and cross-compiled `bsd/dev/sweet_ufs.c` and `bsd/kern/sweet_amfi.c` locally via `tools/xnu-local.py` (`compiled 4, failed 0`).
 
 f8fbd4bb55d33ccb5f4bdcc15d29d353**State at the end of the session: the shell works, the boot is not reliable.**
 Proven on hardware, in this order:

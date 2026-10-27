@@ -1101,26 +1101,21 @@ install_self(const char *dst)
 static void
 start_ssh(void)
 {
-	char *kargv[] = { "/private/var/root/dropbearkey", "-t", "ed25519", "-f",
-		"/private/var/root/dropbear_ed25519_host_key", 0 };
-	char *dargv[] = { "/private/var/root/dropbear", "-r",
-		"/private/var/root/dropbear_ed25519_host_key", "-p", "22", 0 };
-	char *envp[] = { "PATH=/private/var/root:/bin:/usr/bin", 0 };
+	char *dargv1[] = { "/private/var/root/dropbear", "-R", "-p", "22", 0 };
+	char *dargv2[] = { "/private/var/root/xdropbear", "-R", "-p", "22", 0 };
+	char *envp[] = { "PATH=/private/var/root:/bin:/usr/bin:/sbin:/usr/sbin", 0 };
 	i64 pid;
 
-	if (sys3(SYS_open, (i64)"/private/var/root/dropbear_ed25519_host_key", 0, 0) < 0) {
-		pid = sys_fork();
-		if (pid == 0) {
-			sys3(SYS_execve, (i64)kargv[0], (i64)kargv, (i64)envp);
-			sys3(SYS_exit, 1, 0, 0);
-		}
-		if (pid > 0) {
-			sys3(SYS_wait4, pid, 0, 0);
-		}
-	}
+	/*
+	 * Do not run dropbearkey before dropbear: O_CREAT on HFS+ wedges the
+	 * kernel VFS write path and blocks wait4() forever. Our dropbear build
+	 * has a compiled-in ed25519 host key (and -R as fallback), so it starts
+	 * and listens on port 22 immediately without touching the filesystem.
+	 */
 	pid = sys_fork();
 	if (pid == 0) {
-		sys3(SYS_execve, (i64)dargv[0], (i64)dargv, (i64)envp);
+		sys3(SYS_execve, (i64)dargv1[0], (i64)dargv1, (i64)envp);
+		sys3(SYS_execve, (i64)dargv2[0], (i64)dargv2, (i64)envp);
 		sys3(SYS_exit, 1, 0, 0);
 	}
 }
