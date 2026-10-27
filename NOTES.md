@@ -5305,3 +5305,17 @@ NEXT: recovery -> flash 189f0fe2 -> boot -> ping; then pull the ring over L2 (`r
 `l2 log`) which the newer kernel supports, and check TCP 4444 (carrier still sb-loop.bin,
 the stock SpringBoard, so the shell is probably not started - try /tmp/sb-carrier.bin).
 RULE: before every dd, `strings payload | grep -E "rd=ufsroot0|sweetusb=2"` must match.
+
+## 2026-10-27 22:20 - state after flashing 189f0fe2 (0172+0173) with real cmdline
+
+Boot is healthy: usb0 192.168.7.2, ping 3/3 0% loss (0.5 ms), L2 control channel answers
+(info/log/ringpos/stat/cat/put), `SWEET USBSTATE 50: usb cfg 1 rxarm 1 ... lost 0/0 err 0`,
+ring now written (md5 a89f27b4, header updated; l2 log/ringpos = 78852). Carrier on disk is
+aa2fc422 (= /tmp/sb-carrier.bin), boot = 189f0fe2.
+
+The only missing piece: NO shell binary on the image. `l2 stat /private/var` answers
+(type 2, 0755) but `stat /private/var/root/xsweetsh` and `.../xdropbear` return no reply
+(entry absent), and no xsweetsh/xdropbear/dash/busybox exists anywhere on this host any
+more - they have to be rebuilt (CI: .github/workflows/userland.yml) and inserted with a
+catalog-surgery tool (skill: hfsplus-create-file-catalog-surgery) + tools/hfsplus-ship.py
+for the changed ranges. TCP 4444/22 stay closed until that exists; nothing else needs fixing.
