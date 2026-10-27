@@ -84,6 +84,11 @@ def cmd_up():
     iface = find_iface()
     if not iface:
         sys.exit("no gadget interface found (is the phone running XNU with sweetusb=2?)")
+    try:
+        __import__('subprocess').run(['nmcli', 'device', 'set', iface, 'managed', 'no'],
+                                     capture_output=True, timeout=3)
+    except Exception:
+        pass
     if_up(iface)
     try:
         have = get_addr(iface)
@@ -133,6 +138,24 @@ def main():
     if cmd == 'up':
         cmd_up()
         return
+    if cmd == 'watch':
+        # The host keeps losing 192.168.7.1 (only IPv6 is left) on this machine,
+        # which made whole test runs look like the phone was unreachable. Re-add it
+        # whenever it disappears; needs only cap_net_admin, which python3 has here.
+        import time as _time
+        while True:
+            try:
+                iface = find_iface()
+                if iface is None:
+                    _time.sleep(2)
+                    continue
+                if get_addr(iface) != OUR_IP:
+                    set_addr(iface, OUR_IP, 24)
+                    if_up(iface)
+                    print('re-added %s on %s' % (OUR_IP, iface), flush=True)
+            except Exception as e:               # never die on a transient netlink error
+                print('watch: %s' % e, flush=True)
+            _time.sleep(2)
     IFACE = find_iface()
     if not IFACE:
         sys.exit("no gadget interface found")
