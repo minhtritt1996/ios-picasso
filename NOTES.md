@@ -739,7 +739,28 @@ panic available for the rw-lock case.
    - `userland.yml` run `40463596922`: **success**. Artifact downloaded to `/tmp/userland-agy/usr/local/{bin/sh,sbin/dropbear,bin/dropbearkey,sbin/dbclient}` (`dropbear` is 285,376 bytes with built-in host key + `picasso` public key and no `strchrnul` symbol).
    - `xnu.yml` run `40463599278`: **success**. Kernel downloaded to `/tmp/art-agy/kernel.development.sweet` and packaged into `shim/out/payload-picasso-agy.bin` and `shim/out/shim-boot-agy.img` (36,573,184 bytes, md5 `2112e209d16a21afe112a8f297c745f1`).
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**State at the end of the session: the shell works, the boot is not reliable.**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Tools added on the agy branch (use these instead of the by-hand steps).**
+- `tools/picasso-ecm.py watch` - keeps 192.168.7.1 on the gadget interface; this host drops
+  it regularly (only fe80 left) and that alone made several runs look like the phone was
+  unreachable, including one where the shell was answering.
+- `tools/picasso-daemon-shell.sh [IMAGE]` - from recovery: writes the shell into
+  /private/var/root/xsweetsh (the launchd job's Program, md5-checked on the device) and
+  puts SpringBoard back to stock so the watched carrier stops competing for 4444.
+- `tools/picasso-shell.sh 'help' 'cat ...'` - one TCP session, several commands; the shell
+  serves a client per accept() and wants the session kept open.
+- `tools/picasso-test-ssh.sh` - opens a session, runs the shell's `ssh` builtin (which
+  execs the static dropbear built with a compiled-in host key), waits for port 22 and logs
+  in as root with ~/.ssh/picasso_key.
+- `tools/picasso-files.py` - client for ios-flame's kernel file server on 2223
+  (PUT/GET/MKDIR/CHMOD). The server listens but its first FS operation returns nothing, so
+  it is not a way in yet.
+Review note for the agy kernel: in `sweet_ufs_syncer()` the `vfs_iterate(LK_NOWAIT, ...)`
+must run unconditionally (it neither blocks nor takes sweet_ufs_lock); only the
+SYNCHRONIZE CACHE call needs the `su.dirty` gate and the try_lock. With the gate in front
+of both, a normal boot syncs nothing, which is the pre-0167 state - and the only boot
+measured with ping 30/30 and a live shell had the periodic VFS sync.
+
+**State at the end of the session: the shell works, the boot is not reliable.****State at the end of the session: the shell works, the boot is not reliable.**
 Proven on hardware, in this order:
 - A TCP connection to 192.168.7.2:4444 on a boot that gets through the daemon phase prints
   the shell banner and answers `ls /` (root listed as d/f entries). That is a root shell
