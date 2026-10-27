@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -480,6 +480,34 @@
+@@ -480,6 +480,35 @@
  	return 0;
  }
  
@@ -12,6 +12,7 @@
 + * while the control channel keeps working. Same sequence as bring-up.
 + */
 +static uint32_t ud_ep0_mps = 64;      /* set during bring-up, reused by the reset path */
++static void ud_start_setup(void);
 +
 +static bool
 +ud_ep0_restart(uint32_t ep0_mps)
@@ -35,21 +36,16 @@
  static void
  ud_start(unsigned ep, uint32_t buf, uint32_t len, uint32_t ctl)
  {
-@@ -1071,6 +1099,13 @@
+@@ -1071,6 +1100,8 @@
  			lck_mtx_unlock(ud.lock);
  			ud.configured = false;
  			ud_log("SWEET USB: bus reset, configuration dropped\n");
-+			/*
-+			 * And make ep0 work again, or the re-enumeration never gets as far
-+			 * as SET_CONFIGURATION (measured: two resets, no SET_CONFIGURATION
-+			 * afterwards, cfg 0 for the rest of the boot).
-+			 */
 +			ud_log("SWEET USB: ep0 rebuilt after reset -> %s\n",
 +			    ud_ep0_restart(ud_ep0_mps) ? "ok" : "failed");
  		} else if (type == 2) { /* connect done */
  			uint32_t speed = dwc_rd(DSTS) & 7;
  			/* ep0 max packet: 64 at high/full speed (modify action) */
-@@ -2126,7 +2161,7 @@
+@@ -2126,7 +2157,7 @@
  	 * read/64, error -110"), so retry instead of failing the boot on the
  	 * first attempt, and log each attempt with the core's status.
  	 */
