@@ -979,37 +979,20 @@ serve(i64 lfd)
 			sleep_ms(50);
 			continue;
 		}
-		beacon("sweetsh: client connected\n");
-		i64 pid = sys3(SYS_fork, 0, 0, 0);
 		/*
-		 * fork() is failing on this port (the TCP connection was accepted and
-		 * then reset, which is the parent closing it with no child to serve).
-		 * Fall back to serving the client in this process: one session at a
-		 * time, which is all a debug shell needs.
+		 * Serve the client in this process. fork() on this port returns a pid but
+		 * the child never gets to answer (the connection is accepted and then
+		 * reset), so there is no point in it: one session at a time is all a
+		 * debug shell needs.
 		 */
-		if (pid < 0) {
-			sys3(SYS_close, lfd, 0, 0);
-			sys3(SYS_dup2, cfd, 0, 0);
-			sys3(SYS_dup2, cfd, 1, 0);
-			sys3(SYS_dup2, cfd, 2, 0);
-			if (cfd > 2) {
-				sys3(SYS_close, cfd, 0, 0);
-			}
-			repl();
+		/* Keep lfd open: repl() returning must not leave the shell deaf. */
+		sys3(SYS_dup2, cfd, 0, 0);
+		sys3(SYS_dup2, cfd, 1, 0);
+		sys3(SYS_dup2, cfd, 2, 0);
+		if (cfd > 2) {
 			sys3(SYS_close, cfd, 0, 0);
-			continue;
 		}
-		if (pid == 0) {
-			sys3(SYS_close, lfd, 0, 0);
-			sys3(SYS_dup2, cfd, 0, 0);
-			sys3(SYS_dup2, cfd, 1, 0);
-			sys3(SYS_dup2, cfd, 2, 0);
-			if (cfd > 2) {
-				sys3(SYS_close, cfd, 0, 0);
-			}
-			repl();
-			sys3(SYS_exit, 0, 0, 0);
-		}
+		repl();
 		sys3(SYS_close, cfd, 0, 0);
 	}
 }
