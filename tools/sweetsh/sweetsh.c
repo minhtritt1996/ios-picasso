@@ -981,6 +981,24 @@ serve(i64 lfd)
 		}
 		beacon("sweetsh: client connected\n");
 		i64 pid = sys3(SYS_fork, 0, 0, 0);
+		/*
+		 * fork() is failing on this port (the TCP connection was accepted and
+		 * then reset, which is the parent closing it with no child to serve).
+		 * Fall back to serving the client in this process: one session at a
+		 * time, which is all a debug shell needs.
+		 */
+		if (pid < 0) {
+			sys3(SYS_close, lfd, 0, 0);
+			sys3(SYS_dup2, cfd, 0, 0);
+			sys3(SYS_dup2, cfd, 1, 0);
+			sys3(SYS_dup2, cfd, 2, 0);
+			if (cfd > 2) {
+				sys3(SYS_close, cfd, 0, 0);
+			}
+			repl();
+			sys3(SYS_close, cfd, 0, 0);
+			continue;
+		}
 		if (pid == 0) {
 			sys3(SYS_close, lfd, 0, 0);
 			sys3(SYS_dup2, cfd, 0, 0);
