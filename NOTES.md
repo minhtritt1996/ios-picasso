@@ -5425,3 +5425,22 @@ Reading blocks from `darwin` in recovery vs the local images:
 Therefore: replace files ONLY at the same size (data blocks, no catalog change), or pull the
 device's darwin (16 GB) and edit that copy. Size-changing installs (e.g. the 16,512-byte TCP
 carrier) silently do nothing.
+
+## 2026-10-28 06:30 - reliable rootfs install: VFS put, not raw blocks
+- `l2 reboot` does NOT reboot (it replies "rebooting" and then the L2 responder goes silent).
+  Only a physical power cycle or `adb reboot` from recovery restarts the phone.
+- Raw `dd` into `darwin` corrupts the HFS catalog: the kernel keeps its own btree state, rewrites
+  catalog nodes (`blk 1761792` changed back), and marks the volume dirty -
+  `hfs_mark_inconsistent: Runtime corruption detected on IOSRoot`. Size-changing raw installs
+  therefore never take effect (`stat` keeps the old size).
+- The safe path is the kernel's own VFS through the L2 channel:
+    put <path> <off> <base64>     (max ~340 raw bytes: the command buffer is 512 bytes)
+    putend <path> <size>
+    cat <path> [len] / stat <path>
+  Writing `/private/var/root/xsweetsh` this way (49 chunks of 340 B) left the catalog consistent
+  and `stat` immediately reported the new size 16512.
+- Host gadget interface may be renamed `enx02005e77ee01` (not `usb0`); `picasso-ecm.py up` fixes
+  addresses. Use it instead of grepping for `^usb`.
+- Installed now: `/private/var/root/xsweetsh` = 16,512-byte stub that opens /dev/console, dup2s it
+  onto 1/2 and execs `/private/var/root/dropbear -F -R -p 22`, printing `stub: exec dropbear -F`
+  and `stub: exec err <n>` (source /tmp/execdb.c, build with clang/lld/mkmacho as in build.sh).
