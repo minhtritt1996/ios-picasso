@@ -1,0 +1,37 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -329,9 +329,34 @@
+ 	}
+ }
+ 
++static int ufs_scsi_once(const uint8_t *cdb, unsigned cdb_len, uint32_t len,
++    bool write, void *dst);
++
++/*
++ * A command that runs into the timeout has already had the host reset by
++ * ufs_scsi_once, which leaves the controller usable - so re-issue it instead of
++ * failing the caller. One stuck 30 KiB READ10 in the daemon phase is what stops
++ * launchd, and the caller (a page-in) has no retry of its own.
++ */
+ static int
+ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write, void *dst)
+ {
++	int err = 0;
++
++	for (unsigned tries = 0; tries < 3; tries++) {
++		err = ufs_scsi_once(cdb, cdb_len, len, write, dst);
++		if (err != ETIMEDOUT) {
++			break;
++		}
++		sweet_tracef("SWEET UFS: retry %u after timeout op 0x%02x len %u\n",
++		    tries + 1, cdb[0], len);
++	}
++	return err;
++}
++
++static int
++ufs_scsi_once(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write, void *dst)
++{
+ 	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+ 	uint64_t ucd_pa = su.dma_pa + DMA_UCD, bounce_pa = su.dma_pa + DMA_BOUNCE;
