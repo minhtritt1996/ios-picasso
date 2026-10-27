@@ -972,27 +972,31 @@ serve_udp(void)
 static void
 serve(i64 lfd)
 {
-	i64 cfd = sys3(SYS_accept, lfd, 0, 0);
-
-	if (cfd < 0) {
-		sleep_ms(50);
-		return;
-	}
 	/*
-	 * Serve the client in this process: fork() on this port returns a pid but the
-	 * child never answers (the connection is accepted and then reset), and
-	 * dup2() moves the client onto 0/1/2, so the accept fd numbering is not
-	 * trustworthy afterwards. Do one session, then return - cstart() reopens the
-	 * listener.
+	 * Keep the listening socket for the whole life of the process and loop on
+	 * accept(). Closing and re-binding 4444 after each session is what limited
+	 * the shell to one session per boot: the old connection sits in TIME_WAIT and
+	 * the rebind fails, and setsockopt(SO_REUSEADDR) is not usable on this port.
+	 * dup2() onto 0/1/2 is safe because the accepted fd is always above them.
 	 */
-	sys3(SYS_dup2, cfd, 0, 0);
-	sys3(SYS_dup2, cfd, 1, 0);
-	sys3(SYS_dup2, cfd, 2, 0);
-	if (cfd > 2) {
-		sys3(SYS_close, cfd, 0, 0);
+	for (;;) {
+		i64 cfd = sys3(SYS_accept, lfd, 0, 0);
+
+		if (cfd < 0) {
+			sleep_ms(50);
+			continue;
+		}
+		sys3(SYS_dup2, cfd, 0, 0);
+		sys3(SYS_dup2, cfd, 1, 0);
+		sys3(SYS_dup2, cfd, 2, 0);
+		if (cfd > 2) {
+			sys3(SYS_close, cfd, 0, 0);
+		}
+		repl();
+		sys3(SYS_close, 0, 0, 0);
+		sys3(SYS_close, 1, 0, 0);
+		sys3(SYS_close, 2, 0, 0);
 	}
-	repl();
-	sys3(SYS_close, lfd, 0, 0);
 }
 
 /*
