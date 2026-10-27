@@ -1,18 +1,26 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -1102,6 +1102,15 @@
- 			ud_log("SWEET USB: bus reset, configuration dropped\n");
- 			ud_log("SWEET USB: ep0 rebuilt after reset -> %s\n",
- 			    ud_ep0_restart(ud_ep0_mps) ? "ok" : "failed");
-+			/*
-+			 * Rebuild the data endpoints here rather than waiting for the host to
-+			 * send SET_CONFIGURATION again: the ring shows resets after which it
-+			 * never comes, and then cfg stays 0 and the whole IP path is dead for
-+			 * the rest of the boot while the control channel keeps working.
-+			 */
-+			ud_configure();
-+			ud_log("SWEET USB: endpoints rebuilt after reset (configured %d)\n",
-+			    (int)ud.configured);
- 		} else if (type == 2) { /* connect done */
- 			uint32_t speed = dwc_rd(DSTS) & 7;
- 			/* ep0 max packet: 64 at high/full speed (modify action) */
+@@ -656,17 +656,21 @@
+ 		ud_log("SWEET USB: address %u\n", value & 0x7f);
+ 	} else if (req == 9) {          /* SET_CONFIGURATION */
+ 		if (value == 1) {
++			ud.configured = false;
+ 			ud_configure();
+ 		}
+ 		ud_log("SWEET USB: configured (%u)\n", value);
+ 	} else if (req == 8) {          /* GET_CONFIGURATION */
+ 		data[0] = ud.configured ? 1 : 0; n = 1;
+ 	} else if (req == 0) {          /* GET_STATUS */
+ 		data[0] = 0; data[1] = 0; n = 2;
+ 	} else if (req == 11) {         /* SET_INTERFACE */
+ 		if (index == 1) {
+ 			ud.data_alt = (uint8_t)value;
++			if (value == 1 && !ud.configured) {
++				ud_configure();
++			}
+ 			if (value == 1 && ud.configured) {
+ 				ud_notify_connected();
+ 				ud_link_event(true);
+ 			}
+ 		}
+ 	} else if (req == 10) {         /* GET_INTERFACE */
