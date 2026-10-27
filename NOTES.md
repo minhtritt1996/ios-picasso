@@ -705,7 +705,31 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Where the port stands after the 0163/0165 round (2026-10-27 late).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The carrier works; the kernel wedges ~90 s into every boot (2026-10-27 final).**
+What is proven on hardware now:
+- A root command channel over USB works without recovery. SpringBoard is the carrier
+  that launchd execs directly, and with our shell written into its 28-block file
+  (`296602`, 114,688 bytes) the shell answers UDP 4444: `help` returns
+  `sweetsh - picasso XNU port, freestanding arm64 static binary`, `ping` answers at
+  0.2 ms, and `tools/picasso-install-carrier-via-shell.py` replaced that carrier over
+  UDP with 118 `w` commands in 0.1 s.
+- Two real bugs were fixed and measured: hfsplus-tool.py created records 0644 (launchd
+  will not start a non-executable Program), and `status_line("rx len")` appended to the
+  status file on every datagram, which wedged the UFS write path after exactly nine
+  commands - landing the shell back at nine replies per boot. The current build drops
+  that write and forks before serving.
+- None of it survives, because the kernel itself wedges about 90 s after the network
+  comes up: `ping` answers (seq 82..94 at 0.13-0.27 ms) and then stops for good, the
+  L2 channel stops answering, and the console stops scrolling. That is the same stall
+  the ring showed as one UFS command with no completion.
+So the next session's work is the UFS path, not userspace: compare
+`xnu/files/bsd/dev/hakios.ufshc.c` (bounded 40 us spin, then IOSleep(1), one poller
+thread that looks at every sleeping waiter's own bit) with sweet_ufs.c, and make the
+ring flusher stop writing into blocks the coherent image now owns. 0163 (re-kick),
+0165 (3-try retry) and 0166 (re-enable UTRLRSR first) are in the tree and flashed;
+none of them removed the wedge.
+
+**Where the port stands after the 0163/0165 round (2026-10-27 late).****Where the port stands after the 0163/0165 round (2026-10-27 late).**
 Verified on hardware, in this order:
 - hfsplus-tool.py wrote every record 0644; launchd will not start a job whose Program
   is not executable. Fixed (files are 0755 now, `stat` over the L2 channel confirms
