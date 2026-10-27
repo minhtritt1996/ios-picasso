@@ -48,8 +48,8 @@ These cost a full day. Follow them literally.
    A LaunchDaemon `/System/Library/LaunchDaemons/000-sweetsh.plist` runs dropbear directly and
    is loaded because we boot with `launchd_unsecure_cache=1`. Booting with launchd as PID 1 and
    any job exiting panics with `initproc failed ... handshake structure not initialized`.
-8. **Current blocker (2026-10-27 23:10)**: launchd loads the daemon, dropbear execs, and the
-   kernel panics on its first syscalls:
+8. **Panic on the first userland syscall - patched by 0174 (built, flashed, untested at boot).**
+   launchd loads the daemon, dropbear execs, then the kernel panicked:
    `Taking non-sleepable RW lock with preemption enabled: lock 0xfffffe1b486badf8
     caller 0xfffffe00075177bc lr 0xfffffe000751b754 tid 250 preempt 0 @lock_rw.c:1386`.
    RESOLVED with the symtab of the CI kernel (Mach-O nlist, python):
@@ -61,3 +61,27 @@ These cost a full day. Follow them literally.
    lock_rw.c:1386 asserts "non-sleepable RW lock with preemption enabled".
    Fix: initialise `mnt_rwlock` sleepable (`lck_rw_init(..., LCK_RW_TYPE_NORMAL)`, check
    `vfs_init`/`vfs_mount_alloc`) or make `vfs_busy` use the try/sleepable variant.
+
+9. **The boot image MUST be built with `--picasso`.**
+   `(cd shim && ./build.sh ../shim/out/payload-X.bin --picasso)` produces 36,573,184 B
+   (md5 changes per payload). Without the flag you get the sweet layout, 18,190,336 B, and the
+   phone **hangs at the Xiaomi logo** (built 2026-10-27 23:14 by accident, wasted a flash).
+   Sanity gate before every dd: `stat -c %s` in 36.5-36.6 MB, and `strings payload | grep`
+   for `rd=ufsroot0 sweetusb=2 sweetscan=-`.
+
+10. **CI lives on the `picasso` remote, not `origin`.** `gh` resolves repos from `origin`
+    (dipa-studio/ios-sweet), but the workflows run on `minhtritt1996/ios-picasso`:
+    `git push picasso agy`, `gh workflow run xnu.yml --ref agy --repo minhtritt1996/ios-picasso`,
+    `export GH_REPO=minhtritt1996/ios-picasso` before `gh api`/`tools/gh-artifact.sh`
+    (GH_TOKEN is in `/tmp/ghtoken`; the keyring token is invalid). A dispatch fired before the
+    push builds the *old* head - check `headSha` on the new run.
+
+11. **Compile a kernel change locally before spending a CI run.**
+    `tar xzf <run>/buildtree.tgz -C /tmp/btX` then
+    `python3 tools/xnu-local.py /tmp/log46.txt /tmp/btX --file <src> --file <src>`
+    (needs a CI log that contains compile lines). bsd/ code sees the **exported** headers, so
+    when a change touches `osfmk/**/*.h` also refresh the copy in
+    `build/xnu.obj/EXPORT_HDRS/` (`chmod u+w` first) - otherwise you get "undeclared function".
+    Regenerate the patch with
+    `diff -u --label a/F --label b/F /tmp/xnu-check/xnu/F build/xnu/F` (pristine = xnu-check)
+    and `patch -p1 --dry-run` it there.
