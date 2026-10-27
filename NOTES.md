@@ -705,7 +705,24 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**The shell runs and binds; UDP input never reaches a BSD socket (2026-10-27, final).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Measured: the frames arrive, the stack drops them (2026-10-27, final).**
+The driver's own counter settles where the loss is. On a boot with the shell serving:
+`l2 info` read `rx 104`, five UDP datagrams to 192.168.7.2:4444 were sent, and `rx` then
+read `120` - the 5 datagrams plus their ARP traffic arrived at the USB driver, which hands
+non-control frames to `ifnet_input(ud.ifp)`. ICMP works (ping 2/2, 0.27-1.7 ms). So the
+gap is inside the BSD stack between `ifnet_input` and a userspace `recvfrom()` on a socket
+that the shell bound with `socket/bind/INADDR_ANY:4444` (the console prints
+`sweetsh: bound udp 4444 after tries 1` / `sweetsh: serving, last err 0`).
+The boot around it is now healthy, and the earlier UFS symptoms are gone: the heartbeat
+shows `op 0x2a age 0 ms | err 0 x0 | fails 0 fage 9`, i.e. writes complete immediately and
+the persistent ring flusher keeps up. 0167's syncer plus 0169's dirty gate and
+SYNCHRONIZE CACHE did that.
+Next: find why UDP does not reach the bound socket - check that the inpcb is in the UDP
+hash (bound before the interface came up), that `udp_input` is reached at all (a counter or
+a printf in the port's udp_input is enough), and whether the socket's upcall/wakeup is the
+missing half. This is the only thing between here and `ssh`/a shell.
+
+**The shell runs and binds; UDP input never reaches a BSD socket (2026-10-27, final).****The shell runs and binds; UDP input never reaches a BSD socket (2026-10-27, final).**
 Ring r16 settles the carrier question. The shell, installed in SpringBoard's 28 blocks,
 prints exactly:
 ```
