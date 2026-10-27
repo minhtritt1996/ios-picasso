@@ -5319,3 +5319,45 @@ The only missing piece: NO shell binary on the image. `l2 stat /private/var` ans
 more - they have to be rebuilt (CI: .github/workflows/userland.yml) and inserted with a
 catalog-surgery tool (skill: hfsplus-create-file-catalog-surgery) + tools/hfsplus-ship.py
 for the changed ranges. TCP 4444/22 stay closed until that exists; nothing else needs fixing.
+
+## 2026-10-27 23:10 - HANDOFF: userland finally runs; kernel dies in lock_rw.c:1386
+
+### What is on the device now (all verified by readback, image = /home/tritm/ios8.img)
+- boot      = 987720c1... then 189f0fe2... (CI run 40511053047 = user's 0172 + 0173). cmdline
+              verified INSIDE the payload: rd=ufsroot0 ufsrw rootrw sweetusb=2 sweetusblog=1
+              sweetusbsmmu=1 sweetscan=- (this was the root cause of the whole session: earlier
+              builds silently kept the default cmdline; ALWAYS strings the payload first).
+- darwin    = ios8.img content, md5 bd707703..., journal DISABLED (`hfsplus-tool.py unjournal`,
+              volume attrs now 0x80000100). Without this the kernel replayed the journal and
+              reverted raw block writes.
+- Files in /private/var/root: dropbear (285376, 0755), xdropbear (285600), xsweetsh (32920, 0755
+  = tools/sweetsh/sweetsh-udp-signed, self-installing PID1 variant, md5 da5864ba...).
+  `sh` resolves as ENOENT (lookup error 2) - separate catalog-key-order bug in the tool's create,
+  irrelevant now because dropbear is the target.
+- /System/Library/LaunchDaemons/000-sweetsh.plist (358 B, shipped, cnid 321650): runs
+  /private/var/root/dropbear -R -p 22, RunAtLoad + KeepAlive.
+
+### Measured behaviour
+- usb0 enumerates, ping 3/3 0% loss; L2 channel answers (l2 info/log/ringpos/stat/cat/put).
+- The ring is NOT rewritten by recent boots (only the header's total changes); stable md5s seen:
+  520fb763 (old), a89f27b4 (header-only). So the ring is useless for the last boots; read the
+  live console with `l2 log` instead.
+- After the plist was shipped: panic CHANGED from `tzinit[17] exited` to
+  `(cpu 3) Taking non-sleepable RW lock with preemption enabled: lock 0xfffffe1b486badf8
+   caller 0xfffffe00075177bc lr 0xfffffe000751b754 tid 250 preempt 0 @lock_rw.c:1386`
+  => launchd DID load the daemon and dropbear DID exec; it dies in the kernel's rw-lock assert
+  on its first syscalls. This is progress, not a regression.
+
+### Next concrete step
+Resolve caller 0xfffffe00075177bc in that kernel (keepsyms=1, or `nm` the binary) and either
+convert that lock to a sleep-able/try variant or initialise lock 0xfffffe1b486badf8 properly
+(`_lck_rw_alloc_init` / LCK_RW_TYPE_*). Everything else (payload, cmdline, image, catalog,
+journal, daemon plist) is done and verified.
+
+### Helper recipes used here
+- Build+flash: mkpayload.py KERNEL shim/out/picasso-clean.adt OUT --cmdline "$CL"; strings OUT |
+  grep -E "rd=ufsroot0|sweetusb=2" (MUST match); shim/build.sh OUT --picasso; scp to k60;
+  adb push; dd bs=4M; readback md5.
+- Offline file install: hfsplus-tool.py IMG create FOLDER NAME=LOCAL (or writefile for existing),
+  then dd each reported range with bs=4096 seek=START count=COUNT and verify md5 per range.
+- Phone is usually attached to k60 (root@100.121.254.115, pw k60), not to this workstation.
