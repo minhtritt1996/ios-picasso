@@ -705,7 +705,18 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Lessons from HakiOS (oosexgang/hackios-xnu-kernel), read 2026-10-27.**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The boot hang is one UFS read the controller never fetches (2026-10-27).**
+Ring r11 is 4,455 heartbeat lines and one signal:
+`SWEET HB 22: cmd 6824 lba 0x1acc6f3 n 60 lun 0 op 0x28 age 32410 ms | err 0 x0`,
+i.e. a 30 KiB READ10 sat for 32 s with no ocs while the wait loop polled UTRLDBR -
+so it is not a lost interrupt, the doorbell stayed set because the device never fetched
+the slot. Two patches follow from it:
+- `0163-sweet-ufs-rekick-doorbell`: while waiting, re-write UTRLDBR every ~16k polls
+  (HakiOS's kick) instead of waiting for the 30 s timeout and a host reset.
+- `0164-sweet-ufs-heartbeat-30s`: heartbeat and kick lines every 30 s, not 2 s.
+Both apply cleanly on top of 0155 (validated with patch --dry-run in row).
+
+**Lessons from HakiOS (oosexgang/hackios-xnu-kernel), read 2026-10-27.**
 That project runs xnu-8796.121.2 on a Qualcomm phone (POCO X5 Pro, SD778G) with its own
 loader, no flashing, stock iOS 16.5 userland, and it keeps `/private/var` across reboots
 (`var_store=1 ufs_write=1`). Two concrete things to port:

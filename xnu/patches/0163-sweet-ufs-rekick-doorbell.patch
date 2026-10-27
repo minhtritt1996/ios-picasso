@@ -1,0 +1,20 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -472,6 +472,17 @@
+ 			su.err_serial++;
+ 			return ETIMEDOUT;
+ 		}
++		/*
++		 * A slot can be latched without the device ever fetching it, and
++		 * then UTRLDBR stays set with no completion: the boot hangs on one
++		 * 30 KiB read (measured lba 0x1acc6f3, age 32410 ms, err 0, no ocs)
++		 * while this loop polls. Re-writing the doorbell makes the
++		 * controller fetch the slot again - the same trick HakiOS calls the
++		 * kick. Cheap next to the host reset below, so try it now and then.
++		 */
++		if ((su.poll_iters & 0x3fff) == 0) {
++			ufs_wr(REG_UTRLDBR, 1);
++		}
+ 		/* Raw spin: no timers, no sleep, no lock drop. */
+ 		__builtin_arm_isb(0xf);
+ 	}
