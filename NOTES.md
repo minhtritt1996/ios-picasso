@@ -705,6 +705,24 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
+### >>> Branch agy: Root causes of shell hang & SSH stall solved (2026-10-27) <<<
+1. **Root cause of `fork()` child never answering / hanging shell**:
+   - In Darwin arm64, `SYS_fork` returns:
+     - In parent: `x0 = child_pid`, `x1 = 0`
+     - In child:  `x0 = parent_pid`, `x1 = 1`
+   - `sweetsh` used generic `sys3()`, which only returns `x0`. Thus, in the child, `sys3` returned `parent_pid > 0`!
+   - Consequently, the child NEVER entered `if (pid == 0) execve(...)`. Instead, both parent and child entered `if (pid > 0) wait4(...)` and waited on each other forever!
+   - Fixed: `sys_fork()` inspects `x1`: if `x1 != 0` returns 0 (child), otherwise returns `x0` (parent).
+   - This unblocks both command execution (`/bin/...`) and `start_ssh()` spawning `dropbearkey` and `dropbear`.
+2. **Root cause of `ls` name missing and hanging**:
+   - `namlen` calculation used `(unsigned)(name + namlen - buf) < (unsigned)reclen`. Since `name = buf + off + 21`, as soon as `off > 0`, `off + 21 > reclen`, yielding `namlen = 0` (producing nameless `d ` entries).
+   - When `reclen == 0`, `break` only exited the inner loop, spinning in the outer loop forever.
+   - Fixed: relative offset `(21 + namlen) < reclen` and outer loop termination on `reclen == 0`.
+3. **SSH / Dropbear unblocked**:
+   - `start_ssh()` now properly runs `dropbearkey` and `dropbear` without child deadlock.
+   - Builtin `ssh` added to shell REPL, and `start_ssh()` called in both TCP and UDP modes.
+   - Added `ac_cv_func_strchrnul=no` to `dash` in `userland.yml` to prevent weak-import crash on iOS 16.
+
 f8fbd4bb55d33ccb5f4bdcc15d29d353**State at the end of the session: the shell works, the boot is not reliable.**
 Proven on hardware, in this order:
 - A TCP connection to 192.168.7.2:4444 on a boot that gets through the daemon phase prints

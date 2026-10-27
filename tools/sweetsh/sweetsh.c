@@ -120,6 +120,30 @@ sys4(i64 n, i64 a, i64 b, i64 c, i64 d)
 	return x0;
 }
 
+/*
+ * Darwin arm64 fork convention:
+ * Parent returns: x0 = child_pid, x1 = 0
+ * Child returns:  x0 = parent_pid, x1 = 1
+ * Standard sys3 only captures x0, so both parent and child saw a positive PID
+ * and entered the parent wait4 branch, causing a permanent deadlock.
+ */
+static i64
+sys_fork(void)
+{
+	register i64 x16 __asm__("x16") = SYS_fork;
+	register i64 x0 __asm__("x0") = 0;
+	register i64 x1 __asm__("x1") = 0;
+
+	__asm__ volatile("svc #0x80"
+	    : "+r"(x0), "+r"(x1)
+	    : "r"(x16)
+	    : "memory");
+	if (x1 != 0) {
+		return 0;   /* child process */
+	}
+	return x0;      /* parent process receives child pid */
+}
+
 static u64
 strlen_(const char *s)
 {
@@ -496,21 +520,23 @@ ls_(const char *path)
 		if (n <= 0) {
 			break;
 		}
+		int done = 0;
 		for (i64 off = 0; off < n;) {
 			unsigned short reclen = *(unsigned short *)(buf + off + 16);
+			if (reclen == 0) {
+				done = 1;
+				break;
+			}
 			unsigned char type = (unsigned char)buf[off + 20];
 			const char *name = buf + off + 21;
 			/* The kernel leaves the 16-bit length field zero for this ABI, so
-			 * measure the name against what is left of the record instead. */
+			 * measure the name against the remaining record space (reclen - 21). */
 			unsigned namlen = 0;
-			while (namlen < 255 && (unsigned)(name + namlen - buf) < (unsigned)reclen &&
+			while (namlen < 255 && (21 + namlen) < (unsigned)reclen &&
 			    name[namlen] != 0) {
 				namlen++;
 			}
 
-			if (reclen == 0) {
-				break;
-			}
 			if (!(namlen == 1 && name[0] == '.') &&
 			    !(namlen == 2 && name[0] == '.' && name[1] == '.')) {
 				puts_(type == 4 ? "d " : (type == 8 ? "f " : "? "));
@@ -518,6 +544,9 @@ ls_(const char *path)
 				puts_("\r\n");
 			}
 			off += reclen;
+		}
+		if (done) {
+			break;
 		}
 	}
 	sys3(SYS_close, fd, 0, 0);
@@ -695,6 +724,8 @@ mkdir_p(char *path)
 	puts_("ok\r\n");
 }
 
+static void start_ssh(void);
+
 static int
 run(char *line)
 {
@@ -712,12 +743,13 @@ run(char *line)
 		banner();
 		return 0;
 	}
-	/*
-	 * No `ls` builtin: its directory walk blocks this process for good on this port
-	 * (measured: one `ls /` and every later session timed out). `ls` now falls
-	 * through to the exec path, and the shell keeps serving.
-	 */
-	if (0 && streq(argv[0], "ls")) {
+	if (streq(argv[0], "ssh")) {
+		puts_("starting dropbear...\r\n");
+		start_ssh();
+		puts_("done\r\n");
+		return 0;
+	}
+	if (streq(argv[0], "ls")) {
 		ls_(argc > 1 ? argv[1] : 0);
 		return 0;
 	}
@@ -806,7 +838,7 @@ run(char *line)
 		if (sys3(SYS_open, (i64)path, O_RDONLY, 0) < 0) {
 			continue;
 		}
-		i64 pid = sys3(SYS_fork, 0, 0, 0);
+		i64 pid = sys_fork();
 		if (pid == 0) {
 			sys3(SYS_execve, (i64)path, (i64)argv, (i64)envp);
 			puts_("exec failed: ");
@@ -1077,7 +1109,7 @@ start_ssh(void)
 	i64 pid;
 
 	if (sys3(SYS_open, (i64)"/private/var/root/dropbear_ed25519_host_key", 0, 0) < 0) {
-		pid = sys3(SYS_fork, 0, 0, 0);
+		pid = sys_fork();
 		if (pid == 0) {
 			sys3(SYS_execve, (i64)kargv[0], (i64)kargv, (i64)envp);
 			sys3(SYS_exit, 1, 0, 0);
@@ -1086,7 +1118,7 @@ start_ssh(void)
 			sys3(SYS_wait4, pid, 0, 0);
 		}
 	}
-	pid = sys3(SYS_fork, 0, 0, 0);
+	pid = sys_fork();
 	if (pid == 0) {
 		sys3(SYS_execve, (i64)dargv[0], (i64)dargv, (i64)envp);
 		sys3(SYS_exit, 1, 0, 0);
@@ -1145,6 +1177,7 @@ cstart(void)
 	 * process existing rather than to its socket calls */
 	sleep_ms(SWEETSH_DELAY_MS);
 #endif
+	start_ssh();
 	for (;;) {
 		i64 lfd = listen_4444();
 

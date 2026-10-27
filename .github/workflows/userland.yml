@@ -50,7 +50,7 @@ jobs:
           export CC="clang --target=arm64-apple-ios${IOS_MIN} -isysroot $SDK"
           export CFLAGS="-O2 -fno-stack-protector"
           export LDFLAGS="-fuse-ld=lld -Wl,-adhoc_codesign,-platform_version,ios,${IOS_MIN},${IOS_MIN}"
-          ./configure --host=aarch64-apple-darwin || { tail -40 config.log; exit 1; }
+          ./configure --host=aarch64-apple-darwin ac_cv_func_strchrnul=no || { tail -40 config.log; exit 1; }
           # The account wrapper is needed only while compiling and linking, so it
           # is force-included here rather than during configure.
           make -j"$(nproc)" || { tail -40 config.log; exit 1; }

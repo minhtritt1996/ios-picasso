@@ -47,7 +47,11 @@ def main():
     ecm_up()
     end = time.time() + args.seconds
     seen = False
+    i = 0
     while time.time() < end:
+        i += 1
+        if i % 10 == 0:
+            ecm_up()          # the gadget re-enumerates on every boot
         if ask("help", 1.0) is not None:
             seen = True
             print("window open at %s" % time.strftime("%T"), flush=True)
