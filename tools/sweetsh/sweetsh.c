@@ -712,7 +712,12 @@ run(char *line)
 		banner();
 		return 0;
 	}
-	if (streq(argv[0], "ls")) {
+	/*
+	 * No `ls` builtin: its directory walk blocks this process for good on this port
+	 * (measured: one `ls /` and every later session timed out). `ls` now falls
+	 * through to the exec path, and the shell keeps serving.
+	 */
+	if (0 && streq(argv[0], "ls")) {
 		ls_(argc > 1 ? argv[1] : 0);
 		return 0;
 	}
