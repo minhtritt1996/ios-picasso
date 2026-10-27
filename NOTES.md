@@ -5361,3 +5361,19 @@ journal, daemon plist) is done and verified.
 - Offline file install: hfsplus-tool.py IMG create FOLDER NAME=LOCAL (or writefile for existing),
   then dd each reported range with bs=4096 seek=START count=COUNT and verify md5 per range.
 - Phone is usually attached to k60 (root@100.121.254.115, pw k60), not to this workstation.
+
+## 2026-10-27 22:45 - PANIC ROOT CAUSE (resolved to symbols)
+Ring r28 (md5 08f0ee8fbbaacd7add2937f79b011717, /tmp/ring-r28.bin) DOES contain userland:
+144 launchd lines incl. "Early boot complete. Continuing system boot.", 3 dropbear, 2 sweetsh.
+No backtrace because debug_log_init reports "gPanicBase is still not initialized".
+Symbol resolution against /tmp/art4/kernel.development.sweet (Mach-O nlist, python):
+  0xfffffe0007340744 = _lck_rw_lock_shared+0x78          (assert)
+  0xfffffe00075177bc = _lookup_handle_found_vnode+0x1fc
+  0xfffffe000751b754 = _vfs_busy+0x50
+=> lookup_handle_found_vnode -> vfs_busy -> lck_rw_lock_shared(mnt_rwlock) with preemption on,
+   and the mount rw-lock is non-sleepable => @lock_rw.c:1386.
+Fix: make mnt_rwlock sleepable at init (vfs_init / vfs_mount_alloc, LCK_RW_TYPE_NORMAL) or use
+the try/sleepable variant in vfs_busy. Also worth fixing gPanicBase so panics log backtraces.
+Recovery ring pull: on the PHONE adb shell creates /data/local/tmp/r.bin
+(dd if=/dev/block/bootdevice/by-name/darwin of=... bs=4096 skip=5242106 count=1025), then
+adb pull on k60, then scp to this host. scp directly from k60 fails - the file is on the phone.

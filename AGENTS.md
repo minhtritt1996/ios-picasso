@@ -52,4 +52,12 @@ These cost a full day. Follow them literally.
    kernel panics on its first syscalls:
    `Taking non-sleepable RW lock with preemption enabled: lock 0xfffffe1b486badf8
     caller 0xfffffe00075177bc lr 0xfffffe000751b754 tid 250 preempt 0 @lock_rw.c:1386`.
-   Resolve `0xfffffe00075177bc` and switch that lock to a sleepable/try variant.
+   RESOLVED with the symtab of the CI kernel (Mach-O nlist, python):
+   `0xfffffe0007340744 = _lck_rw_lock_shared+0x78` (assert site),
+   `0xfffffe00075177bc = _lookup_handle_found_vnode+0x1fc`,
+   `0xfffffe000751b754 = _vfs_busy+0x50`.
+   => `lookup_handle_found_vnode()` calls `vfs_busy()`, which takes
+   `lck_rw_lock_shared(&mp->mnt_rwlock)`, but the mount lock was created NON-sleepable, so
+   lock_rw.c:1386 asserts "non-sleepable RW lock with preemption enabled".
+   Fix: initialise `mnt_rwlock` sleepable (`lck_rw_init(..., LCK_RW_TYPE_NORMAL)`, check
+   `vfs_init`/`vfs_mount_alloc`) or make `vfs_busy` use the try/sleepable variant.
