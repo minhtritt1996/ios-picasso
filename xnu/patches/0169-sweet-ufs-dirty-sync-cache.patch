@@ -1,0 +1,41 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -114,6 +114,7 @@
+ 	uint64_t first_block, nblocks;          /* partition, in 4 KiB device blocks */
+ 	uint32_t secsize;                       /* logical sector size for the BSD layer */
+ 	bool writable;                          /* boot-arg ufsrw=1 */
++	bool dirty;                             /* writes since the last SYNCHRONIZE CACHE */
+ 	bool cache;                             /* boot-arg ufscache=1 */
+ 	bool wait;                              /* boot-arg ufswait=1 */
+ 	bool trace;                             /* boot-arg sweetufstrace=1 */
+@@ -630,6 +631,7 @@
+ static int
+ ufs_write_blocks(uint64_t lba, uint32_t count)
+ {
++	su.dirty = true;
+ 	if (!su.writable || !su.nblocks || count == 0 || count > BOUNCE_SIZE / UFS_BLOCK ||
+ 	    lba < su.first_block || lba - su.first_block >= su.nblocks ||
+ 	    count > su.nblocks - (lba - su.first_block) || lba + count - 1 > UINT32_MAX) {
+@@ -659,6 +661,7 @@
+ static int
+ ufs_write_blocks_at(uint64_t lba, uint32_t count)
+ {
++	su.dirty = true;
+ 	if (count == 0 || count > BOUNCE_SIZE / UFS_BLOCK || lba > UINT32_MAX ||
+ 	    lba + count - 1 > UINT32_MAX) {
+ 		return EINVAL;
+@@ -1790,6 +1793,14 @@
+ 	for (;;) {
+ 		(void)tsleep(&sweet_sync_chan, PZERO, "sweetsync", hz * 5);
+ 		(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
++		/*
++		 * A VFS sync pushes the pages into the driver; the device may still hold
++		 * them in its write cache. SYNCHRONIZE CACHE is the same command Bergamota
++		 * issues here (its 0222), and su.dirty keeps it to boots that wrote.
++		 */
++		if (su.dirty && ufs_sync_cache() == 0) {
++			su.dirty = false;
++		}
+ 	}
+ }
+ 
