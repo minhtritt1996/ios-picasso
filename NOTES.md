@@ -705,7 +705,22 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**A root shell over TCP answers; the listener does not come back (2026-10-27, latest).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Measured in one session: two commands work, then the shell hangs (2026-10-27).**
+Single TCP session to 192.168.7.2:4444 after a manual reboot:
+```
+$ help  -> sweatsh banner + builtin list
+$ ls /  -> d d d d f f f f d d ... #        (the root is listed)
+$ ls /private/var/root -> only the command echoed back
+$ echo root-shell-works -> timeout
+```
+So the carrier really executes commands (not just the banner), and then the session stops
+answering after about two of them. The `ls` output also has no names, only d/f markers,
+which points at the same thing that has bitten every layer above the driver: the second
+and later vnode reads in a process hang. The next step is not the shell: it is a kernel
+trace of two consecutive reads from one process (l2 `cat` twice, or the file server's GET
+twice) to see whether the second `buf_strategy` waits on the UFS lock forever.
+
+**A root shell over TCP answers; the listener does not come back (2026-10-27, latest).****A root shell over TCP answers; the listener does not come back (2026-10-27, latest).**
 With 0170 in the kernel (ep0 rebuilt after every bus reset: the ring shows
 `ep0 rebuilt after reset -> ok` twice, then `address 54`, `configured (1)`) the IP path
 holds - ping 30/30 over 87 s, ARP REACHABLE - and the carrier shell serves its banner over
