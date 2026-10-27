@@ -993,8 +993,13 @@ serve(i64 lfd)
 			sys3(SYS_close, cfd, 0, 0);
 		}
 		repl();
-		sys3(SYS_close, cfd, 0, 0);
-	}
+		/*
+		 * Return instead of looping: dup2() moved the client onto 0/1/2, so the
+		 * accept fd numbering is no longer trustworthy and the listener went
+		 * deaf after the first session (measured: 'listening on 4444' once, then
+		 * connection refused). cstart() reopens the listener on return.
+		 */
+		return;
 }
 
 /*
