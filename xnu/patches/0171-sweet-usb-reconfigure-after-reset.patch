@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1102,6 +1102,15 @@
+ 			ud_log("SWEET USB: bus reset, configuration dropped\n");
+ 			ud_log("SWEET USB: ep0 rebuilt after reset -> %s\n",
+ 			    ud_ep0_restart(ud_ep0_mps) ? "ok" : "failed");
++			/*
++			 * Rebuild the data endpoints here rather than waiting for the host to
++			 * send SET_CONFIGURATION again: the ring shows resets after which it
++			 * never comes, and then cfg stays 0 and the whole IP path is dead for
++			 * the rest of the boot while the control channel keeps working.
++			 */
++			ud_configure();
++			ud_log("SWEET USB: endpoints rebuilt after reset (configured %d)\n",
++			    (int)ud.configured);
+ 		} else if (type == 2) { /* connect done */
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
+ 			/* ep0 max packet: 64 at high/full speed (modify action) */
