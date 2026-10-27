@@ -972,34 +972,27 @@ serve_udp(void)
 static void
 serve(i64 lfd)
 {
-	for (;;) {
-		i64 cfd = sys3(SYS_accept, lfd, 0, 0);
+	i64 cfd = sys3(SYS_accept, lfd, 0, 0);
 
-		if (cfd < 0) {
-			sleep_ms(50);
-			continue;
-		}
-		/*
-		 * Serve the client in this process. fork() on this port returns a pid but
-		 * the child never gets to answer (the connection is accepted and then
-		 * reset), so there is no point in it: one session at a time is all a
-		 * debug shell needs.
-		 */
-		/* Keep lfd open: repl() returning must not leave the shell deaf. */
-		sys3(SYS_dup2, cfd, 0, 0);
-		sys3(SYS_dup2, cfd, 1, 0);
-		sys3(SYS_dup2, cfd, 2, 0);
-		if (cfd > 2) {
-			sys3(SYS_close, cfd, 0, 0);
-		}
-		repl();
-		/*
-		 * Return instead of looping: dup2() moved the client onto 0/1/2, so the
-		 * accept fd numbering is no longer trustworthy and the listener went
-		 * deaf after the first session (measured: 'listening on 4444' once, then
-		 * connection refused). cstart() reopens the listener on return.
-		 */
+	if (cfd < 0) {
+		sleep_ms(50);
 		return;
+	}
+	/*
+	 * Serve the client in this process: fork() on this port returns a pid but the
+	 * child never answers (the connection is accepted and then reset), and
+	 * dup2() moves the client onto 0/1/2, so the accept fd numbering is not
+	 * trustworthy afterwards. Do one session, then return - cstart() reopens the
+	 * listener.
+	 */
+	sys3(SYS_dup2, cfd, 0, 0);
+	sys3(SYS_dup2, cfd, 1, 0);
+	sys3(SYS_dup2, cfd, 2, 0);
+	if (cfd > 2) {
+		sys3(SYS_close, cfd, 0, 0);
+	}
+	repl();
+	sys3(SYS_close, lfd, 0, 0);
 }
 
 /*
