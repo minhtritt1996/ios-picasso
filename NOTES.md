@@ -705,7 +705,25 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Measured: the frames arrive, the stack drops them (2026-10-27, final).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Both listeners run; the IP path dies, the control path survives (2026-10-27, final).**
+Read over the L2 channel itself (no recovery needed - `picasso-ecm.py ring` pulls the
+kernel ring through it), this boot says:
+```
+SWEET FILES: listening on tcp 2223
+sweetsh: up, listening on 4444
+```
+So ios-flame's file server and the TCP build of the shell both start and listen. What
+fails is the IP path underneath them: seconds later `ping` is 100% loss, the host's ARP
+entry for 192.168.7.2 reads INCOMPLETE, and TCP connects return EHOSTUNREACH - while
+`l2 info` still answers (`rx 1043 tx 735`) and a later ring dump still works. The USB
+state line recorded `usb cfg 0 rxarm 0 dalepa 0x3` in an earlier boot, i.e. the
+configuration and the data endpoints went away at some point.
+Next: in sweet_usb.c keep the interface up and log `ifnet_flags(ud.ifp)` in the
+USBSTATE line so the moment the IP path stops is visible, and look at what clears
+`cfg`/`dalepa` (a bus reset handled without re-configuring). Until that is fixed, no
+TCP/UDP service on the phone can stay reachable even though it is listening.
+
+**Measured: the frames arrive, the stack drops them (2026-10-27, final).****Measured: the frames arrive, the stack drops them (2026-10-27, final).**
 The driver's own counter settles where the loss is. On a boot with the shell serving:
 `l2 info` read `rx 104`, five UDP datagrams to 192.168.7.2:4444 were sent, and `rx` then
 read `120` - the 5 datagrams plus their ARP traffic arrived at the USB driver, which hands
