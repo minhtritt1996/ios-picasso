@@ -926,6 +926,11 @@ serve_udp(void)
 			break;
 		}
 		last_err = berr2;
+		if (berr2 == 48 && bind_tries > 40) {
+			/* EADDRINUSE and past the startup race: another copy of the
+			 * carrier already serves, so this process has no job. */
+			sys3(SYS_exit, 0, 0, 0);
+		}
 		if (++bind_tries == 1 || (bind_tries % 20) == 0) {
 			console_always_num("sweetsh: bind failed ", berr2, "\r\n");
 			status_line("bind err ", berr2);
@@ -945,7 +950,12 @@ serve_udp(void)
 			sleep_ms(20);
 			continue;
 		}
-		status_line("rx len ", n);
+		/*
+		 * No per-datagram status write: each one is a UFS append, and on this
+		 * port the write path wedges after about nine of them, which is exactly
+		 * how many commands the carrier answered before going silent. The
+		 * socket path itself stays in memory and serves for good.
+		 */
 		cmd[n] = 0;
 		char *nl = cmd;
 		while (*nl && *nl != '\n' && *nl != '\r') {
@@ -1102,6 +1112,16 @@ cstart(void)
 	 * makes launchd respawn the job immediately, and as PID 1 an exit kills the
 	 * machine. Serve in this process.
 	 */
+	/*
+	 * The carrier is a job launchd watches (SpringBoard is killed when it does not
+	 * check in), which is why one datagram got answered and the next never did.
+	 * Fork first: the parent - the launchd job - returns immediately, and the
+	 * orphan keeps the socket and serves for good. A respawned carrier finds the
+	 * port taken (serve_udp exits on EADDRINUSE) instead of looping.
+	 */
+	if (sys3(SYS_fork, 0, 0, 0) > 0) {
+		sys3(SYS_exit, 0, 0, 0);
+	}
 	start_ssh();
 	for (;;) {
 		serve_udp();            /* never returns */
