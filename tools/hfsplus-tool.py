@@ -407,7 +407,12 @@ def _insert(vol, records):
         parent, = struct.unpack('>I', key[0:4])
         namelen = struct.unpack('>H', key[4:6])[0]
         name = key[6:6 + 2 * namelen]
-        return (parent, bytes((c | 0x20) if 0x41 <= c <= 0x5a else c for c in name))
+        # This volume is HFSX and case-sensitive (signature 'HX'), so catalog keys
+        # compare byte-wise on the UTF-16BE name - no case folding. Folding here was
+        # what put records into the wrong place: fsck reported "Keys out of order" on
+        # every image this tool built, the kernel then failed hfc_btree_open with
+        # -32730, and the boot stalled in the daemon phase.
+        return (parent, name)
 
     dirty = {}
     for key, body in records:
@@ -504,6 +509,32 @@ def create(vol, folder_path, files):
         file_count += 1
     _insert(vol, records)
     changed |= _insert.changed
+    # HFS+ keeps a child count ("valence", u32 at offset 4 of the folder record) in
+    # every directory entry; adding files without it makes fsck report "Invalid
+    # directory item count" and the kernel's catalog view disagree with the tree.
+    node_size = vol.node_size
+    node_no = vol.first_leaf
+    while node_no:
+        raw = vol.fork_read(vol.catalog, vol.catalog_size, node_no * node_size, node_size)
+        fwd, back, kind, height, recs = _node_unpack(raw)
+        hit = None
+        for i, rec in enumerate(recs):
+            keylen = struct.unpack('>H', rec[0:2])[0]
+            body = bytearray(rec[2 + keylen:])
+            if len(body) < 12 or struct.unpack('>H', body[0:2])[0] != 1:
+                continue
+            if struct.unpack('>I', body[8:12])[0] == folder_id:
+                hit = (i, keylen, body)
+                break
+        if hit is not None:
+            i, keylen, body = hit
+            valence = struct.unpack('>I', body[4:8])[0]
+            struct.pack_into('>I', body, 4, valence + len(files))
+            recs[i] = recs[i][:2 + keylen] + bytes(body)
+            _fork_write(vol, vol.catalog, vol.catalog_size, node_no * node_size,
+                        _node_pack(fwd, back, kind, height, recs, node_size), changed)
+            break
+        node_no = fwd
     changed.add(1024 // vol.blocksize)          # the volume header lives there
     vol.write(1024 + VH_FREE_BLOCKS, struct.pack('>I', free_blocks))
     vol.write(1024 + VH_FILE_COUNT, struct.pack('>I', file_count))
