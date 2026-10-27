@@ -6,6 +6,22 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 "sweet" appears only where the code genuinely still carries sweet values - notably the *bug* fixed in patch
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
+
+### >>> UPDATE 2026-10-27 16:15 (branch `agy`: USB-ECM ping verified, 0172 UFS syncer fixed, `agy3` boot image ready) <<<
+1. **Branch `agy` created from `omp` (`41bb6db`)** (`omp` untouched):
+   - `bf140cf`: Fixed `tools/sweetsh/sweetsh.c` (`sys_fork()` handling Darwin arm64 `x1 == 1` child return, `ls_()` name length check `(21 + namlen) < (unsigned)reclen`, `ssh` builtin, and calling `start_ssh()` in TCP mode) and `dash` configure (`ac_cv_func_strchrnul=no`).
+   - `522f3b7`: Added `tools/userland/patch-dropbear.py` and `tools/userland/picasso_key.pub` (`DROPBEAR_SVR_MULTIUSER 0`, `DROPBEAR_REEXEC 0`, `PICASSO_SINGLE_ROOT 1`, skipped `/var/run/dropbear.pid` and `getusershell()`, compiled-in ephemeral `ed25519` host key and workstation pubkey fallback). Built via `userland.yml` run `40463596922` (`success`) and wrote `/tmp/blk-xdropbear.bin` (MD5 `64a301b074992bd46d1c7c59da55105c`, block `3062447 x 70`) and `/tmp/blk-xsweetsh.bin` (MD5 `fc55ff01279887a67f20e7274155fdd8`, block `3062518 x 9`) to `darwin` (`/dev/block/sda35`).
+   - `33a477e`: Fixed `xnu/patches/0171-sweet-usb-reconfigure-after-reset.patch`: removed premature `ud_configure()` from `USBRst` (`type == 1`, which set `ud.configured = true` before `ConnectDone` / `SET_CONFIGURATION(1)` and caused `SET_CONFIGURATION(1)` to return early without configuring EP2/EP3/EP4) and forced `ud.configured = false; ud_configure();` on `SET_CONFIGURATION(1)` (`req == 9`) plus `SET_INTERFACE(1, 1)` (`req == 11`).
+2. **Hardware verification on `agy2` (run `40466546159`, boot image MD5 `8d7a4ead7378e140ed6810046a4a6e9e`)**:
+   - USB CDC-ECM (`1209:0001`, host `enx02005e77ee01`) came up with RX and TX working after running `nmcli device set enx02005e77ee01 managed no` (NetworkManager otherwise stripped `192.168.7.1/24`).
+   - `l2 info` answered (`configured 1 rx 37 tx 3`), and `ping -c 3 192.168.7.2` succeeded (`3/3, 0% packet loss`, RTT 0.45–0.85 ms).
+   - **Observation (`agy2` ring `/tmp/log-agy2.txt`)**: `launchd` stalled at UFS `cmd 1739` (`lk 4/1`) before spawning `com.picasso.sweetsh` because `0172` had `if (!su.dirty) continue;` before `vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL)` in `sweet_ufs_syncer()`, preventing periodic VFS syncs until after `su.dirty` was set.
+3. **Code review & fixes on helper scripts and `0172` (`6897128`, CI run `40477707094` `success`)**:
+   - Fixed `tools/picasso-ecm.py` (`watch` mode `get_addr` `OSError` handling, `nmcli managed no`, and netmask string `"255.255.255.0"`), `tools/picasso-daemon-shell.sh` (`skip=3062518 count=9` and `SpringBoard` MD5 check), and `tools/picasso-test-ssh.sh` (`sh tools/picasso-shell.sh 'ssh'`).
+   - Fixed `xnu/patches/0172-sweet-ufs-sync-lock-and-amfi-dyld.patch` so `vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL)` runs unconditionally every 5s in `sweet_ufs_syncer()`, while `ufs_sync_cache()` remains gated by `su.dirty` and `lck_mtx_try_lock(&sweet_ufs_lock)`.
+   - Packaged kernel from CI run `40477707094` into `shim/out/payload-picasso-agy3.bin` (`sweetboot=agy3`) and `shim/out/shim-boot-agy.img` (36,573,184 bytes, **MD5 `16651018c5b2d10297a9b69a82852af4`**).
+4. **Next concrete action**: Put device `f9f3d7b0` into recovery, flash `shim/out/shim-boot-agy.img` (`16651018c5b2d10297a9b69a82852af4`) to `/dev/block/bootdevice/by-name/boot`, reboot, and run `sh tools/picasso-acceptance.sh` to verify `sweetsh` (TCP 4444) and `dropbear` (TCP 22).
+
 ### >>> UPDATE 2026-10-25 21:05 (rev1 USB enumerates; the DWC3 event parser had the wrong entry size) <<<
 1. rev1 (patch 0123 with the identity-mapped SMMU stream, run 40199031197) **enumerated on the PC**: the
    phone came up as `1209:0001`, usb0 up, IPv6 link-local resolved, the iOS stack answered ARP: it sends
@@ -800,7 +816,28 @@ and later vnode reads in a process hang. The next step is not the shell: it is a
 trace of two consecutive reads from one process (l2 `cat` twice, or the file server's GET
 twice) to see whether the second `buf_strategy` waits on the UFS lock forever.
 
-**A root shell over TCP answers; the listener does not come back (2026-10-27, latest).****A root shell over TCP answers; the listener does not come back (2026-10-27, latest).**
+**The catalog is fixed; the boot still wedges (2026-10-27 20:00).**
+Two real bugs in tools/hfsplus-tool.py made every image this session corrupt - the pristine
+image passed fsck, every tool-built one failed with "Keys out of order":
+- order_key folded ASCII case, but the volume is HFSX case-sensitive, so keys compare
+  byte-wise on the UTF-16BE name;
+- create() never bumped the parent folder's valence.
+After both fixes, `pristine -> create -> fsck -n` prints "The volume iOSRoot appears to be
+OK", and the full build (xsweetsh 0755, xdropbear 0755, 000-sweetsh.plist, launchd cache with
+that key) is clean too. That image (md5 0a38bb6df22392bc..., cache block bcba3ad2...) was
+written to the phone and verified (dd 146 s at 112 MB/s), and `boot` carries the agy kernel
+(beb091d2...).
+It still does not reach userspace usefully: after boot, ping is 0/6, 4444 and 22 stay closed,
+and ten seconds later the USB gadget is gone from the host entirely (`no gadget interface
+found` on k60, both k60 hubs re-register in dmesg). No ring is reachable either, since L2
+lives in the same driver.
+So the remaining failure is in the USB gadget / kernel after the daemon phase, not in the
+filesystem, not in launchd and not in the shell: the catalog question is closed.
+Next: pull the ring from recovery to see where this boot stopped (it should now be a real
+ring, since the filesystem is consistent), and watch the `SWEET USBSTATE`/`SWEET HB` lines
+for `usb cfg 0`/`dalepa` changes at the moment the gadget disappears.
+
+**A root shell over TCP answers; the listener does not come back (2026-10-27, latest).****A root shell over TCP answers; the listener does not come back (2026-10-27, latest).****A root shell over TCP answers; the listener does not come back (2026-10-27, latest).**
 With 0170 in the kernel (ep0 rebuilt after every bus reset: the ring shows
 `ep0 rebuilt after reset -> ok` twice, then `address 54`, `configured (1)`) the IP path
 holds - ping 30/30 over 87 s, ARP REACHABLE - and the carrier shell serves its banner over
