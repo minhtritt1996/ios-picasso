@@ -26,6 +26,7 @@ typedef unsigned int u32;
 #define SYS_chdir    12
 #define SYS_getpid   20
 #define SYS_execve   59
+#define SYS_setsid   147
 #define SYS_dup2     90
 #define SYS_select   93
 #define SYS_recvfrom 29
@@ -1122,6 +1123,13 @@ cstart(void)
 	if (sys3(SYS_fork, 0, 0, 0) > 0) {
 		sys3(SYS_exit, 0, 0, 0);
 	}
+	/*
+	 * The orphan also has to leave the job's process group: the console shows
+	 * `SWEET EXIT SpringBoard pid 26/28 rv 0x0` for the parents while the child
+	 * still died, which is launchd or watchdogd cleaning up the job's group.
+	 * A new session makes the survivor unfindable by that sweep.
+	 */
+	(void)sys3(SYS_setsid, 0, 0, 0);
 	start_ssh();
 	for (;;) {
 		serve_udp();            /* never returns */
