@@ -705,7 +705,32 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Measured in one session: two commands work, then the shell hangs (2026-10-27).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**State at the end of the session: the shell works, the boot is not reliable.**
+Proven on hardware, in this order:
+- A TCP connection to 192.168.7.2:4444 on a boot that gets through the daemon phase prints
+  the shell banner and answers `ls /` (root listed as d/f entries). That is a root shell
+  over USB with no recovery, and it came after 0170 rebuilt ep0 on every bus reset
+  (`ep0 rebuilt after reset -> ok` twice, `configured (1)`), which is what made the IP path
+  hold (ping 30/30 over 87 s).
+- The same image sometimes stops much earlier: the console ends after `prng_seedctl`
+  (`rv 0xc00`) and a second `launchd_cache_loader`, the daemons after it never start, ARP
+  never resolves and L2 goes silent too. Nothing in the shell or the file server is
+  involved in that boot.
+- Known shell limits, measured: `ls` hangs the process for good (the direct reads through
+  the L2 channel repeat fine, so it is the builtin's own directory walk; the builtin is now
+  disabled), `fork()` returns a pid but the child never answers (serve() no longer forks),
+  and re-binding 4444 is impossible while the old connection is in TIME_WAIT (serve() now
+  keeps one listener and loops on accept()).
+- The carrier (SpringBoard) is watched and stops answering a few seconds in; a launchd
+  daemon does not, but the daemon and the carrier then fight over 4444, so the carrier must
+  be stock for the daemon to own the port.
+Next session, in this order: (1) find why this boot stops after the second
+launchd_cache_loader on some boots and not others - that is what decides whether anything
+above the driver works; (2) compare with Bergamota's entropy patches (`kmem-rng`,
+`kernel-hmac-prng`) since `failed to load virtual random: (-147)` is on every boot;
+(3) then re-test the daemon-only shell (stock SpringBoard + 0755 xsweetsh + the cache job).
+
+**Measured in one session: two commands work, then the shell hangs (2026-10-27).****Measured in one session: two commands work, then the shell hangs (2026-10-27).**
 Single TCP session to 192.168.7.2:4444 after a manual reboot:
 ```
 $ help  -> sweatsh banner + builtin list
