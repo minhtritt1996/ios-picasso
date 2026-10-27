@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -506,6 +506,15 @@
+ 		 * kick. Cheap next to the host reset below, so try it now and then.
+ 		 */
+ 		if ((su.poll_iters & 0x3fff) == 0) {
++			/*
++			 * HakiOS's kick checks the request-list enable first: a
++			 * controller that cleared UTRLRSR ignores doorbell writes,
++			 * so re-ringing alone does nothing. Re-enable, then ring.
++			 */
++			if ((ufs_rd(REG_UTRLRSR) & 1) == 0) {
++				ufs_wr(REG_UTRLRSR, 1);
++				sweet_tracef("SWEET UFS: UTRLRSR was clear, re-enabled\n");
++			}
+ 			ufs_wr(REG_UTRLDBR, 1);
+ 		}
+ 		/* Raw spin: no timers, no sleep, no lock drop. */
