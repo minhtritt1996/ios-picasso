@@ -705,7 +705,30 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**0167's naive syncer makes it worse: do not repeat it (2026-10-27).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**The blocker is isolated: the first filesystem operation wedges (2026-10-27, latest).**
+ios-flame's kernel file server is now in this kernel (`0168`, unchanged from their
+`0091`: TCP 2223, PUT/GET/MKDIR/LINK/RM/CHMOD, started from the USB gadget right after
+`ud_if_create()`), and with it the picture is unambiguous:
+- the kernel boots, the ECM link comes up and **ping is stable** (3/3 at 0.19-2.4 ms,
+  measured over 200 s of uptime - better than any earlier build);
+- **port 2223 accepts a connection** (TcpTestSucceeded against 192.168.7.2:2223), and
+  then the server never answers a single request: one hung filesystem operation blocks
+  its accept loop, and after that even connect() times out;
+- the same kernel still has no shell (UDP 4444 silent) and launchd never reaches
+  SpringBoard.
+So launchd, the carrier, dropbear and the shell are all innocent: they all need one
+working vnode operation, and the first one hangs. Everything else this session
+(0644 records, catalog coherence, the nine-command limit, the watchdog sweep, the
+carrier choice) was real and is fixed.
+What is left is the UFS/FS path. The next moves, in order: (a) with the file server in
+place, `picasso-files.py chmod` and `put` become the fastest possible test of any I/O
+change - no recovery, no shell; (b) port Bergamota's `0222` properly (SYNCHRONIZE
+CACHE, `su.dirty` gate, no sync while a command holds the driver lock) rather than the
+approximation of `0167`; (c) if that does not do it, their multi-slot UTRD + poller
+design, since our single-slot wait is the remaining structural difference.
+`0167` (root syncer) is in the tree and built, but has not been isolated as a fix.
+
+**0167's naive syncer makes it worse: do not repeat it (2026-10-27).****0167's naive syncer makes it worse: do not repeat it (2026-10-27).**
 Bergamota's patch 0222 names our wedge correctly - the root is a non-journaled HFS+ and it
 is the root, so HFS never starts its syncer and dirty pages pile up until one large flush
 wedges the UFS. The minimal form I tried (a kernel thread calling VFS_SYNC(MNT_WAIT) on
