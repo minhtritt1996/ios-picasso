@@ -705,7 +705,21 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Runbook to a root shell / SSH, by either route (2026-10-26).** Everything below is
+f8fbd4bb55d33ccb5f4bdcc15d29d353**Lessons from HakiOS (oosexgang/hackios-xnu-kernel), read 2026-10-27.**
+That project runs xnu-8796.121.2 on a Qualcomm phone (POCO X5 Pro, SD778G) with its own
+loader, no flashing, stock iOS 16.5 userland, and it keeps `/private/var` across reboots
+(`var_store=1 ufs_write=1`). Two concrete things to port:
+- Its UFS completion wait is a **bounded spin then sleep** (`hc_spin_us` 40 us, then
+  `IOSleep(1)`, plus a poller). Ours is spin-only (patch 0155), and a spin with
+  preemption enabled is exactly the class of bug that panicked this port with
+  `Taking non-sleepable RW lock with preemption enabled @lock_rw.c:1306`, right after a
+  UFS read sat for 32 s (ring-r10: `cmd 6824 lba 0x1acc6f3`, heartbeats `age` climbing).
+  Fixing 0155 to the bounded form is the first kernel change to try.
+- `userland/src/var_store.c` is their answer to keeping a writable `/private/var`; ours
+  is the launchd cache plus HFS+ edits, which is the fragile path.
+Their `xnu/files/bsd/dev/hakios.ufshc.c` and `tools/ufs-super.py` are the references.
+
+**Runbook to a root shell / SSH, by either route (2026-10-26).****Runbook to a root shell / SSH, by either route (2026-10-26).** Everything below is
 committed; the only manual step left is getting the phone reachable.
 - `tools/picasso-auto-shell.sh [hours]` watches and finishes unattended. It tries
   `REMOTE=root@100.121.254.115` (k60) by default, or `REMOTE=local` for a phone
