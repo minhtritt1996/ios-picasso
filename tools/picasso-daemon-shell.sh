@@ -35,18 +35,21 @@ say "== shell -> /private/var/root/xsweetsh"
 adb -s "$SERIAL" push "$IMG" /tmp/sh.bin >/dev/null
 want=$(md5sum "$IMG" | cut -d' ' -f1)
 adb -s "$SERIAL" shell "dd if=/tmp/sh.bin of=/dev/block/bootdevice/by-name/darwin bs=4096 seek=3062518 conv=notrunc 2>/dev/null; sync" >/dev/null
-got=$(adb -s "$SERIAL" shell "dd if=/dev/block/bootdevice/by-name/darwin bs=1 count=$(stat -c %s "$IMG") 2>/dev/null | md5sum" | cut -d' ' -f1)
+got=$(adb -s "$SERIAL" shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=3062518 count=9 2>/dev/null | head -c $(stat -c %s "$IMG") | md5sum" | cut -d' ' -f1 | tr -d '\r')
 [ "$got" = "$want" ] || die "shell readback $got != $want"
-say "   ok"
+say "   ok ($got)"
 
 # 2. SpringBoard back to the stock binary so the carrier stops competing for 4444
 if [ "$DO_SB" = 1 ]; then
 	[ -f "$STOCK" ] || die "no stock image at $STOCK (set SPRINGBOARD_STOCK)"
 	say "== SpringBoard <- stock (28 blocks at 296602)"
 	dd if="$STOCK" of=/tmp/sb.bin bs=4096 skip=296602 count=28 status=none
+	want_sb=$(md5sum /tmp/sb.bin | cut -d' ' -f1)
 	adb -s "$SERIAL" push /tmp/sb.bin /tmp/sb.bin >/dev/null
 	adb -s "$SERIAL" shell "dd if=/tmp/sb.bin of=/dev/block/bootdevice/by-name/darwin bs=4096 seek=296602 conv=notrunc 2>/dev/null; sync" >/dev/null
-	say "   ok"
+	got_sb=$(adb -s "$SERIAL" shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=296602 count=28 2>/dev/null | md5sum" | cut -d' ' -f1 | tr -d '\r')
+	[ "$got_sb" = "$want_sb" ] || die "SpringBoard readback $got_sb != $want_sb"
+	say "   ok ($got_sb)"
 fi
 
 say "== reboot; then: tools/picasso-shell.sh"

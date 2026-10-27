@@ -149,9 +149,19 @@ def main():
                 if iface is None:
                     _time.sleep(2)
                     continue
-                if get_addr(iface) != OUR_IP:
-                    set_addr(iface, OUR_IP, 24)
+                try:
+                    have = get_addr(iface)
+                except OSError:
+                    have = None
+                if have != OUR_IP:
+                    try:
+                        __import__('subprocess').run(
+                            ['nmcli', 'device', 'set', iface, 'managed', 'no'],
+                            capture_output=True, timeout=3)
+                    except Exception:
+                        pass
                     if_up(iface)
+                    set_addr(iface, OUR_IP, "255.255.255.0")
                     print('re-added %s on %s' % (OUR_IP, iface), flush=True)
             except Exception as e:               # never die on a transient netlink error
                 print('watch: %s' % e, flush=True)

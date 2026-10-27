@@ -1,5 +1,5 @@
---- a/bsd/dev/sweet_ufs.c	2026-10-27 12:48:09.000000000 +0700
-+++ b/bsd/dev/sweet_ufs.c	2026-10-27 13:44:59.077999373 +0700
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
 @@ -1489,11 +1489,17 @@
  	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0) {
  		return ENXIO;
@@ -21,21 +21,12 @@
  		}
  	}
  	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
-@@ -1790,16 +1796,34 @@
- static void
- sweet_ufs_syncer(__unused void *arg, __unused wait_result_t wr)
- {
-+	uint32_t vfssync = 0;
-+
-+	PE_parse_boot_argn("ufsvfssync", &vfssync, sizeof(vfssync));
+@@ -1793,13 +1799,26 @@
  	for (;;) {
  		(void)tsleep(&sweet_sync_chan, PZERO, "sweetsync", hz * 5);
--		(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
+ 		(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
 +		if (!su.dirty) {
 +			continue;
-+		}
-+		if (vfssync) {
-+			(void)vfs_iterate(LK_NOWAIT, sweet_sync_mount, NULL);
 +		}
  		/*
 -		 * A VFS sync pushes the pages into the driver; the device may still hold
@@ -62,7 +53,7 @@
  		}
  	}
  }
-@@ -1970,7 +1994,12 @@
+@@ -1970,7 +1989,12 @@
  		 * hang watchdog could fire, so nothing else writes the log). */
  		if (++dump_every >= 5) {
  			dump_every = 0;

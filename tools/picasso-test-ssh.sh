@@ -13,7 +13,7 @@ KEY=${1:-$HOME/.ssh/picasso_key}
 python3 tools/picasso-ecm.py up >/dev/null 2>&1 || true
 
 echo "== starting dropbear through the shell"
-python3 tools/picasso-shell.sh 'ssh' 2>&1 | tail -4 || true
+sh tools/picasso-shell.sh 'ssh' 2>&1 | tail -4 || true
 
 echo "== waiting for port 22"
 i=0
