@@ -5280,3 +5280,28 @@ Connected to the recovery host at `root@100.121.254.115` (`f9f3d7b0 recovery`).
 
 
 
+
+## 2026-10-27 21:55 - ROOT CAUSE FOUND: the payload never carried the cmdline
+
+Every flashed image for hours had the *default* cmdline (`debug=0xc serial=3 cpus=1
+keepsyms=1`), not the one passed to mkpayload.py: two builds with different BOOT_CMDLINE
+produced byte-identical shim-boot.img (11127719...), and `strings payload | grep sweetusb`
+returned nothing. That is why "sweetusb=2", "rd=ufsroot0", "sweetscan=-" experiments all
+looked identical.
+
+After rebuilding with a *verified* payload (strings shows rd=ufsroot0 sweetusb=2
+sweetusblog=1 sweetusbsmmu=1 sweetscan=-), image 987720c1..., flashed on 0170:
+  usb 1-10: Product: Sweet iOS (USB Ethernet), usb0 UP, ping 3/3 0% loss (0.5 ms)
+  TCP 4444/22/9999 closed -> no userspace listener; L2 `info` answered once then stopped,
+  `log`/`cat`/`stat`/`ring` never answered on 0170.
+
+Device state now: darwin = ios8.img, md5 bd707703..., carrier 28b8d12c..., boot 987720c1...
+
+READY, NOT YET FLASHED: shim/out/shim-boot.img = 189f0fe2... (kernel of CI run 40511053047
+= user's 0172 + 0173 early ring flush), payload /tmp/pfinal.bin verified to contain
+rd=ufsroot0 sweetusb=2 sweetusblog=1 sweetusbsmmu=1 sweetscan=-.
+
+NEXT: recovery -> flash 189f0fe2 -> boot -> ping; then pull the ring over L2 (`ring`,
+`l2 log`) which the newer kernel supports, and check TCP 4444 (carrier still sb-loop.bin,
+the stock SpringBoard, so the shell is probably not started - try /tmp/sb-carrier.bin).
+RULE: before every dd, `strings payload | grep -E "rd=ufsroot0|sweetusb=2"` must match.
