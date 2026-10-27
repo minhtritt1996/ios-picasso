@@ -11,7 +11,10 @@ python3 tools/picasso-ecm.py up >/dev/null 2>&1 || true
 exec python3 - "$@" <<'PY'
 import socket, sys, time
 cmds = sys.argv[1:] or ['help']
-s = socket.create_connection(('192.168.7.2', 4444), timeout=6)
+try:
+    s = socket.create_connection(('192.168.7.2', 4444), timeout=6)
+except OSError as e:
+    sys.exit('shell not reachable on 192.168.7.2:4444 (%s)' % e)
 s.settimeout(8)
 for c in cmds:
     s.sendall((c + '\n').encode())
