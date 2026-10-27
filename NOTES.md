@@ -735,6 +735,9 @@ panic available for the rw-lock case.
    - In `sweet_ufs_dump_ring(false)` (called every 10s by `sweet_ufs_kick`), when `lck_mtx_try_lock(&sweet_ufs_lock)` failed, `if (!force && su.cmd_start)` only checked `su.cmd_start != 0`. If the lock holder was between `ufs_scsi` chunks, inside `memcpy` on `bounce`, or inside `ufs_sync_cache()`, `su.cmd_start` was 0 and `sweet_ufs_kick` proceeded **unlocked**, corrupting `bounce` and slot 0! Furthermore, `sweet_ufs_kick` called `sweet_ufs_emergency_dump()` every 10s even when `sweet_log_thread` was alive (`fage < 15000 ms`).
    - In `bsd/kern/sweet_amfi.c`, ported `ios-flame` patch `0114-flame-amfi-dyld-policy.patch`: changed MAC policy name from `"SWEET AMFI"` to `"AMFI"` and registered `.mpo_policy_syscall = sweet_amfi_syscall` so `amfi_check_dyld_policy_self()` (syscall `0x5a`) returns `0x5f` (`DYLD_AMFI_FAKE`) instead of `ENOSYS`.
    - Validated `0172-sweet-ufs-sync-lock-and-amfi-dyld.patch` with `tools/check-patch.sh` against CI run `40457215707`'s `buildtree.tgz` (`OK: applies cleanly`) and cross-compiled `bsd/dev/sweet_ufs.c` and `bsd/kern/sweet_amfi.c` locally via `tools/xnu-local.py` (`compiled 4, failed 0`).
+5. **CI builds on branch `agy` (commit `522f3b7`)**:
+   - `userland.yml` run `40463596922`: **success**. Artifact downloaded to `/tmp/userland-agy/usr/local/{bin/sh,sbin/dropbear,bin/dropbearkey,sbin/dbclient}` (`dropbear` is 285,376 bytes with built-in host key + `picasso` public key and no `strchrnul` symbol).
+   - `xnu.yml` run `40463599278`: **success**. Kernel downloaded to `/tmp/art-agy/kernel.development.sweet` and packaged into `shim/out/payload-picasso-agy.bin` and `shim/out/shim-boot-agy.img` (36,573,184 bytes, md5 `2112e209d16a21afe112a8f297c745f1`).
 
 f8fbd4bb55d33ccb5f4bdcc15d29d353**State at the end of the session: the shell works, the boot is not reliable.**
 Proven on hardware, in this order:
