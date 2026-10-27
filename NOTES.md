@@ -705,7 +705,27 @@ Start by finding where `hfs_vnop_open`/`hfs_vnop_write` blocks (`hfs_lock`,
 `journal` begin/end, `hfs_ubc_*`) - with `cpus=8` and the instrumented `0158`
 panic available for the rw-lock case.
 
-f8fbd4bb55d33ccb5f4bdcc15d29d353**Both listeners run; the IP path dies, the control path survives (2026-10-27, final).**
+f8fbd4bb55d33ccb5f4bdcc15d29d353**A root shell over TCP answers; the listener does not come back (2026-10-27, latest).**
+With 0170 in the kernel (ep0 rebuilt after every bus reset: the ring shows
+`ep0 rebuilt after reset -> ok` twice, then `address 54`, `configured (1)`) the IP path
+holds - ping 30/30 over 87 s, ARP REACHABLE - and the carrier shell serves its banner over
+TCP: connecting to 192.168.7.2:4444 and sending `help` prints
+`sweetsh - picasso XNU port, freestanding arm64 static binary` plus the builtin list. That
+is a root shell over USB with no recovery involved.
+Two things stop it from being a toolbox yet:
+- After the client disconnects, repl() returns and serve() returns, but listen_4444()
+  cannot rebind 4444 while the old connection sits in TIME_WAIT (setsockopt is not usable
+  on this port: the shell's own note says it wedged the box), and the quiet build does not
+  log the failure. So one session per boot, then `connection refused`. Keep the session
+  open and it serves every command.
+- The kernel file server accepts on 2223 but every operation (CHMOD, MKDIR, GET) times
+  out, so it is not a way in yet; the FS path under a server thread is the next thing.
+Also: `l2 reboot` prints "rebooting" but does not reset this phone; a manual power cycle
+is the only reliable reboot, and the host side loses 192.168.7.1 regularly (only IPv6
+left) - `picasso-ecm.py up` restores it, which accounts for many earlier "ping is dead"
+observations.
+
+**Both listeners run; the IP path dies, the control path survives (2026-10-27, final).****Both listeners run; the IP path dies, the control path survives (2026-10-27, final).**
 Read over the L2 channel itself (no recovery needed - `picasso-ecm.py ring` pulls the
 kernel ring through it), this boot says:
 ```
