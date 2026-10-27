@@ -1,0 +1,116 @@
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -81,6 +81,7 @@
+ #include <sys/systm.h>
+ #include <sys/proc_internal.h>
+ #include <sys/kauth.h>
++#include <kern/lock_rw.h>
+ #include <sys/mount_internal.h>
+ #include <sys/time.h>
+ #include <sys/lock.h>
+@@ -1069,6 +1070,26 @@
+ 
+ 	mount_unlock(mp);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * SWEET: a vnode's v_mountedhere can hold garbage. Such a "mount" has
++	 * an mnt_rwlock that never went through lck_rw_init(), mnt_op NULL and
++	 * mnt_flag 0: taking that lock panics in lock_rw.c and VFS_ROOT() would
++	 * dereference NULL. Refuse the busy (without touching the lock) and
++	 * report it once. A real mount, including one being allocated for the
++	 * root, always has an initialised lock, so this does not affect it.
++	 */
++	if (!lck_rw_is_sleepable(&mp->mnt_rwlock)) {
++		static int sweet_badmnt_busy;
++
++		if (sweet_badmnt_busy++ < 4) {
++			printf("SWEET VFS: vfs_busy on mount without mnt_op mp %p "
++			    "flags 0x%x lflag 0x%x vtable %p\n", mp, mp->mnt_flag,
++			    mp->mnt_lflag, mp->mnt_vtable);
++		}
++		return ENOENT;
++	}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	lck_rw_lock_shared(&mp->mnt_rwlock);
+ 
+ 	/*
+--- a/bsd/vfs/vfs_lookup.c
++++ b/bsd/vfs/vfs_lookup.c
+@@ -1586,6 +1586,39 @@
+ 			break;  // don't traverse into a forced unmount
+ 		}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * SWEET: a directory vnode can carry a garbage v_mountedhere
++		 * (that "mount" has mnt_op == NULL and mnt_flag == 0) and
++		 * VFS_ROOT() then dereferences NULL. A real mount always has
++		 * mnt_op and at least one mnt_flag bit: drop the bogus crossing,
++		 * report it and keep booting.
++		 */
++		if (mp->mnt_op == NULL || mp->mnt_flag == 0) {
++			static int sweet_badmnt_logged;
++
++			if (sweet_badmnt_logged++ < 4) {
++				printf("SWEET VFS: bogus v_mountedhere dp %p type %d "
++				    "tag %d mp %p op %p vtable %p flags 0x%x "
++				    "lflag 0x%x crossref %d\n", dp, dp->v_type,
++				    dp->v_tag, mp, mp->mnt_op, mp->mnt_vtable,
++				    mp->mnt_flag, mp->mnt_lflag, mp->mnt_crossref);
++			}
++			/*
++			 * Do NOT call mount_dropcrossref(): with v_mountedhere
++			 * already cleared it would take its free branch and
++			 * zfree() a mount that never came from mount_zone. Undo
++			 * the crossref increment and drop the bogus pointer.
++			 */
++			vnode_lock_spin(dp);
++			if (mp->mnt_crossref > 0) {
++				mp->mnt_crossref--;
++			}
++			dp->v_mountedhere = NULLVP;
++			vnode_unlock(dp);
++			break;
++		}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 		if (vfs_busy(mp, vbusyflags)) {
+ 			mount_dropcrossref(mp, dp, 0);
+--- a/osfmk/kern/lock_rw.c
++++ b/osfmk/kern/lock_rw.c
+@@ -188,6 +188,16 @@
+ 	lck_grp_reference(grp, &grp->lck_grp_rwcnt);
+ }
+ 
++/*
++ * SWEET: bsd/ cannot read the can_sleep bit of an opaque lck_rw_t.
++ * Returns false for a lock that was never lck_rw_init()ed.
++ */
++bool
++lck_rw_is_sleepable(const lck_rw_t *lck)
++{
++	return lck->lck_rw_can_sleep;
++}
++
+ /*!
+  * @function lck_rw_free
+  *
+--- a/osfmk/kern/lock_rw.h
++++ b/osfmk/kern/lock_rw.h
+@@ -111,6 +111,15 @@
+ typedef struct __lck_rw_t__     lck_rw_t;
+ #endif /* !KERNEL_PRIVATE */
+ 
++#ifdef KERNEL_PRIVATE
++/*
++ * SWEET: bsd/ sees the opaque lck_rw_t, so it cannot read the can_sleep bit.
++ * vfs_busy() uses it to tell a real mount (its mnt_rwlock went through
++ * lck_rw_init) from a garbage one that never did. @see lck_rw_init().
++ */
++extern bool lck_rw_is_sleepable(const lck_rw_t *lck);
++#endif /* KERNEL_PRIVATE */
++
+ #if DEVELOPMENT || DEBUG
+ #ifdef XNU_KERNEL_PRIVATE
+ 

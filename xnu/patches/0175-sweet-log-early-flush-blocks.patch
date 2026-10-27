@@ -1,0 +1,54 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1483,8 +1483,8 @@
+ sweet_log_early_flush(void)
+ {
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
+-	uint64_t base, total, pos;
+-	uint32_t off, blk, n;
++	uint64_t base, total;
++	uint32_t blk, n;
+ 
+ 	if (sweet_log_started_g || !su.ready || !su.writable || su.nblocks == 0 ||
+ 	    ml_at_interrupt_context() || !ml_get_interrupts_enabled()) {
+@@ -1494,17 +1494,33 @@
+ 	 * preemption check is gone - it is never 0 on this path, which is why the first
+ 	 * version wrote nothing at all. ufs_lock is a try-lock below, so a busy driver
+ 	 * simply means the next append tries again. */
+-	if (++sweet_log_early_tick > 64) {
++	if (++sweet_log_early_tick > 1024) {
+ 		return;
+ 	}
+ 	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+ 	total = os_atomic_load(&sweet_log_total, relaxed);
+-	pos = total > SWEET_LOG_SIZE ? total - SWEET_LOG_SIZE : 0;
+-	off = (uint32_t)(pos % SWEET_LOG_SIZE);
+-	blk = off / UFS_BLOCK;
+-	n = 2;
+-	if (blk + n > SWEET_LOG_SIZE / UFS_BLOCK) {
+-		n = (uint32_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk);
++	/*
++	 * Write the blocks that actually hold data. The first version always
++	 * computed pos == 0 (total is far below SWEET_LOG_SIZE during early
++	 * boot), so it rewrote the same first 8 KiB while the header claimed the
++	 * new total: readers then got fresh bytes followed by the previous
++	 * boot's content.
++	 */
++	{
++		uint32_t maxn = DMA_BOUNCE / UFS_BLOCK;
++		uint64_t used = total > SWEET_LOG_SIZE ? SWEET_LOG_SIZE : total;
++		uint32_t total_blks = (uint32_t)((used + UFS_BLOCK - 1) / UFS_BLOCK);
++
++		if (total_blks == 0) {
++			return;
++		}
++		if (total_blks > maxn) {
++			blk = total_blks - maxn;
++			n = maxn;
++		} else {
++			blk = 0;
++			n = total_blks;
++		}
+ 	}
+ 	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
+ 		return;

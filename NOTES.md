@@ -5377,3 +5377,15 @@ the try/sleepable variant in vfs_busy. Also worth fixing gPanicBase so panics lo
 Recovery ring pull: on the PHONE adb shell creates /data/local/tmp/r.bin
 (dd if=/dev/block/bootdevice/by-name/darwin of=... bs=4096 skip=5242106 count=1025), then
 adb pull on k60, then scp to this host. scp directly from k60 fails - the file is on the phone.
+
+## 2026-10-27 23:15 - patch 0174 built; flash failed once with the sweet layout
+- Commit `697d660` (picasso remote), CI run **40536367944** = success, artifact `xnu-kernel`.
+- Patch 0174 = `lck_rw_is_sleepable()` helper (osfmk/kern/lock_rw.{h,c}) + `vfs_busy()`/
+  `vfs_unbusy()` in bsd/vfs/vfs_subr.c take a non-sleepable `mnt_rwlock` with preemption
+  disabled and print `SWEET VFS: vfs_busy on non-sleepable mnt_rwlock` once.
+- Compiled locally first (xnu-local.py, buildtree bt173x): both files clean.
+- FIRST FLASH WAS WRONG: `shim/build.sh` without `--picasso` -> 18,190,336 B sweet layout ->
+  phone hung at the Xiaomi logo. Correct image built with `--picasso`: 36,573,184 B,
+  md5 `02b29b5220ae43d87aeb5d9aeab437bf`, staged on k60 as `/tmp/shim-boot-0174.img`.
+- State: waiting for the phone to be in recovery to flash that image, then test
+  `ping 192.168.7.2` + port 22 + `l2 log | grep "SWEET VFS"`.
