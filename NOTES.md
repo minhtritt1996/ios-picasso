@@ -5728,3 +5728,25 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
   list), i.e. the trampoline blocks before that step. Next: 0181 now also prints xpcproxy's
   first 64 syscalls ("SWEET SYSCALL xpcproxy n=<code> err=<e> a0=<arg>") to name the blocking
   call. Build 40713014968.
+
+## 2026-10-28 23:00 - UI launched by the carrier itself; backboardd SIGTRAPs
+- carrier v6 (`/tmp/carrier-um6`, md5 cc6eec16..., 700,128 B) holds the boot task until
+  `/private/var/root/ui` exists, then forks `/usr/libexec/backboardd` and 5 s later
+  `/System/Library/CoreServices/SpringBoard` itself (children of a launchd job, so they inherit
+  launchd's bootstrap namespace), and keeps holding the boot task so the xpcproxy storm never
+  starts and SSH stays usable next to the UI attempt.
+- Ring after `: > /private/var/root/ui`:
+  `sweetsh: starting UI directly`, `sweetsh: backboardd forked 16`,
+  `exec backboardd argv /usr/libexec/backboardd size 1184848`,
+  `SWEET EXIT backboardd pid 16 rv 0x5`, then the kernel's crash block:
+  `CRASH backboardd[16] sig 5 code 0x600000001 sub 0x1d6b4b8a4 slide 0x3b170000 mh 0x100da8000`
+  `CRASH backboardd pc 0x1d6b4b8a4 lr 0x1d6b4b8a4 sp ... far 0x1c8f1cd58`
+  `CRASH backboardd bt 0x1d6b34368 0x20cd5f788 0x20cd5fb84 0x1c8d08834 ...`
+  SpringBoard was forked right after and did not come up either.
+- So launchd/xpcproxy is no longer the blocker: the UI vehicle works, and backboardd traps
+  (sig 5, pc == lr) inside shared-cache code. Bergamota's port hit the same wall and solved it by
+  providing the display stack (IOMobileFramebuffer + IOSurface). This kernel already has
+  iokit/Kernel/arm/SweetFramebuffer.cpp and SweetSurface.cpp, so the next question is whether
+  backboardd matches/opens that service (needs the crash pc symbolicated: extract
+  dyld_shared_cache_arm64e from the cryptex or from /home/tritm/dump/hfs.img and use
+  tools/sweet-crash.py).
