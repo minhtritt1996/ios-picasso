@@ -1,0 +1,62 @@
+--- a/bsd/kern/kern_fork.c
++++ b/bsd/kern/kern_fork.c
+@@ -620,7 +620,20 @@
+ 		}
+ 
+ 		/* "Return" to the child */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		{
++			static int sweet_fork_prints = 64;
++			task_clear_return_wait(get_threadtask(child_thread), TCRW_CLEAR_ALL_WAIT);
++			if (sweet_fork_prints > 0) {
++				sweet_fork_prints--;
++				printf("SWEET FORK %s pid %d -> child %d released\n",
++				    parent_proc->p_comm, proc_getpid(parent_proc),
++				    proc_getpid(child_proc));
++			}
++		}
++#else
+ 		task_clear_return_wait(get_threadtask(child_thread), TCRW_CLEAR_ALL_WAIT);
++#endif
+ 
+ 		/* drop the extra references we got during the creation */
+ 		task_deallocate(child_task);
+--- a/osfmk/kern/task.c
++++ b/osfmk/kern/task.c
+@@ -788,6 +788,17 @@
+ {
+ 	task_t task = current_task();
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	{
++		static int sweet_forkw_prints = 64;
++
++		if (sweet_forkw_prints > 0) {
++			sweet_forkw_prints--;
++			printf("SWEET FORK child wait thread %llu flags 0x%x\n",
++			    thread_tid(current_thread()), task->t_returnwaitflags);
++		}
++	}
++#endif
+ 	is_write_lock(task->itk_space);
+ 
+ 	if (task->t_returnwaitflags & TRW_LRETURNWAIT) {
+@@ -818,6 +829,18 @@
+ 	is_write_unlock(task->itk_space);
+ 	turnstile_cleanup();
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	{
++		static int sweet_forkw_prints;
++
++		if (sweet_forkw_prints < 64) {
++			sweet_forkw_prints++;
++			printf("SWEET FORK child woke thread %llu, entering userland\n",
++			    thread_tid(current_thread()));
++		}
++	}
++#endif
++
+ 
+ #if CONFIG_MACF
+ 	/*
