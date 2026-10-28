@@ -5509,3 +5509,20 @@ carrier) silently do nothing.
   (reaches SpringBoard).
 - Rules learned: never add a KeepAlive job for an untested carrier on this port; first prove the
   carrier with RunAtLoad + ThrottleInterval and a carrier that writes a status file and exits.
+
+## 2026-10-28 13:45 - fast iteration: block deltas, no more 10-minute flashes
+- `tools/ios-delta-ship.py BASE TARGET` writes only the 4 KiB blocks that differ (1 MiB scan,
+  then refine), verifies 300 random base blocks against the phone first (skipping blocks 0-2,
+  the volume header the kernel rewrites), then dd's each run with per-run md5. ssh5 -> ssh6 was
+  **4 runs / 5 blocks (20 KiB)**, i.e. ~1 s instead of 10 min. BASE must be the exact image on
+  the phone.
+- Vehicles that FAIL on this port (each cost a boot): `/sbin/mount` replaced by a carrier ->
+  `Halt/Restart Timed Out @IOPPlatformExpert.cpp:884` (a boot task that exits makes launchd ask
+  the platform to restart); a cache job with KeepAlive -> reboot loop; a boot task must also be
+  signed with the *expected* identity (`mkmacho.py --ident com.apple.mount`), otherwise
+  `code signing identity mismatch for a boot-task`.
+- The files server on tcp 2223 (patch 0168) accepts PUT/GET/MKDIR/CHMOD and prints
+  `SWEET FILES: listening on tcp 2223`, and the port is reachable, but every request timed out -
+  the handler looks wedged. Worth fixing: it would allow installing files without recovery.
+- Disk: `/` hit 100%; deleted ios-fix/ios-root-new/ssh2/ssh3/ssh4/safe/pristine copies (76 GB).
+  Kept ssh5.img (on the phone, delta base), ssh6.img (next), ios8.img, ios9.img.
