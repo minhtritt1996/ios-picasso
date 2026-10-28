@@ -5461,3 +5461,21 @@ carrier) silently do nothing.
 - The job that ran the carrier is /System/Library/LaunchDaemons/000-sweetsh.plist
   (Label com.picasso.sweetsh, Program /private/var/root/xsweetsh); both images carry it and the
   same launchd cache (md5 4ab90b7a...), so the difference was in the rootfs state, not the plists.
+
+## 2026-10-28 09:20 - rebuilt rootfs from firmware: stalls at launchd mount-phase-1
+- Pipeline used (the intended one): /home/tritm/ios-work/root/ios16-root-picasso.img (pristine
+  `mkiosroot.sh` output from 20/10, fsck clean) -> loop mount (hfsplus rw,force) ->
+  `tools/sweet-root-tweaks.py` -> installed `/private/var/root/dropbear` (285,376),
+  `/private/var/root/xsweetsh` (32,920 carrier that execs dropbear -F), the plist
+  `/System/Library/LaunchDaemons/000-sweetsh.plist`, and added the job to
+  `/System/Library/xpc/launchd.plist` (522 -> 523 jobs, 791,882 bytes, still inside its
+  194-block extent). fsck after: OK. Streamed to darwin, readback md5 785f8c23... OK.
+- Result: ping 3/3 ~1 ms, but launchd stops after
+  `(mount-phase-1) <Notice>: Doing boot task` and NO job ever exits (no `SWEET EXIT` lines),
+  no xpcproxy, no SpringBoard, port 22 closed. So this image needs the pieces the older
+  drifting image had and this one does not - `tools/picasso-install-launchd-cache.sh` lists
+  them: patched amfid, safetyalertsd, backboardd, SpringBoard (plus cache + catalog).
+  Those blobs were never committed (the prep step is missing from the repo).
+- Next: either (a) restore the user's own darwin backup, or (b) re-derive those four patched
+  binaries, or (c) find why mount-phase-1 never completes on the fresh root (it is the first
+  boot task; /etc/fstab does not exist in either image).
