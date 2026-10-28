@@ -5573,3 +5573,17 @@ command and dies after ~20 commands).
 - Boot is intermittent: the same image sometimes dies before launchd (on-disk ring has only the
   8 KB prologue) and sometimes reaches Early boot + 39 xpcproxy + ping 1 ms. Two of the
   successful boots had `sweetsample=mount`; the sampler never produced `SMP mount` lines.
+
+## 2026-10-28 16:30 - mount trace works; RAWBLK bugs found (lba + blocking lock)
+- Patch 0177 (`SWEET TRACE mount open <path> flags`, first 24 opens of the process named
+  "mount") works. On a boot that gets past mount-phase-1, mount opens the dyld cache dir,
+  /sbin/mount, /dev/dtracehelper, SystemVersion.plist and the FeatureFlags plists - normal
+  behaviour, so the stall really is intermittent and not a mount logic bug.
+- RAWBLK never answered, not even for `RAWBLK 100 0` (which needs no I/O) because the files
+  server's handler thread was already stuck inside the previous raw write, and the handler is
+  serialised.
+- Two real bugs in the first driver version: the lba must be partition-relative
+  (`lba += su.first_block`) and the UFS lock must be `lck_mtx_try_lock` (the flusher can hold it
+  while talking to the engine, a blocking grab wedges the server). Both fixed in 0176 and a
+  `SWEET FILES: RAWBLK <lba>+<n>` print was added before each write.
+- Rebuild run: 40664110993 (bfa2c64). Not yet booted/tested.
