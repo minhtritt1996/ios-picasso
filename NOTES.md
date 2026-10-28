@@ -5543,3 +5543,19 @@ flags), so BASE goes stale and the write mixes two catalog states. The base chec
 => Full-image writes (10 min) are the only reliable raw install; runtime installs must go through
 the kernel (files server tcp 2223 - currently wedged - or L2 `put`, which is limited to ~340 B per
 command and dies after ~20 commands).
+
+## 2026-10-28 14:55 - mount-phase-1 stall is flaky, not caused by the added files
+- Rebuilt image with hfsplus-tool ONLY (no Linux mount): pristine FW root + dropbear +
+  /usr/libexec/safetyalertsd replaced by the carrier (ident com.apple.safetyalertsd, never exits,
+  listens on 4444). fsck clean, full write verified (f399c587...). Boot: still stuck at
+  `exec mount argv mount -P size 91952`, no `SWEET EXIT` at t=175 s.
+- Then restored the PRISTINE image (ios-work/root/ios16-root-picasso.img) unchanged: it stalls the
+  same way now. The one boot that passed mount-phase-1 (ring_smp.txt) ran with
+  `sweetsample=mount`; there `mount -P` was followed ~15 s later by
+  `exec mount_hfs argv /sbin/mount_hfs -o size` and `SWEET EXIT mount_hfs rv 0x0`.
+  So the stall is intermittent and independent of the extra files.
+- Files server tcp 2223 (kernel side): GET works (`get /System/Library/CoreServices/
+  SystemVersion.plist` -> 574 bytes), PUT never replies, even for 6 bytes with a raw socket - the
+  kernel write path wedges, as earlier notes said. Fixing sf_put in bsd/dev/sweet_files.c (patch
+  0168) would give a runtime install path that never touches the image.
+- Current device: pristine root, kernel 0174/0175, ping ~1 ms, 2223 open, SSH 22 closed.
