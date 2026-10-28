@@ -1,0 +1,19 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3213,6 +3213,16 @@
+ 		if (csproc_get_platform_binary(pt)) {
+ 			retflags |= CS_PLATFORM_BINARY;
+ 		}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * SWEET: a file we replaced in place keeps the stock file's cached
++		 * code-signing blob, so its process never gets CS_PLATFORM_BINARY and
++		 * launchd refuses to start it as a boot task ("boot task is not a
++		 * platform binary"). This port already runs with cs_enforcement and
++		 * AMFI stubbed out, so report the flag for every process.
++		 */
++		retflags |= CS_PLATFORM_BINARY;
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 		if (csproc_get_platform_path(pt)) {
+ 			retflags |= CS_PLATFORM_PATH;
+ 		}
