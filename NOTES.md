@@ -5526,3 +5526,20 @@ carrier) silently do nothing.
   the handler looks wedged. Worth fixing: it would allow installing files without recovery.
 - Disk: `/` hit 100%; deleted ios-fix/ios-root-new/ssh2/ssh3/ssh4/safe/pristine copies (76 GB).
   Kept ssh5.img (on the phone, delta base), ssh6.img (next), ios8.img, ios9.img.
+
+## 2026-10-28 14:10 - block deltas corrupt the HFS catalog: kernel rewrites catalog nodes each boot
+Ring from the ssh7 delta boot (3,303aa9a..., total 58,646 bytes):
+```
+hfs_swap_HFSPlusBTInternalNode: catalog key #38 invalid length (0)
+hfs: node=18850 fileID=4 volume=iOSRoot device=/dev/ufsroot0
+hfs_mark_inconsistent: Runtime corruption detected on iOSRoot, fsck will be forced on next mount
+mount: failed to mount /private/var/hardware/Pearl/... error 5
+SWEET EXIT mount pid 7 rv 0x4a00  ->  userspace panic "mount[7] exited ... exit status 74"
+```
+So a partial (delta) write is only safe if the phone's image is byte-identical to BASE outside the
+delta - but the kernel *rewrites catalog nodes on every mount* (hardlink-bit fixes, journal
+flags), so BASE goes stale and the write mixes two catalog states. The base check samples only
+0.3% of blocks and cannot see that.
+=> Full-image writes (10 min) are the only reliable raw install; runtime installs must go through
+the kernel (files server tcp 2223 - currently wedged - or L2 `put`, which is limited to ~340 B per
+command and dies after ~20 commands).
