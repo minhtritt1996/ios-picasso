@@ -5941,3 +5941,29 @@ jobs instead of our carrier, booted kernel t6, and pulled the ring from recovery
   heartbeat. Also passes `sweetufstrace=1` explicitly (the gd/cd lines prove trace was already on,
   and the heartbeat's `dma 1496/107819008` suggests the direct-DMA branch may be live even though
   `sweetdirect` is not in the cmdline - patch 0184's `s6` line settles it).
+
+### 2026-10-29 - launchd boot reaches the daemon phase (kernel t7 / k191)
+With the pristine `usermanagerd` and `sweetufstrace=1` the port no longer stalls at the first read;
+observed live over the L2 channel (no recovery needed, `picasso-ecm.py ring`):
+- `exec xpcproxy com.apple.{UserEventAgent-System,powerd,WirelessRadioManager,securityd,
+  watchdogd,identityservicesd,wcd,thermalmonitord,askpermissiond,seld,…}` - the real daemon set.
+- Boot tasks exit normally: `SWEET EXIT tzinit pid 17 rv 0x0`, `init_featureflag 0x0`,
+  `auearlyboot 0x0`, `launchd_cache_lo 0x0`; no panic. Non-zero worth a look later:
+  `sysstatuscheck rv 0x100`, `prng_seedctl rv 0xd00`.
+- Patch 0184 works: `SWEET UFS s7` chunk lines appear (1775 of them), `SWEET UFS s6`/`LKWAIT`
+  never fire - the direct-DMA branch is off (`su.direct` needs `sweetdirect=1`, not in the cmdline)
+  and no lock wait exceeded 200 ms, so the old heartbeat `dma 1496/107819008`/`lk 4/1` readings
+  came from older kernels earlier in the ring, not from this build.
+- The system then goes quiet: `ringpos` still advances but only from the log-flush cycle
+  (`gd: op 0x2a lba 0x1d827fb n 227` + `op 0x2a n 1` + `op 0x35` SYNCHRONIZE_CACHE every ~3 s),
+  while the files server (TCP 2223) stops answering and port 22 stays refused - userland I/O is
+  blocked somewhere a UFS lock wait does not see.
+- No SSH in launchd mode: `/System/Library/LaunchDaemons/000-sweetsh.plist` and
+  `/usr/libexec/dropbear` do not exist in the current root (only `/private/var/root/sh` survives),
+  so the carrier-era shell is gone. Available channels: L2 `ring/log/stat/cat/probe/reboot` and
+  (while it lasts) the files server at 192.168.7.2:2223.
+- Next: find who is blocked. The kernel already has the user sampler (`sweetsample=name,name`,
+  bsd/dev/sweet_sample.c: first sample 90 s, then every 120 s, prints pc/lr/bt per user thread) -
+  boot with `sweetsample=launchd,configd,securityd,watchdogd` and symbolicate the prints; for the
+  kernel side (files server, UFS strategy thread) add a watchdog that dumps the pc of every thread
+  when `ringpos` has not advanced for N seconds.
