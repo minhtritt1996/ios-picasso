@@ -5444,3 +5444,20 @@ carrier) silently do nothing.
 - Installed now: `/private/var/root/xsweetsh` = 16,512-byte stub that opens /dev/console, dup2s it
   onto 1/2 and execs `/private/var/root/dropbear -F -R -p 22`, printing `stub: exec dropbear -F`
   and `stub: exec err <n>` (source /tmp/execdb.c, build with clang/lld/mkmacho as in build.sh).
+
+## 2026-10-28 08:10 - restored ios8.img; userland now stalls before SpringBoard (REGRESSION)
+- ios8.img (host) is HFS-corrupt ("Keys out of order (4, 10884)"); `fsck.hfsplus -fy` on it
+  segfaults (rc=139), so it cannot be repaired locally. ios9.img is clean but is an earlier
+  state: userland reaches xpcproxy only, no SpringBoard, no carrier job.
+- I streamed ios8.img to `darwin` twice (readback md5 verified: 99f7df42..., then ios9 8ea1f4e4...).
+  The current device content == ios8.img exactly.
+- IMPORTANT: the device state that DID reach SpringBoard + the sweetsh carrier (photos at 06:07
+  and 06:20, console with `sweetsh: bound udp 4444` / `sweetsh: serving`) was NOT any of the local
+  images - it was a drifted state that was never pulled. Streaming ios8/ios9 over it destroyed it.
+  Lesson: ALWAYS pull the live darwin first (`adb shell dd if=/dev/block/.../darwin of=/data/local/tmp/d.bin`
+  then pull) before restoring any image.
+- Current device: kernel 0174/0175 (panics fixed, ping 3/3 0.9 ms), rootfs ios8.img, userland
+  reaches xpcproxy ~42 services then stalls; no SpringBoard, no carrier, port 22 closed.
+- The job that ran the carrier is /System/Library/LaunchDaemons/000-sweetsh.plist
+  (Label com.picasso.sweetsh, Program /private/var/root/xsweetsh); both images carry it and the
+  same launchd cache (md5 4ab90b7a...), so the difference was in the rootfs state, not the plists.
