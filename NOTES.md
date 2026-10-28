@@ -5599,3 +5599,16 @@ command and dies after ~20 commands).
   so re-copy after any k60 change.
 - Note the RAWBLK print (`SWEET FILES: RAWBLK <lba>+<n>`) is emitted before the write, so a ring
   grep for it tells whether the request reached the driver call.
+
+## 2026-10-28 18:20 - in-place carriers: launchd needs CS_PLATFORM_BINARY
+- RAWBLK works (dedicated `sweet_raw_lock`): `put` of the 5-block carrier and the 70-block dropbear
+  both returned `-> 0`, and the console showed `SWEET FILES: RAWBLK <blk>+<n> -> 0`.
+- `/usr/libexec/usermanagerd` is a daemon launchd execs DIRECTLY (xpcproxy is stuck before its own
+  execve on this port, so anything started through it never runs: `exec xpcproxy argv xpcproxy
+  com.apple.watchdogd` and then nothing).
+- Replacing usermanagerd's blocks with our carrier gave:
+  `userspace panic: boot task is not a platform binary (usermanagerd, /usr/libexec/usermanagerd)`.
+  The stock file's code-signing blob stays cached for that vnode, so the process never gets
+  CS_PLATFORM_BINARY even though sweet_amfi sets it in vnode_check_signature.
+- Patch 0178 makes csops(CS_OPS_STATUS) report CS_PLATFORM_BINARY for every process (acceptable:
+  cs_enforcement_disable + stubbed AMFI). Build 40678329946.
