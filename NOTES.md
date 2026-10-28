@@ -5612,3 +5612,22 @@ command and dies after ~20 commands).
   CS_PLATFORM_BINARY even though sweet_amfi sets it in vnode_check_signature.
 - Patch 0178 makes csops(CS_OPS_STATUS) report CS_PLATFORM_BINARY for every process (acceptable:
   cs_enforcement_disable + stubbed AMFI). Build 40678329946.
+
+## 2026-10-28 18:55 - MILESTONE: SSH server up (port 22, key auth OK); sessions die in fork()
+- `usermanagerd` (exec'd directly by launchd, not via xpcproxy) is the working carrier slot.
+  The binary must be padded to the ORIGINAL file size (700,128 for usermanagerd) with the ad-hoc
+  signature at the end - otherwise the kernel reads the blob from the wrong offset and launchd
+  panics with "failed to get the code signing identity for a boot-task ... errno: 22".
+  `mkmacho.py --total-size N` does that now.
+- Kernel patches that made it work: 0178 (csops reports CS_PLATFORM_BINARY for every process,
+  needed because an in-place replaced file keeps the stock blob) and 0176 (RAWBLK through the UFS
+  driver, dedicated lock, prints on success).
+- Install path that works while the phone runs: files server `RAWBLK` (tcp 2223). GET works, PUT
+  wedges; RAWBLK needs ~1 request per 64 KiB and the server dies after a burst, so do one burst
+  per boot.
+- State now: dropbear runs as /usr/libexec/backboardd (ring: `exec backboardd argv
+  /usr/libexec/backboardd -F size 1184848`), port 22 OPEN, ed25519 host key, publickey auth
+  accepted with /private/var/root/.ssh/authorized_keys (written over L2 `put` + `putend`).
+- Remaining blocker: every session logs `Exit (root) ...: Child failed` and the ring shows no
+  `exec /bin/sh` - dropbear forks per session and this port's fork() does not deliver a running
+  child. Fixing fork (or patching dropbear to serve without fork) is the next task.
