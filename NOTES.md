@@ -5496,3 +5496,16 @@ carrier) silently do nothing.
   (`192.168.7.2 INCOMPLETE`), so no L2 and no way to read the ring.
 - Next: power-cycle and watch L2 from the first seconds to catch the carrier banner
   (`sweetsh: carrier build ... tcp`) or `sweetsh: exec err <n>`.
+
+## 2026-10-28 12:10 - rebound: my launchd job caused a boot loop; safe image prepared
+- The prepared image (785f8c23) made the phone reboot continuously: its cache job
+  `com.picasso.sweetsh` has KeepAlive=true and runs the carrier which execs dropbear -F; the
+  job dies, launchd respawns it, and the port's watchdog resets the SoC. L2 answered at
+  t+45 s and t+70 s only (bg_57), then nothing; the USB gadget re-enumerates on every pass
+  (lsusb shows 1209:0001 each time).
+- Prepared `safe.img` (md5 b2effc8613a8293f4ec803d109274a85, fsck OK): pristine firmware root
+  + /private/var/root/{dropbear 285376, xsweetsh 32920} and NO cache job (522 jobs, no
+  picasso entry). Flash it to break the loop; the boot then behaves like the pristine image
+  (reaches SpringBoard).
+- Rules learned: never add a KeepAlive job for an untested carrier on this port; first prove the
+  carrier with RunAtLoad + ThrottleInterval and a carrier that writes a status file and exits.
