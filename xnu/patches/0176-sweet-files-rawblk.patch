@@ -1,6 +1,15 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -657,6 +657,33 @@
+@@ -166,6 +166,8 @@
+ 
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+ static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
++/* RAWBLK path: never share the flusher's lock, which it can hold for good. */
++static LCK_MTX_DECLARE(sweet_raw_lock, &sweet_ufs_grp);
+ 
+ enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
+        UFS_LK_INIT, UFS_LK_FLUSH, UFS_LK_STATUS };
+@@ -657,6 +659,36 @@
  	return error;
  }
  
@@ -20,14 +29,17 @@
 +	/* lba is partition-relative (image block numbers); the driver wants the
 +	 * absolute LUN block. */
 +	lba += su.first_block;
-+	/* never block the caller: the flusher holds this lock while it talks to the
-+	 * engine, and a blocking grab from the files server is what wedged it. */
-+	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++	/*
++	 * Own lock, not sweet_ufs_lock: the flusher can hold that one while it talks
++	 * to the engine, and waiting on it wedged the files server. Serialise RAWBLK
++	 * against itself only.
++	 */
++	if (!lck_mtx_try_lock(&sweet_raw_lock)) {
 +		return EBUSY;
 +	}
 +	memcpy((void *)(su.dma + DMA_BOUNCE), src, (size_t)count * UFS_BLOCK);
 +	error = ufs_write_blocks(lba, count);
-+	lck_mtx_unlock(&sweet_ufs_lock);
++	lck_mtx_unlock(&sweet_raw_lock);
 +	return error;
 +}
 +
@@ -36,7 +48,7 @@
  ufs_write_blocks_at(uint64_t lba, uint32_t count)
 --- a/bsd/dev/sweet_files.c
 +++ b/bsd/dev/sweet_files.c
-@@ -154,7 +154,41 @@
+@@ -154,6 +154,45 @@
  	return err;
  }
  
@@ -50,7 +62,9 @@
 +/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
 + * device through the UFS driver (the VFS path wedges on this port). Nothing in
 + * the catalog changes, so this is only for same-size replacements. */
- static int
++static int sweet_rawblk_prints = 8;
++
++static int
 +sf_rawblk(socket_t so, uint64_t blk, uint64_t cnt)
 +{
 +	uint64_t left = cnt * 4096ULL;
@@ -63,7 +77,10 @@
 +		if (err != 0) {
 +			return err;
 +		}
-+		printf("SWEET FILES: RAWBLK %llu+%u\n", off, (unsigned)(chunk / 4096));
++		if (sweet_rawblk_prints > 0) {
++			sweet_rawblk_prints--;
++			printf("SWEET FILES: RAWBLK %llu+%u\n", off, (unsigned)(chunk / 4096));
++		}
 +		err = sweet_ufs_write_blocks_raw(off, (uint32_t)(chunk / 4096), sf_buf);
 +		if (err != 0) {
 +			return err;
@@ -74,11 +91,10 @@
 +	return 0;
 +}
 +
-+static int
+ static int
  sf_put(socket_t so, const char *path, int mode, uint64_t size)
  {
- 	vfs_context_t ctx = vfs_context_kernel();
-@@ -245,6 +279,17 @@
+@@ -245,6 +284,17 @@
  		sf_reply(so, err, n, true);
  		return;
  	}
