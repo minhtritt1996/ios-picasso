@@ -5695,3 +5695,21 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
 - Two carrier variants, both 700,128 B, ident com.apple.usermanagerd:
   * exec directly  (md5 f0b0d9ad...) -> boot stops after usermanagerd, SSH WORKS
   * fork+setsid+exit (md5 02db782f...) -> boot proceeds to SpringBoard, SSH is starved
+
+## 2026-10-28 22:15 - two modes work; UI still needs xpcproxy bypass
+- Carrier v5 (`carrier-um5`, ident com.apple.usermanagerd, 700,128 B) forks dropbear from
+  `/usr/libexec/configd` (moved there so `/usr/libexec/backboardd` could be restored from the
+  pristine image), then holds the boot task until `/private/var/root/go` exists.
+  - held  -> SSH + bash 5.2.21 work, userland can create files (`: > path` works from bash,
+    unlike the files server's PUT), no xpcproxy storm;
+  - released (`: > /private/var/root/go`) -> `boot released`, Early boot complete, 45 xpcproxy,
+    `exec SpringBoard`, but no home screen and SSH is starved by the storm.
+- Slot layout now: usermanagerd = carrier (700,128), configd = dropbear (285,376),
+  backboardd = stock (restored from ios-work/root/ios16-root-picasso.img), i.e. one daemon slot
+  hosts the SSH server and one carries the boot-task carrier.
+- UI blocker unchanged: 45-51 xpcproxy children spawn, never exit, never exec their target
+  (`exec xpcproxy argv xpcproxy com.apple.backboardd` and nothing after), so backboardd never
+  runs and SpringBoard has no window server.
+- Next idea: bypass xpcproxy by editing the launchd cache entries for the key services to
+  `Program: /usr/libexec/<daemon>` with the MachServices keys dropped, so launchd execs the
+  binary directly instead of through the trampoline.
