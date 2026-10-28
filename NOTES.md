@@ -5750,3 +5750,18 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
   backboardd matches/opens that service (needs the crash pc symbolicated: extract
   dyld_shared_cache_arm64e from the cryptex or from /home/tritm/dump/hfs.img and use
   tools/sweet-crash.py).
+
+## 2026-10-28 23:10 - modem=1 panics in kmem_alloc (KERN_NO_SPACE); WiFi needs a driver anyway
+- WiFi is not up for two independent reasons, both verified:
+  1. `PicassoModem: init: modem=0 value=0` / `not starting (started=0)`: the modem only starts
+     with boot-arg `modem=1` (PicassoModem.cpp parses "modem"), and our cmdline never had it.
+     The kernel already hosts pd-mapper/tftp/rmtfs/PDR itself (78/88/10 references), so no
+     userland services are needed.
+  2. No apps-side WLAN driver exists: iokit/Kernel/arm/ has only Sweet* + PicassoModem, there is no
+     ApplePCIe/IOPCIDevice and no IO80211/WCN/qcacld code; the ADT has a `wifi-chipset` node that
+     nothing consumes. 0091-sweet-rpmh-wlan-rails.patch only powers rails.
+- Booting with `modem=1` (image md5 2dc96903) panics immediately:
+  `kmem_alloc(..., 40, 147456, 0x100021) failed with 3 @vm_kern.c:178` (KERN_NO_SPACE) - the modem
+  path's memory setup (firmware/DMA window) is not in place in this build.
+- So: keep `modem=1` OUT until that allocation is fixed; UI work continues with the open-path trace
+  image (md5 ad97d311, k187 kernel, no modem).
