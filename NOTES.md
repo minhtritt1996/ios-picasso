@@ -5559,3 +5559,17 @@ command and dies after ~20 commands).
   kernel write path wedges, as earlier notes said. Fixing sf_put in bsd/dev/sweet_files.c (patch
   0168) would give a runtime install path that never touches the image.
 - Current device: pristine root, kernel 0174/0175, ping ~1 ms, 2223 open, SSH 22 closed.
+
+## 2026-10-28 16:05 - files server RAWBLK also wedges (both VFS and driver paths)
+- First RAWBLK attempt opened /dev/rufsroot0 through the VFS: the request never returned
+  (same wedge as PUT's vnode_open(O_CREAT)).
+- Second version (same patch 0176) writes through `sweet_ufs_write_blocks_raw()` ->
+  memcpy into the 1 MiB bounce + `ufs_write_blocks()`, no VFS at all. Still no reply, and
+  afterwards the server stops answering even GET, so the handler thread is stuck.
+  Likely the UFS lock/engine is held by another thread at that point, or the handler runs on a
+  thread that must not block.
+- Consequence: there is currently NO runtime install path on this port (VFS create wedges, raw
+  block write wedges). Only a full 16 GiB image write (10 min, verified md5) works.
+- Boot is intermittent: the same image sometimes dies before launchd (on-disk ring has only the
+  8 KB prologue) and sometimes reaches Early boot + 39 xpcproxy + ping 1 ms. Two of the
+  successful boots had `sweetsample=mount`; the sampler never produced `SMP mount` lines.
