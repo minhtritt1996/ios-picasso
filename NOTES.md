@@ -5479,3 +5479,20 @@ carrier) silently do nothing.
 - Next: either (a) restore the user's own darwin backup, or (b) re-derive those four patched
   binaries, or (c) find why mount-phase-1 never completes on the fresh root (it is the first
   boot task; /etc/fstab does not exist in either image).
+
+## 2026-10-28 11:40 - firmware rootfs boots to SpringBoard; freezes right after
+- Confirmed the rebuilt rootfs from FW is fine: on the pristine image the boot runs
+  mount-phase-1 -> tzinit -> finish-restore -> sysstatuscheck -> prng_seedctl ->
+  launchd_cache_loader -> "Early boot complete" -> ~38 xpcproxy -> `exec SpringBoard
+  argv /System/Library/CoreServices/SpringBoard size 112960`. So the earlier "stall at
+  mount-phase-1" was my checking too early (first boot after a full-image write is slow).
+- `sweetsample=<name>` SUSPENDS the sampled process: a boot with `sweetsample=mount` sat in
+  mount-phase-1. Do not leave the sampler on for normal boots.
+- The ring on disk (last 4 MiB of darwin) only holds the early-flush prologue (~8 KB) when a
+  boot never finishes; read the live ring over L2 instead.
+- With the prepared image (pristine + dropbear + carrier + cache job, md5 785f8c23):
+  launchd prints `Cache sent to launchd successfully`, early boot completes, SpringBoard is
+  exec'd, then the machine freezes: USB gadget stays enumerated but ARP stops
+  (`192.168.7.2 INCOMPLETE`), so no L2 and no way to read the ring.
+- Next: power-cycle and watch L2 from the first seconds to catch the carrier banner
+  (`sweetsh: carrier build ... tcp`) or `sweetsh: exec err <n>`.
