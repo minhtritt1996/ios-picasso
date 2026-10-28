@@ -5631,3 +5631,16 @@ command and dies after ~20 commands).
 - Remaining blocker: every session logs `Exit (root) ...: Child failed` and the ring shows no
   `exec /bin/sh` - dropbear forks per session and this port's fork() does not deliver a running
   child. Fixing fork (or patching dropbear to serve without fork) is the next task.
+
+## 2026-10-28 19:55 - fork is fine; the session child dies inside execve
+- With patch 0179 the ring shows the handshake working:
+  `SWEET FORK backboardd pid 12 -> child 14 released`, `SWEET FORK child wait thread 248`,
+  `SWEET FORK child woke thread 248, entering userland` - fork() works, the child runs.
+- The SSH session child then exits by itself: `SWEET EXIT backboardd pid 15 rv 0x100` (status 1),
+  which is what dropbear reports as `Exit (root) ...: Child failed`.
+- Booting with the OLD `sweetexectrace=1` (the copyinstr trace added long ago, not ours) panics:
+  `Kernel data abort ... pc 0xfffffe0007482c20 = _copyinstr+0x18`, `lr 0xfffffe00077f9afc =
+  _execve+0x98`. So that trace is unusable - NEVER put sweetexectrace=1 in the cmdline on this
+  build. It does prove the child calls execve().
+- Next: instrument the *return* of execve (the error code) rather than copyinstr, e.g. print
+  `err` from execve for p_comm "backboardd", to learn why exec of /bin/sh fails.
