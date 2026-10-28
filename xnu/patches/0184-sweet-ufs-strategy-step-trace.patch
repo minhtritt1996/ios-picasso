@@ -1,0 +1,65 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -172,10 +172,28 @@
+ enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
+        UFS_LK_INIT, UFS_LK_FLUSH, UFS_LK_STATUS };
+ 
++static void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
++
+ static inline void
+ ufs_lock(uint32_t who)
+ {
++	/* A thread parked here is invisible in the heartbeat (the fields belong to the
++	 * holder). Record who waited, for how long, and what the holder was doing. */
++	uint64_t t0 = mach_absolute_time();
++	uint32_t holder_owner = su.lock_owner, holder_tid = su.lock_tid;
++	uint32_t holder_step = su.strat_step, holder_flush = su.flush_stage;
++	uint64_t holder_blk = su.strat_blk, holder_cnt = su.strat_count;
+ 	lck_mtx_lock(&sweet_ufs_lock);
++	uint64_t waited_ns = 0;
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &waited_ns);
++	if (waited_ns > 200000000ull) {
++		sweet_tracef("SWEET UFS LKWAIT tid %u who %u waited %llu ms; holder owner %u tid %u"
++		    " step %u flush %u blk 0x%llx c %llu\n", (unsigned)thread_tid(current_thread()),
++		    (unsigned)who, (unsigned long long)(waited_ns / 1000000ull),
++		    (unsigned)holder_owner, (unsigned)holder_tid, (unsigned)holder_step,
++		    (unsigned)holder_flush, (unsigned long long)holder_blk,
++		    (unsigned long long)holder_cnt);
++	}
+ 	su.lock_owner = who;
+ 	su.lock_users++;
+ 	su.lock_tid = (uint32_t)thread_tid(current_thread());
+@@ -1133,6 +1151,10 @@
+ 		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
+ 		void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 		if (rd) {
++			su.strat_step = 7;
++			sweet_tracef("SWEET UFS s7: lba 0x%llx blocks %u want %u done %u direct %u\n",
++			    (unsigned long long)lba, (unsigned)blocks, (unsigned)want,
++			    (unsigned)done, (unsigned)su.direct);
+ 			error = EINVAL;
+ 			/* Off by default: bp29/bp30 both stopped inside
+ 			 * ufs_read_blocks_dma () at the same read with no gd
+@@ -1143,8 +1165,11 @@
+ 			if (su.direct && skip == 0 && (want % UFS_BLOCK) == 0 &&
+ 			    (((uintptr_t)vaddr + done) % PAGE_SIZE) == 0) {
+ 				su.strat_step = 6;      /* direct DMA into the buffer */
++				sweet_tracef("SWEET UFS s6: dma lba 0x%llx blocks %u\n",
++				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
+ 				error = ufs_read_blocks_dma(su.first_block + lba, blocks,
+ 				    vaddr + done);
++				sweet_tracef("SWEET UFS s6r: err %d\n", error);
+ 				if (!error) {
+ 					su.strat_done = want;
+ 					su.direct_reads++;
+@@ -1152,7 +1177,10 @@
+ 				}
+ 			}
+ 			if (error == EINVAL) {
++				sweet_tracef("SWEET UFS s3: bounce lba 0x%llx blocks %u\n",
++				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
+ 				error = ufs_read_blocks(su.first_block + lba, blocks);
++				sweet_tracef("SWEET UFS s3r: err %d\n", error);
+ 				su.strat_step = 3;
+ 				if (!error) {
+ 					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
