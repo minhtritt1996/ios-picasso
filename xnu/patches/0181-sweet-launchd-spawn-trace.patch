@@ -1,6 +1,6 @@
 --- a/bsd/dev/arm/systemcalls.c
 +++ b/bsd/dev/arm/systemcalls.c
-@@ -181,6 +181,54 @@
+@@ -181,6 +181,55 @@
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
  
@@ -9,12 +9,13 @@
 +	 * SWEET: xpcproxy is spawned by launchd and never reaches its own execve.
 +	 * Log its first syscalls so the blocking call is visible (0 hits of EXECVP).
 +	 */
-+	if (proc->p_comm[0] == 'x' && strcmp(proc->p_comm, "xpcproxy") == 0) {
-+		static int sweet_xp_prints = 64;
++	if ((proc->p_comm[0] == 'x' && strcmp(proc->p_comm, "xpcproxy") == 0) ||
++	    strcmp(proc->p_comm, "backboardd") == 0) {
++		static int sweet_xp_prints = 96;
 +
 +		if (sweet_xp_prints > 0) {
 +			sweet_xp_prints--;
-+			printf("SWEET SYSCALL xpcproxy n=%u err=%d a0=%#llx\n", (unsigned)code, error,
++			printf("SWEET SYSCALL %s n=%u err=%d a0=%#llx\n", proc->p_comm, (unsigned)code, error,
 +			    (unsigned long long)uthread->uu_arg[0]);
 +		}
 +	}
