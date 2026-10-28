@@ -5923,3 +5923,21 @@ Pristine `/usr/libexec/usermanagerd` recovered from the host image
 staged on k60 as /tmp/um-pristine.pad. Restoring it removes the carrier, so launchd runs its own
 jobs; `/System/Library/LaunchDaemons/000-sweetsh.plist` (dropbear) should still give us SSH.
 Watch the ring for launchd spawn/xpcproxy lines and whether backboardd survives past init.
+
+## 2026-10-29 - MAJOR: launchd as PID 1 works; the next blocker is a stuck UFS read
+Restored the pristine `/usr/libexec/usermanagerd` (from the host image) so launchd runs its own
+jobs instead of our carrier, booted kernel t6, and pulled the ring from recovery:
+- launchd logs `Early boot complete. Continuing system boot.` and spawns **`exec xpcproxy`**
+  dozens of times: the daemon path works, so the bootstrap namespace exists. This is the first
+  time this port gets past early boot into the daemon spawn phase.
+- Then it stops: the last ring lines are `SWEET UFS in: R lba … c 245760` (a 240 KiB read) with
+  **no `gd:` line at all**, i.e. the strategy path never issued the command, plus heartbeats whose
+  `ss/st/sd/sdt` breadcrumbs stay frozen while the heartbeat age grows (the strategy thread is
+  parked with the UFS lock held). Every later I/O waits, so ping/SSH/L2 all die even though the
+  kernel is alive; only recovery can pull the ring.
+- Boot image t7 (md5 1e459bae…, kernel k191) adds patch 0184: breadcrumbs `s3/s6/s6r/s7` around
+  the bounce and direct-DMA branches, and `SWEET UFS LKWAIT tid … waited N ms; holder owner …`
+  when a lock wait exceeds 200 ms - that names the stuck holder without guessing from the
+  heartbeat. Also passes `sweetufstrace=1` explicitly (the gd/cd lines prove trace was already on,
+  and the heartbeat's `dma 1496/107819008` suggests the direct-DMA branch may be live even though
+  `sweetdirect` is not in the cmdline - patch 0184's `s6` line settles it).
