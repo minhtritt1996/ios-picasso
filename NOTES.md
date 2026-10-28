@@ -5826,3 +5826,13 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
 - Not possible yet: `installd` exists but never runs (all daemons go through the stuck xpcproxy),
   `launchservicesd` and MobileInstallation.framework are missing, and the boot is held. The viable
   path is the same as backboardd: run an app binary directly once the UI stack works.
+
+### Patch numbering trap (cost 2 CI runs + 2 flashes)
+`dxb/build.sh` applies `xnu/patches/*.patch` **in name order on top of the pristine tree**, so
+patches that touch the same file must be generated against the tree *with the earlier patches
+applied*, and the numbers must be unique. A second `0182-...` patch was skipped with
+`error: bsd/dev/sweet_files.c: patch does not apply` and the kernel silently shipped without the
+feature (only the `strings … | grep 'SWEET FILES: READ'` gate caught it). Gate every new feature:
+`unzip the xnu-kernel artifact and strings -a kernel.development.sweet | grep <new literal>`.
+Patch 0183 adds `READ <path> <off> <len>` to the files server (dyld cache slices on demand);
+`tools/dsc-trap.py --pc <unslid>` uses it to name the image and disassemble around a crash PC.
