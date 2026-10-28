@@ -1,0 +1,137 @@
+--- a/bsd/dev/sweet_files.c
++++ b/bsd/dev/sweet_files.c
+@@ -6,6 +6,7 @@
+  *
+  *   PUT <path> <mode-octal> <size>\n<size bytes>  -> "OK <size>\n"  (root:wheel)
+  *   GET <path>\n                                  -> "OK <size>\n<bytes>"
++ *   READ <path> <off> <len>\n                     -> "OK <n>\n<n bytes>"
+  *   MKDIR <path> <mode-octal>\n                   -> "OK\n"
+  *   LINK <target> <path>\n                        -> "OK\n"  (symlink)
+  *   RM <path>\n                                   -> "OK\n"
+@@ -154,6 +155,45 @@
+ 	return err;
+ }
+ 
++
++/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
++ * device. Nothing in the catalog changes, so this is the safe way to replace a
++ * file of the SAME size without a recovery round trip (the VFS create path
++ * wedges on this port). */
++extern int sweet_ufs_write_blocks_raw(uint64_t lba, uint32_t count, const void *src);
++
++/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
++ * device through the UFS driver (the VFS path wedges on this port). Nothing in
++ * the catalog changes, so this is only for same-size replacements. */
++static int sweet_rawblk_prints = 8;
++
++static int
++sf_rawblk(socket_t so, uint64_t blk, uint64_t cnt)
++{
++	uint64_t left = cnt * 4096ULL;
++	uint64_t off = blk;
++
++	while (left != 0) {
++		size_t chunk = (size_t)MIN((uint64_t)SF_BUF, left);
++		int err = sf_recv_all(so, sf_buf, chunk);
++
++		if (err != 0) {
++			return err;
++		}
++		if (sweet_rawblk_prints > 0) {
++			sweet_rawblk_prints--;
++			printf("SWEET FILES: RAWBLK %llu+%u\n", off, (unsigned)(chunk / 4096));
++		}
++		err = sweet_ufs_write_blocks_raw(off, (uint32_t)(chunk / 4096), sf_buf);
++		if (err != 0) {
++			return err;
++		}
++		off += chunk / 4096;
++		left -= chunk;
++	}
++	return 0;
++}
++
+ static int
+ sf_put(socket_t so, const char *path, int mode, uint64_t size)
+ {
+@@ -218,6 +258,47 @@
+ 	return err;
+ }
+ 
++/* READ <path> <off> <len>: one ranged read, so multi-GB files need no full GET. */
++static int
++sf_read(socket_t so, const char *path, off_t start, size_t len)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	off_t size = 0;
++	int err = vnode_open(path, FREAD, 0, 0, &vp, ctx);
++	if (!err) {
++		err = vnode_size(vp, &size, ctx);
++	}
++	if (!err && start >= size) {
++		err = 0;
++		len = 0;
++	}
++	if (!err && (off_t)len > size - start) {
++		len = (size_t)(size - start);
++	}
++	if (!err && len > SF_BUF) {
++		len = SF_BUF;
++	}
++	if (err) {
++		if (vp != NULLVP) {
++			vnode_close(vp, FREAD, ctx);
++		}
++		sf_reply(so, err, 0, false);
++		return err;
++	}
++	sf_reply(so, 0, (uint64_t)len, true);
++	if (len) {
++		int resid = 0;
++		err = vn_rdwr(UIO_READ, vp, sf_buf, (int)len, start, UIO_SYSSPACE, IO_UNIT,
++		    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		if (!err) {
++			err = sf_send(so, sf_buf, len - (size_t)resid);
++		}
++	}
++	vnode_close(vp, FREAD, ctx);
++	return err;
++}
++
+ static void
+ sf_handle(socket_t so)
+ {
+@@ -245,6 +326,32 @@
+ 		sf_reply(so, err, n, true);
+ 		return;
+ 	}
++	if (!strncmp(line, "RAWBLK ", 7)) {
++		char *p = line + 7;
++		char *sp = strchr(p, ' ');
++		unsigned long long blk = sf_dec(p);
++		unsigned long long cnt = sp ? sf_dec(sp + 1) : 0;
++		int rerr = cnt ? sf_rawblk(so, blk, cnt) : EINVAL;
++
++		printf("SWEET FILES: RAWBLK %llu+%llu -> %d\n", blk, cnt, rerr);
++		sf_reply(so, rerr, cnt, true);
++		return;
++	}
++	if (!strncmp(line, "READ ", 5)) {
++		char *p = line + 5, *s1 = strchr(p, ' '), *s2 = NULL;
++		off_t roff = 0;
++		size_t rlen = 0;
++		if (s1) {
++			*s1 = 0;
++			s2 = strchr(s1 + 1, ' ');
++			roff = (off_t)sf_dec(s1 + 1);
++			rlen = (size_t)(s2 ? sf_dec(s2 + 1) : 0);
++		}
++		err = (s1 && s2) ? sf_read(so, p, roff, rlen) : EINVAL;
++		printf("SWEET FILES: READ %s %lld %llu -> %d\n", p, (long long)roff,
++		    (unsigned long long)rlen, err);
++		return;
++	}
+ 	if (!strncmp(line, "GET ", 4)) {
+ 		err = sf_get(so, line + 4);
+ 		printf("SWEET FILES: GET %s -> %d\n", line + 4, err);
