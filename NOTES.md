@@ -5587,3 +5587,15 @@ command and dies after ~20 commands).
   while talking to the engine, a blocking grab wedges the server). Both fixed in 0176 and a
   `SWEET FILES: RAWBLK <lba>+<n>` print was added before each write.
 - Rebuild run: 40664110993 (bfa2c64). Not yet booted/tested.
+
+## 2026-10-28 17:50 - RAWBLK reached the server and answered; EBUSY then the boot died
+- Kernel from run 40664110993 (bfa2c64, boot image md5 bdc1613c, flashed through k60) answers RAWBLK:
+  the request `RAWBLK 5242100 1` gets `ERR 16` (EBUSY) - so the handler runs, the command is
+  parsed, and `lck_mtx_try_lock(&sweet_ufs_lock)` is what fails: the flusher holds the UFS lock.
+- Retrying on EBUSY for ~35 s never succeeded, then the phone stopped answering ping/L2 altogether
+  (gadget still enumerated). So the UFS lock is held long-term on that boot - the same underlying
+  engine wedge that kills the flusher and the VFS write path.
+- Tools on k60 live in /tmp (picasso-ecm.py, picasso-rawblk.py, tb.bin); k60's /tmp lost them once,
+  so re-copy after any k60 change.
+- Note the RAWBLK print (`SWEET FILES: RAWBLK <lba>+<n>`) is emitted before the write, so a ring
+  grep for it tells whether the request reached the driver call.
