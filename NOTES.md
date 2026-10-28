@@ -5836,3 +5836,23 @@ feature (only the `strings … | grep 'SWEET FILES: READ'` gate caught it). Gate
 `unzip the xnu-kernel artifact and strings -a kernel.development.sweet | grep <new literal>`.
 Patch 0183 adds `READ <path> <off> <len>` to the files server (dyld cache slices on demand);
 `tools/dsc-trap.py --pc <unslid>` uses it to name the image and disassemble around a crash PC.
+
+## 2026-10-29 - dyld cache reads work; backboardd trap is BoardServices
+- Patch 0183 (`READ <path> <off> <len>`, verified by `strings -a kernel | grep 'SWEET FILES: READ'`)
+  makes the shared cache readable over the USB link one slice at a time, no copying.
+- `tools/dsc-trap.py --sub 0x1d892f8a4 --slide 0x3cf54000` resolves a crash PC to:
+  file `dyld_shared_cache_arm64.09`, mapping vm 0x19b758000+0x6e2c000 -> file 0
+  image `/System/Library/PrivateFrameworks/BoardServices.framework/BoardServices`
+  (load 0x19b9ac000), pc = image+0x2f8a4, file offset 0x2838a4, instruction `brk #0`
+  preceded by a call chain, and the neighbouring __cstring region holds
+  "Underlying exception backtrace: %{public}@" and
+  "[BSXPCServiceConnectionProxy] Error: No method found on object %@ for @selector(%@)".
+  So the deterministic SIGTRAP is a BoardServices assertion in the XPC proxy path, not a
+  display/framebuffer problem and not Foundation itself (libSystem-only binaries run).
+- After an attempted UI start (carrier forks backboardd + SpringBoard, or running
+  /usr/libexec/backboardd from the SSH shell) the userland dies: dropbear stops answering
+  while the kernel stays healthy (ping 1 ms, L2 `configured 1 rx 925 tx 997`). Reboot to
+  recover the shell.
+- Next: name the containing function (pull the cache `.symbols` range for that address, or
+  the image's local symbols) and decide between patching BoardServices in the rootfs
+  (bergamota's method) and fixing whatever mach/XPC primitive it asserts on.
