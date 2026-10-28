@@ -4,57 +4,11 @@
   *
   *   PUT <path> <mode-octal> <size>\n<size bytes>  -> "OK <size>\n"  (root:wheel)
   *   GET <path>\n                                  -> "OK <size>\n<bytes>"
-+ *   READ <path> <off> <len>\n                     -> "OK <n>\n<n bytes>"
++ *   READ <path> <off> <len>\n                     -> "OK <n>\n<n bytes> (patch 0183)
   *   MKDIR <path> <mode-octal>\n                   -> "OK\n"
   *   LINK <target> <path>\n                        -> "OK\n"  (symlink)
   *   RM <path>\n                                   -> "OK\n"
-@@ -154,6 +155,45 @@
- 	return err;
- }
- 
-+
-+/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
-+ * device. Nothing in the catalog changes, so this is the safe way to replace a
-+ * file of the SAME size without a recovery round trip (the VFS create path
-+ * wedges on this port). */
-+extern int sweet_ufs_write_blocks_raw(uint64_t lba, uint32_t count, const void *src);
-+
-+/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
-+ * device through the UFS driver (the VFS path wedges on this port). Nothing in
-+ * the catalog changes, so this is only for same-size replacements. */
-+static int sweet_rawblk_prints = 8;
-+
-+static int
-+sf_rawblk(socket_t so, uint64_t blk, uint64_t cnt)
-+{
-+	uint64_t left = cnt * 4096ULL;
-+	uint64_t off = blk;
-+
-+	while (left != 0) {
-+		size_t chunk = (size_t)MIN((uint64_t)SF_BUF, left);
-+		int err = sf_recv_all(so, sf_buf, chunk);
-+
-+		if (err != 0) {
-+			return err;
-+		}
-+		if (sweet_rawblk_prints > 0) {
-+			sweet_rawblk_prints--;
-+			printf("SWEET FILES: RAWBLK %llu+%u\n", off, (unsigned)(chunk / 4096));
-+		}
-+		err = sweet_ufs_write_blocks_raw(off, (uint32_t)(chunk / 4096), sf_buf);
-+		if (err != 0) {
-+			return err;
-+		}
-+		off += chunk / 4096;
-+		left -= chunk;
-+	}
-+	return 0;
-+}
-+
- static int
- sf_put(socket_t so, const char *path, int mode, uint64_t size)
- {
-@@ -218,6 +258,47 @@
+@@ -257,6 +258,47 @@
  	return err;
  }
  
@@ -102,21 +56,10 @@
  static void
  sf_handle(socket_t so)
  {
-@@ -245,6 +326,32 @@
- 		sf_reply(so, err, n, true);
+@@ -295,6 +337,21 @@
+ 		sf_reply(so, rerr, cnt, true);
  		return;
  	}
-+	if (!strncmp(line, "RAWBLK ", 7)) {
-+		char *p = line + 7;
-+		char *sp = strchr(p, ' ');
-+		unsigned long long blk = sf_dec(p);
-+		unsigned long long cnt = sp ? sf_dec(sp + 1) : 0;
-+		int rerr = cnt ? sf_rawblk(so, blk, cnt) : EINVAL;
-+
-+		printf("SWEET FILES: RAWBLK %llu+%llu -> %d\n", blk, cnt, rerr);
-+		sf_reply(so, rerr, cnt, true);
-+		return;
-+	}
 +	if (!strncmp(line, "READ ", 5)) {
 +		char *p = line + 5, *s1 = strchr(p, ' '), *s2 = NULL;
 +		off_t roff = 0;
