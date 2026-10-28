@@ -1,0 +1,66 @@
+--- a/bsd/dev/sweet_files.c
++++ b/bsd/dev/sweet_files.c
+@@ -154,7 +154,45 @@
+ 	return err;
+ }
+ 
++
++/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
++ * device. Nothing in the catalog changes, so this is the safe way to replace a
++ * file of the SAME size without a recovery round trip (the VFS create path
++ * wedges on this port). */
+ static int
++sf_rawblk(socket_t so, uint64_t blk, uint64_t cnt)
++{
++	vnode_t vp = NULLVP;
++	vfs_context_t ctx = vfs_context_kernel();
++	uint64_t off = blk * 4096ULL, left = cnt * 4096ULL;
++	int err = vnode_open("/dev/rufsroot0", FREAD | FWRITE, 0, 0, &vp, ctx);
++
++	if (err != 0) {
++		return err;
++	}
++	while (left != 0) {
++		size_t chunk = (size_t)MIN((uint64_t)SF_BUF, left);
++		int resid = 0;
++
++		if ((err = sf_recv_all(so, sf_buf, chunk)) != 0) {
++			break;
++		}
++		err = vn_rdwr(UIO_WRITE, vp, sf_buf, (int)chunk, (off_t)off, UIO_SYSSPACE,
++		    IO_UNIT | IO_SYNC, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		if (err != 0 || resid != 0) {
++			if (err == 0) {
++				err = EIO;
++			}
++			break;
++		}
++		off += chunk;
++		left -= chunk;
++	}
++	vnode_put(vp);
++	return err;
++}
++
++static int
+ sf_put(socket_t so, const char *path, int mode, uint64_t size)
+ {
+ 	vfs_context_t ctx = vfs_context_kernel();
+@@ -245,6 +283,17 @@
+ 		sf_reply(so, err, n, true);
+ 		return;
+ 	}
++	if (!strncmp(line, "RAWBLK ", 7)) {
++		char *p = line + 7;
++		char *sp = strchr(p, ' ');
++		unsigned long long blk = sf_dec(p);
++		unsigned long long cnt = sp ? sf_dec(sp + 1) : 0;
++		int rerr = cnt ? sf_rawblk(so, blk, cnt) : EINVAL;
++
++		printf("SWEET FILES: RAWBLK %llu+%llu -> %d\n", blk, cnt, rerr);
++		sf_reply(so, rerr, cnt, true);
++		return;
++	}
+ 	if (!strncmp(line, "GET ", 4)) {
+ 		err = sf_get(so, line + 4);
+ 		printf("SWEET FILES: GET %s -> %d\n", line + 4, err);
