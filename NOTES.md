@@ -5875,3 +5875,23 @@ Patch 0183 adds `READ <path> <off> <len>` to the files server (dyld cache slices
 - Also learned: the files server is single-threaded - one READ that stalls (here: offsets past a
   cache file's readable extent) wedges every later request until the phone reboots
   (`picasso-ecm.py reboot` over L2 clears it without recovery).
+
+### (a) static identification of the trap function - result
+- BoardServices sections: __text 0x19b9ad1d4+0x3bb18 (file 0x2551d4), __objc_const
+  0x1d7187148+0x8010, __objc_methlist 0x19b9e93e8, __oslogstring 0x19b9f5560.
+- The trap function starts at 0x19b9db788 (image+0x2b788) and the fault is at +0x11c = 0x19b9db8a4.
+  Its body: saves args, loads x3 = 0x19b9f5560 (start of __oslogstring, the
+  "Underlying exception backtrace: %{public}@" message), builds an os_log descriptor on the
+  stack (w2=0x10, w5=0x3a), calls os_log, then calls through __objc_stubs (0x19b9fd400) and
+  ends in `brk #0` / `brk #1`. So the frame is BoardServices' "log the underlying exception
+  backtrace" helper that terminates the process after logging.
+- Names are not recoverable statically: the cache's local symbols are all "<redacted>",
+  the function is not exported (nearest export 21 KB away), and it has no method-list entry
+  (scan of __objc_const/__objc_methlist for entries whose relative IMP == 0x19b9db788 found
+  none) and no direct bl/b caller, so it is reached through a pointer (block/C++ vtable).
+- proc_crash: our kern_exit.c prints "CRASH <comm> reason ns ..." only when the process called
+  abort_with_payload (syscall 521); the backboardd crash shows no such line, so it is a plain
+  `__builtin_trap()` (brk #0), not an NSException -> abort_with_payload.
+- Next experiment that can still reveal the cause: patch the 4 bytes at file offset 0x2838a4 in
+  dyld_shared_cache_arm64.09 (trap -> `ret`, 0xc0035fd6) on the device through RAWBLK using the
+  file's extents (known from the image) and see how far backboardd gets before the next trap.
