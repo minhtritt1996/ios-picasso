@@ -1,6 +1,6 @@
 --- a/bsd/dev/arm/systemcalls.c
 +++ b/bsd/dev/arm/systemcalls.c
-@@ -181,6 +181,55 @@
+@@ -181,6 +181,68 @@
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
  
@@ -15,8 +15,21 @@
 +
 +		if (sweet_xp_prints > 0) {
 +			sweet_xp_prints--;
-+			printf("SWEET SYSCALL %s n=%u err=%d a0=%#llx\n", proc->p_comm, (unsigned)code, error,
-+			    (unsigned long long)uthread->uu_arg[0]);
++			if (error != 0 && (code == 5 || code == 33)) {
++				/* open/openat: name the path (lencopied must not be NULL) */
++				char sp[128];
++				size_t sl = 0;
++				user_addr_t up = (code == 5) ? (user_addr_t)uthread->uu_arg[0] :
++				    (user_addr_t)uthread->uu_arg[1];
++
++				sp[0] = 0;
++				(void)copyinstr(up, sp, sizeof(sp), &sl);
++				printf("SWEET OPEN %s n=%u err=%d path '%s'\n", proc->p_comm,
++				    (unsigned)code, error, sp);
++			} else {
++				printf("SWEET SYSCALL %s n=%u err=%d a0=%#llx\n", proc->p_comm,
++				    (unsigned)code, error, (unsigned long long)uthread->uu_arg[0]);
++			}
 +		}
 +	}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
