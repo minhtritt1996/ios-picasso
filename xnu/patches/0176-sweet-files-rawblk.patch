@@ -1,6 +1,33 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -657,6 +657,24 @@
+ 	return error;
+ }
+ 
++/*
++ * Write count blocks of `src` to lba through the bounce buffer. Used by the
++ * files server's RAWBLK command: the VFS path wedges on this port, and the
++ * boot-time ring flusher already writes this way.
++ */
++int
++sweet_ufs_write_blocks_raw(uint64_t lba, uint32_t count, const void *src)
++{
++	if (count == 0 || count > BOUNCE_SIZE / UFS_BLOCK) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	memcpy((void *)(su.dma + DMA_BOUNCE), src, (size_t)count * UFS_BLOCK);
++	int error = ufs_write_blocks(lba, count);
++	lck_mtx_unlock(&sweet_ufs_lock);
++	return error;
++}
++
+ /* WRITE(10) of count device blocks from the bounce buffer, any partition. */
+ static int
+ ufs_write_blocks_at(uint64_t lba, uint32_t count)
 --- a/bsd/dev/sweet_files.c
 +++ b/bsd/dev/sweet_files.c
-@@ -154,7 +154,45 @@
+@@ -154,6 +154,39 @@
  	return err;
  }
  
@@ -9,44 +36,38 @@
 + * device. Nothing in the catalog changes, so this is the safe way to replace a
 + * file of the SAME size without a recovery round trip (the VFS create path
 + * wedges on this port). */
- static int
++extern int sweet_ufs_write_blocks_raw(uint64_t lba, uint32_t count, const void *src);
++
++/* RAWBLK <start_block> <nblocks>: write nblocks*4096 bytes straight to the root
++ * device through the UFS driver (the VFS path wedges on this port). Nothing in
++ * the catalog changes, so this is only for same-size replacements. */
++static int
 +sf_rawblk(socket_t so, uint64_t blk, uint64_t cnt)
 +{
-+	vnode_t vp = NULLVP;
-+	vfs_context_t ctx = vfs_context_kernel();
-+	uint64_t off = blk * 4096ULL, left = cnt * 4096ULL;
-+	int err = vnode_open("/dev/rufsroot0", FREAD | FWRITE, 0, 0, &vp, ctx);
++	uint64_t left = cnt * 4096ULL;
++	uint64_t off = blk;
 +
-+	if (err != 0) {
-+		return err;
-+	}
 +	while (left != 0) {
 +		size_t chunk = (size_t)MIN((uint64_t)SF_BUF, left);
-+		int resid = 0;
++		int err = sf_recv_all(so, sf_buf, chunk);
 +
-+		if ((err = sf_recv_all(so, sf_buf, chunk)) != 0) {
-+			break;
++		if (err != 0) {
++			return err;
 +		}
-+		err = vn_rdwr(UIO_WRITE, vp, sf_buf, (int)chunk, (off_t)off, UIO_SYSSPACE,
-+		    IO_UNIT | IO_SYNC, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
-+		if (err != 0 || resid != 0) {
-+			if (err == 0) {
-+				err = EIO;
-+			}
-+			break;
++		err = sweet_ufs_write_blocks_raw(off, (uint32_t)(chunk / 4096), sf_buf);
++		if (err != 0) {
++			return err;
 +		}
-+		off += chunk;
++		off += chunk / 4096;
 +		left -= chunk;
 +	}
-+	vnode_put(vp);
-+	return err;
++	return 0;
 +}
 +
-+static int
+ static int
  sf_put(socket_t so, const char *path, int mode, uint64_t size)
  {
- 	vfs_context_t ctx = vfs_context_kernel();
-@@ -245,6 +283,17 @@
+@@ -245,6 +278,17 @@
  		sf_reply(so, err, n, true);
  		return;
  	}
