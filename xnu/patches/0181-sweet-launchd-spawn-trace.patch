@@ -11,7 +11,7 @@
 +	 */
 +	if ((proc->p_comm[0] == 'x' && strcmp(proc->p_comm, "xpcproxy") == 0) ||
 +	    strcmp(proc->p_comm, "backboardd") == 0) {
-+		static int sweet_xp_prints = 96;
++		static int sweet_xp_prints = 400;
 +
 +		if (sweet_xp_prints > 0) {
 +			sweet_xp_prints--;
