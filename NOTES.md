@@ -5713,3 +5713,18 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
 - Next idea: bypass xpcproxy by editing the launchd cache entries for the key services to
   `Program: /usr/libexec/<daemon>` with the MachServices keys dropped, so launchd execs the
   binary directly instead of through the trampoline.
+
+## 2026-10-28 22:40 - xpcproxy: not a spawn failure, it stalls before execve
+- Ported Bergamota's two diagnostics (they hit the same shape):
+  0181 = launchd kevent/posix_spawn tracer reduced to "every failing posix_spawn from pid 1"
+  (path, attr size, psa_flags) plus a per-syscall trace for comm "xpcproxy";
+  0182 = bergamota 0153 verbatim: every `return EINVAL` in bsd/kern/kern_exec.c and
+  kern_persona.c prints "SWEET EINVAL <file>:<line> pid <pid>".
+- Measured on 1e0e3c5: launchd's spawns SUCCEED (the only failure is
+  `SWEET SPAWN launchd posix_spawn e=2 "/usr/libexec/HorizonSetup" attr=232 psa=0x408c`,
+  a binary that simply does not exist), and there is no SWEET EINVAL at all - so the
+  bergamota EINVAL story does not apply here.
+- xpcproxy never calls execve (`SWEET EXECVP xpcproxy` = 0 hits after extending 0180's comm
+  list), i.e. the trampoline blocks before that step. Next: 0181 now also prints xpcproxy's
+  first 64 syscalls ("SWEET SYSCALL xpcproxy n=<code> err=<e> a0=<arg>") to name the blocking
+  call. Build 40713014968.
