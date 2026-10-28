@@ -5779,3 +5779,50 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
 - k60 helpers to stop the long fixed sleeps: `/tmp/waitlink.sh SECS` (sets the gadget IP and returns
   the moment the phone answers ping) and `/tmp/sshdev.sh "cmd"` (waits <=20 s for port 22 then runs
   the command with the key). Use them instead of `sleep 110`.
+
+## 2026-10-29 04:40 - current working setup + the two remaining blockers
+
+### Works now (verified on hardware)
+- SSH + full bash on the USB link: `ssh -i /home/tritm/ios-ssh-key root@192.168.7.2`
+  (host needs 192.168.7.1/24 on the gadget iface; k60 has helpers `/tmp/waitlink.sh SECS` and
+  `/tmp/sshdev.sh "cmd"` that poll every second instead of long sleeps).
+- Rootfs layout that makes it work (all same-size block writes, no catalog change):
+  * `/usr/libexec/usermanagerd` = our carrier (700,128 B, mkmacho `--total-size`, ident
+    com.apple.usermanagerd). v7 md5 df2ff017...: forks dropbear (setsid) from
+    `/usr/libexec/configd`, then HOLDS the boot task until `/private/var/root/ui2` exists, then
+    forks `/usr/libexec/backboardd` and 5 s later SpringBoard, and keeps holding.
+  * `/usr/libexec/configd` = dropbear 285,376 B (`-F -R -p 22`).
+  * `/usr/libexec/backboardd` = stock (restored).
+  * `/private/var/root/.ssh/authorized_keys` (key on the workstation).
+  * `/private/var/root/sh` = symlink to /bin/bash (dropbear execs `$HOME/sh`, not /bin/sh).
+- Boot image with the diagnostics: `shim-boot-t4.img` md5 c73e273a... (kernel k188, per-process
+  syscall trace cap 400, launchd failing-spawn trace, exec-path trace, EINVAL sites, fork trace,
+  open trace, RAWBLK). Flash via k60: push to /tmp, `dd of=/dev/block/.../boot bs=4M`, readback md5.
+- USB/darwin: only `/dev/rufsroot0` exists - boot cannot be written from inside iOS, recovery is
+  required for every boot-image change.
+
+### Blocker 1: backboardd SIGTRAP (this is what keeps the home screen away)
+- Deterministic: `CRASH backboardd sig 5 code 0x600000001 sub 0x…8a4` (pc == lr, `pc & 0x3fff` is
+  always 0x38a4), reproduced by simply running `/usr/libexec/backboardd` over SSH, so it is early
+  init (dyld/Foundation/objc), not display or the carrier. `/bin/ps` (libSystem only) runs fine.
+- Its last syscalls before the trap are sysctl(202), proc_info(336), thread_selfid(372),
+  kevent_id(375) and repeated `sys_ulock_wait(515)`/`sys_ulock_wake(516)` - the unfair-lock path.
+  sys_ulock.c itself is stock and unpatched.
+- Symbolication is the next step and needs the dyld shared cache: the files server has NO `READ`
+  command in our tree (patch 0168 predates it; `read` returns ERR 22), GET on multi-GB files hangs,
+  and the image stores the caches as HFS hardlinks hfsplus-tool cannot read.
+  => either add READ to bsd/dev/sweet_files.c (bergamota 0094) or extract the caches offline from
+  the DMGs in ios-work/ipsw with apfs-fuse, then symbolicate (ipsw is not installed here).
+
+### Blocker 2: WiFi
+- Modem is off (`PicassoModem: modem=0`): it only starts with boot-arg `modem=1`, and that boot
+  panics in `kmem_alloc(... 3 @vm_kern.c:178)` (KERN_NO_SPACE) - the modem memory/firmware window
+  is not set up in this build.
+- Even with the modem up there is no apps-side WLAN driver: iokit/Kernel/arm has only Sweet* +
+  PicassoModem; no ApplePCIe/IOPCIDevice, no IO80211/WCN/qcacld consumer for the ADT's
+  `wifi-chipset` node (0091 only powers rails).
+
+### Apps / IPA
+- Not possible yet: `installd` exists but never runs (all daemons go through the stuck xpcproxy),
+  `launchservicesd` and MobileInstallation.framework are missing, and the boot is held. The viable
+  path is the same as backboardd: run an app binary directly once the UI stack works.
