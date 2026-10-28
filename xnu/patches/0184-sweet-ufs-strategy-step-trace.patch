@@ -4,7 +4,7 @@
  enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
         UFS_LK_INIT, UFS_LK_FLUSH, UFS_LK_STATUS };
  
-+static void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
++void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
 +
  static inline void
  ufs_lock(uint32_t who)
