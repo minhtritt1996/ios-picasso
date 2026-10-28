@@ -1,0 +1,42 @@
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -181,6 +181,39 @@
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * SWEET: on this port launchd spawns xpcproxy and the trampoline never execs
++	 * its target, while ~50 children pile up. Bergamota found the same shape and
++	 * traced posix_spawn: failures there (EINVAL) leave the job unwatched. Log
++	 * every failing posix_spawn issued by launchd (pid 1) with path and flags.
++	 */
++	if (code == 244 && error != 0 && proc_pid(proc) == 1) {
++		static int sweet_spawn_prints = 40;
++		char spath[128];
++		size_t done = 0;
++		uint32_t sz[2] = { 0, 0 };
++		uint64_t ap = 0;
++		int16_t psa = -1;
++
++		spath[0] = 0;
++		if (uthread->uu_arg[1] != 0) {
++			(void)copyinstr((user_addr_t)uthread->uu_arg[1], spath, sizeof(spath), &done);
++			spath[sizeof(spath) - 1] = 0;
++		}
++		if (uthread->uu_arg[2] != 0 &&
++		    copyin((user_addr_t)uthread->uu_arg[2], sz, sizeof(sz)) == 0 &&
++		    copyin((user_addr_t)uthread->uu_arg[2] + 8, &ap, sizeof(ap)) == 0 && ap != 0) {
++			(void)copyin((user_addr_t)ap, &psa, sizeof(psa));
++		}
++		if (sweet_spawn_prints > 0) {
++			sweet_spawn_prints--;
++			printf("SWEET SPAWN launchd posix_spawn e=%d \"%s\" attr=%u psa=0x%x\n",
++			    error, spath, sz[0], (unsigned)(uint16_t)psa);
++		}
++	}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ #if CONFIG_MACF
+ skip_syscall:
+ #endif /* CONFIG_MACF */
