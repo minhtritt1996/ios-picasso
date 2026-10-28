@@ -5644,3 +5644,38 @@ command and dies after ~20 commands).
   build. It does prove the child calls execve().
 - Next: instrument the *return* of execve (the error code) rather than copyinstr, e.g. print
   `err` from execve for p_comm "backboardd", to learn why exec of /bin/sh fails.
+
+## 2026-10-28 21:10 - SSH WORKS on picasso (root shell over the USB link)
+
+Recipe, in the order it has to happen (every step verified on hardware):
+
+1. rootfs: the pristine firmware image `ios-work/root/ios16-root-picasso.img`
+   (mkiosroot.sh output, fsck clean). Written whole to `darwin` (10 min, verify md5).
+2. Kernel: patches 0174 (vfs_busy/lookup guards), 0175 (early ring flush), 0176 (files-server
+   RAWBLK through the UFS driver with its own lock), 0177 (mount open trace), 0178 (csops reports
+   CS_PLATFORM_BINARY for every process), 0179 (fork handshake trace), 0180 (execve path trace).
+   Boot cmdline keeps `sweetsample=mount`; NEVER `sweetexectrace=1` (that trace passes a NULL
+   `lencopied` to copyinstr and panics the kernel - far=0 at _copyinstr+0x18).
+3. Carrier slot: `/usr/libexec/usermanagerd` - launchd execs it directly (anything started
+   through xpcproxy never runs on this port). The carrier must be padded to the ORIGINAL file
+   size (700,128) with the ad-hoc signature at the end:
+   `python3 mkmacho.py sweetsh-u.bin carrier --memsize N --sign --ident com.apple.usermanagerd
+    --total-size 700128`
+   (Without --total-size the kernel reads the blob from the wrong offset and launchd panics with
+   "failed to get the code signing identity for a boot-task ... errno: 22".)
+   The carrier dup2s /dev/console onto 1/2 and execs `/usr/libexec/backboardd -F -R -p 22`.
+4. dropbear: the first 285,376 bytes of `/usr/libexec/backboardd` (same-size block write, so no
+   catalog change). Both writes went over the files server's RAWBLK (tcp 2223) while the phone
+   was running - `OK 5 blocks` / `OK 70 blocks`.
+5. Auth: `/private/var/root/.ssh/authorized_keys` written with the L2 channel
+   (`picasso-ecm.py l2 put ... <base64>` + `putend`). dropbear accepts the ed25519 key.
+6. THE LAST MISSING PIECE: dropbear execs the shell as `/private/var/root/sh`, not /bin/sh
+   (`SWEET EXECVP backboardd pid 14 err 2 path '/private/var/root/sh'`). Create the symlink:
+   `tools/picasso-files.py link /bin/sh /private/var/root/sh` -> `link /bin/sh /private/var/root/sh OK`.
+   Then sessions work: `ssh -i key root@192.168.7.2 "echo hello"` prints hello, `/bin/ps` runs,
+   nested `/private/var/root/sh -c 'echo nested-ok'` works.
+
+Notes: the rootfs is trimmed - there is no /bin/ls, /bin/cat, /usr/bin/id, /usr/bin/uname, wc,
+head; /bin/sh, /bin/bash, /bin/ps, /sbin/mount exist. PATH is empty in a session.
+Key used: `/home/tritm/ios-ssh-key` (also /tmp/k1 on k60). To log in from this workstation the
+host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
