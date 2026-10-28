@@ -1,0 +1,51 @@
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -5070,10 +5070,38 @@
+ 	return open_nocancel(p, (struct open_nocancel_args *)uap, retval);
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * Boot-task bring-up trace: print what the `mount` boot task opens. A boot that
++ * stops after `exec mount argv mount -P` gives no other clue (no userland output,
++ * no exit line), so the first open() tells whether mount reached userland at all.
++ */
++static int sweet_trace_mount_left = 24;
++
++static void
++sweet_trace_open(proc_t p, user_addr_t path, int flags)
++{
++	char b[96];
++	size_t len = 0;
++
++	if (sweet_trace_mount_left <= 0 || strcmp(p->p_comm, "mount") != 0) {
++		return;
++	}
++	if (copyinstr(path, b, sizeof(b), &len) != 0) {
++		strlcpy(b, "?", sizeof(b));
++	}
++	printf("SWEET TRACE mount open %s flags 0x%x\n", b, flags);
++	sweet_trace_mount_left--;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ int
+ open_nocancel(__unused proc_t p, struct open_nocancel_args *uap,
+     int32_t *retval)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	sweet_trace_open(p, uap->path, uap->flags);
++#endif
+ 	return openat_internal(vfs_context_current(), uap->path, uap->flags,
+ 	           uap->mode, AT_FDCWD, UIO_USERSPACE, retval);
+ }
+@@ -5082,6 +5110,9 @@
+ openat_nocancel(__unused proc_t p, struct openat_nocancel_args *uap,
+     int32_t *retval)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	sweet_trace_open(p, uap->path, uap->flags);
++#endif
+ 	return openat_internal(vfs_context_current(), uap->path, uap->flags,
+ 	           uap->mode, uap->fd, UIO_USERSPACE, retval);
+ }
