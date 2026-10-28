@@ -5895,3 +5895,31 @@ Patch 0183 adds `READ <path> <off> <len>` to the files server (dyld cache slices
 - Next experiment that can still reveal the cause: patch the 4 bytes at file offset 0x2838a4 in
   dyld_shared_cache_arm64.09 (trap -> `ret`, 0xc0035fd6) on the device through RAWBLK using the
   file's extents (known from the image) and see how far backboardd gets before the next trap.
+
+## 2026-10-29 - consulted Bergamota: the UI blocker is architectural, not a cache patch
+Read /home/tritm/bergamota (same ios-sweet lineage, iOS 16.7.16 iPhone X userland running with
+backboardd + SpringBoard) to compare approaches instead of continuing blind:
+- They boot **launchd as PID 1** with essentially our cmdline
+  (`rd=ufsroot0 unentitled_ios_sim_launch=1 ufsrw=1 rootrw=1 launchd_unsecure_cache=1 ...`), and
+  their logs show SpringBoard blocked in `-[BKSSystemShellService _checkIn]`, i.e. a *synchronous
+  BSXPC call to backboardd* working normally through the launchd bootstrap namespace.
+- We replaced launchd with the sweetsh/usermanagerd carrier, so this port has **no bootstrap
+  registration and no service namespace**. `BSServiceConnection` init therefore cannot look up its
+  mach service, BoardServices raises, logs "Underlying exception backtrace" and terminates with
+  `brk #0` - which is exactly our deterministic backboardd SIGTRAP (see the section above).
+- Patch series diff (theirs minus ours) is all launchd/mach/AMFI plumbing we lack:
+  sweet-launchd-kevent-spawn-trace, sweet-sample-launchd-ports, ios18-mach-ports-lookup,
+  sweet-amfi-named-policy, sweet-exec-env-after-extract, sweet-exec-delay-mcm,
+  sweet-sandbox-container-expected, sweet-sandbox-extensions.
+  Ours (UFS/files-server/RAWBLK/conhost) is orthogonal.
+- Portable lesson from docs/IOS18_XPCPROXY.md: their xpcproxy SIGTRAP was `__NSThreadPoisoned`
+  because `tools/renegade/pacstrip.py` rewrote PACGA per-register, so the MAC store and check
+  differed. Only relevant for arm64e roots - ours is `dyld_v1   arm64` (no PACGA), so not our bug,
+  but their method (pc & 0x3fff + pc-lr gap -> image) is what tools/dsc-trap.py automates now.
+
+### Experiment queued: launchd as PID 1 again
+Pristine `/usr/libexec/usermanagerd` recovered from the host image
+(dd if=ios16-root-picasso.img bs=4096 skip=2146394 count=171): 700,128 B, md5 ed28e071...,
+staged on k60 as /tmp/um-pristine.pad. Restoring it removes the carrier, so launchd runs its own
+jobs; `/System/Library/LaunchDaemons/000-sweetsh.plist` (dropbear) should still give us SSH.
+Watch the ring for launchd spawn/xpcproxy lines and whether backboardd survives past init.
