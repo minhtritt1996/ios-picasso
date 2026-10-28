@@ -5856,3 +5856,22 @@ Patch 0183 adds `READ <path> <off> <len>` to the files server (dyld cache slices
 - Next: name the containing function (pull the cache `.symbols` range for that address, or
   the image's local symbols) and decide between patching BoardServices in the rootfs
   (bergamota's method) and fixing whatever mach/XPC primitive it asserts on.
+
+## 2026-10-29 - static symbolication result (and its limit)
+- `tools/dsc-from-image.py` reads hardlink payloads out of the HFS image: the dyld caches are
+  0-byte stubs whose data lives in the invisible private dir (CNID 18) as `iNode<cnid>`.
+  `list` prints every payload with its first bytes (`dyld_v1   arm64` = cache file), `extract`
+  writes one out. Mapping table of each file identifies it (e.g. .09 covers vm 0x19b758000).
+- BoardServices' `__LINKEDIT` (fileoff 0x5c000, 333 MB) lives in **iNode396713387** (cnid 318464),
+  mapping vm 0x217040000 file 0x5c000 prot 1. Its LC_SYMTAB (symoff 209,933,328, nsyms 953,
+  stroff 284,542,048) resolves there - but **every name in the shared cache is "<redacted>"**
+  (Apple strips private-framework locals), so static naming is impossible for this frame.
+- What the numbers do give: the faulting function starts at BoardServices+0x2b788
+  (0x19b9db788), the fault is at +0x11c, and the instruction is `brk #0` after a call chain that
+  formats a 16-byte message; the adjacent __cstring block contains
+  "[BSXPCServiceConnectionProxy] Error: No method found on object %@ for @selector(%@)".
+- So backboardd's early SIGTRAP is BoardServices' XPC-proxy assertion, i.e. a runtime protocol
+  problem (peer sent something the proxy cannot dispatch), not a framebuffer/dyld/kernel-trap issue.
+- Also learned: the files server is single-threaded - one READ that stalls (here: offsets past a
+  cache file's readable extent) wedges every later request until the phone reboots
+  (`picasso-ecm.py reboot` over L2 clears it without recovery).
