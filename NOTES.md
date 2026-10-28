@@ -5679,3 +5679,19 @@ Notes: the rootfs is trimmed - there is no /bin/ls, /bin/cat, /usr/bin/id, /usr/
 head; /bin/sh, /bin/bash, /bin/ps, /sbin/mount exist. PATH is empty in a session.
 Key used: `/home/tritm/ios-ssh-key` (also /tmp/k1 on k60). To log in from this workstation the
 host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
+
+## 2026-10-28 21:35 - why there is no home screen: xpcproxy never execs its targets
+- The carrier fix works: /usr/libexec/usermanagerd now forks dropbear (setsid) and exits 0, so the
+  boot task finishes. Ring after that boot: `Early boot complete` x2, 54 `exec xpcproxy`,
+  `exec SpringBoard argv /System/Library/CoreServices/SpringBoar size 112960` (stock SpringBoard).
+- But: `exec SpringBoard` 1, `SWEET EXIT SpringBoard` 0, `exec xpcproxy` 51 and
+  `SWEET EXIT xpcproxy` 0 - 51 xpcproxy processes are spawned and then neither exit nor exec their
+  target. backboardd is one of them (`exec xpcproxy argv xpcproxy com.apple.backboardd`), so the
+  whole UI stack never starts => no home screen. This is the same "xpcproxy stuck before its own
+  execve" the notes have recorded since 2026-10-25; it is now the single blocker for the UI.
+- Side effect: with the boot running, the xpcproxy storm starves everything else - SSH accepts the
+  TCP connection (port 22 open) but times out during the banner exchange, whereas on the
+  "boot stalls at usermanagerd" image SSH sessions work fine.
+- Two carrier variants, both 700,128 B, ident com.apple.usermanagerd:
+  * exec directly  (md5 f0b0d9ad...) -> boot stops after usermanagerd, SSH WORKS
+  * fork+setsid+exit (md5 02db782f...) -> boot proceeds to SpringBoard, SSH is starved
