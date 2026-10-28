@@ -5765,3 +5765,17 @@ host link needs 192.168.7.1/24 on the gadget interface (see picasso-ecm.py up).
   path's memory setup (firmware/DMA window) is not in place in this build.
 - So: keep `modem=1` OUT until that allocation is fixed; UI work continues with the open-path trace
   image (md5 ad97d311, k187 kernel, no modem).
+
+## 2026-10-28 23:20 - open-path trace: only optional FeatureFlags plists fail; helpers for fast checks
+- With the open-path kernel (md5 ad97d311) backboardd's failing opens are ONLY the optional
+  FeatureFlags files (/System/AppleInternal/.../GlobalDisclosureOverrides.plist,
+  /System/Library/FeatureFlags/{Profiles,Settings}Disclosures.plist,
+  /Library/Preferences/FeatureFlags/*.plist). Everything else opens fine, and it still SIGTRAPs at
+  the same cache offset (pc & 0x3fff == 0x38a4, unslid 0x19b9eb8a4), so the trap is not a missing
+  file: it happens in shared-cache code right after the feature-flag probing.
+- Symbolication needs the dyld cache. The files server's GET on the multi-GB cache files does not
+  answer (only the offset-based READ path works), and the image holds them as HFS hardlinks that
+  hfsplus-tool cannot read, so the cache has to come from the DMGs (apfs-fuse) or via READ chunks.
+- k60 helpers to stop the long fixed sleeps: `/tmp/waitlink.sh SECS` (sets the gadget IP and returns
+  the moment the phone answers ping) and `/tmp/sshdev.sh "cmd"` (waits <=20 s for port 22 then runs
+  the command with the key). Use them instead of `sleep 110`.
