@@ -1,0 +1,44 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -199,6 +199,18 @@
+ 	su.lock_tid = (uint32_t)thread_tid(current_thread());
+ }
+ 
++static inline bool
++ufs_trylock(uint32_t who)
++{
++	if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++		return false;
++	}
++	su.lock_owner = who;
++	su.lock_users++;
++	su.lock_tid = (uint32_t)thread_tid(current_thread());
++	return true;
++}
++
+ static inline void
+ ufs_unlock(void)
+ {
+@@ -1795,13 +1807,20 @@
+ 		int error = 0;
+ 
+ 		su.flush_stage = 1;
+-		ufs_lock(UFS_LK_FLUSH);
++		/* Diagnostics must never stop the system: if the driver is busy with
++		 * file I/O, skip this round instead of queueing behind it (a flush that
++		 * wedged here once held the strategy lock for minutes and made every
++		 * vnode operation - and every printf - wait forever). */
++		if (!ufs_trylock(UFS_LK_FLUSH)) {
++			su.flush_stage = 9;
++			continue;
++		}
+ 		while (pos < total && !error) {
+ 			uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
+ 			uint32_t blk = off / UFS_BLOCK;
+ 			uint64_t need = ((uint64_t)off % UFS_BLOCK + (total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
+ 			uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
+-			    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++			    (uint64_t)(64));
+ 			memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
+ 			error = ufs_write_blocks(base + 1 + blk, n);
+ 			pos += (uint64_t)(blk + n) * UFS_BLOCK - off;
