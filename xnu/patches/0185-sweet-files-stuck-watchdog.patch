@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_files.c
 +++ b/bsd/dev/sweet_files.c
-@@ -43,6 +43,28 @@
+@@ -43,7 +43,29 @@
  static char *sf_buf;
  static int sf_chan;
  
@@ -11,7 +11,7 @@
 +static volatile uint64_t fs_t0;
 +static char fs_what[96];
 +
-+static void
+ static void
 +sf_mark(uint32_t step, const char *fmt, ...)
 +{
 +	va_list ap;
@@ -26,9 +26,10 @@
 +	}
 +}
 +
- static void
++static void
  sf_sleep_ms(int ms)
  {
+ 	(void)tsleep(&sf_chan, PZERO, "sweetfiles", MAX(1, ms * hz / 1000));
 @@ -197,8 +219,10 @@
  static int
  sf_put(socket_t so, const char *path, int mode, uint64_t size)
@@ -103,7 +104,7 @@
  	char a[512], b[512];
  	unsigned long long n = 0;
  	int err = sf_line(so, line, sizeof(line));
-@@ -416,17 +453,57 @@
+@@ -416,17 +453,59 @@
  			sf_sleep_ms(100);
  			continue;
  		}
@@ -119,14 +120,15 @@
 +{
 +	uint64_t last = 0;
 +	uint32_t last_serial = 0;
-+	uint32_t beats = 0;
++	uint64_t alive_next = 0, stuck_next = 0;
 +	for (;;) {
 +		sf_sleep_ms(2000);
 +		uint64_t now = mach_absolute_time(), age_ns = 0;
 +		uint32_t step = fs_step;
-+		if (++beats % 15 == 0) {
-+			printf("SWEET FILES ALIVE: beats %u serial %u step %u\n",
-+			    (unsigned)beats, (unsigned)fs_serial, (unsigned)step);
++		if (now >= alive_next) {
++			alive_next = now + 30000000000ull;     /* every 30 s of real time */
++			printf("SWEET FILES ALIVE: serial %u step %u\n",
++			    (unsigned)fs_serial, (unsigned)step);
 +		}
 +		if (step == 0) {
 +			continue;
@@ -135,9 +137,10 @@
 +		if (age_ns < 5000000000ull) {
 +			continue;
 +		}
-+		if (now - last < 10000000000ull && fs_serial == last_serial) {
++		if (now < stuck_next && fs_serial == last_serial) {
 +			continue;
 +		}
++		stuck_next = now + 10000000000ull;
 +		last = now;
 +		last_serial = fs_serial;
 +		printf("SWEET FILES STUCK: serial %u step %u age %llu ms: %s\n",
@@ -153,12 +156,12 @@
 -	if (kernel_thread_start(sf_thread, NULL, &thread) == KERN_SUCCESS) {
 +	kern_return_t kr1 = kernel_thread_start(sf_thread, NULL, &thread);
 +	if (kr1 == KERN_SUCCESS) {
- 		thread_deallocate(thread);
- 	}
-+	kern_return_t kr2 = kernel_thread_start(sf_watchdog, NULL, &thread);
-+	if (kr2 == KERN_SUCCESS) {
 +		thread_deallocate(thread);
 +	}
++	kern_return_t kr2 = kernel_thread_start(sf_watchdog, NULL, &thread);
++	if (kr2 == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
 +	printf("SWEET FILES: threads server %d watchdog %d\n", (int)kr1, (int)kr2);
  }
  #endif /* ARM64_BOARD_CONFIG_SWEET */
