@@ -4,11 +4,19 @@
  
  #define UFS_BLOCK       4096u
  #define BOUNCE_SIZE     (1u << 20)
-+#define STAGE_SIZE      (256u << 10)
++#define STAGE_SIZE      (256u << 10)   /* upper quarter of the bounce area, see DMA_STAGE */
  #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
  /* The bounce path needs one entry per 256 KiB; a direct transfer into a
   * buffer needs one per page, so the table is sized for the worse case. */
-@@ -140,6 +141,7 @@
+@@ -104,6 +105,7 @@
+ #define DMA_UCD         0x1000                  /* 128 byte aligned */
+ #define DMA_BOUNCE      0x4000
+ #define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
++#define DMA_STAGE       (DMA_BOUNCE + BOUNCE_SIZE - STAGE_SIZE)  /* wired, no separate kalloc */
+ 
+ static struct {
+ 	vm_offset_t regs;
+@@ -140,6 +142,7 @@
  	volatile uint32_t lock_users;
  	volatile uint32_t lock_tid;
  	volatile uint32_t flush_stage;
@@ -16,14 +24,6 @@
  	/* Where a GPT partition lookup is right now: the heartbeat prints it, so
  	 * a lookup that never returns names its own LUN and step. */
  	volatile uint32_t part_lun;
-@@ -163,6 +165,7 @@
- 	volatile uint64_t direct_bytes;
- 	char want[24];                          /* root partition name, boot-arg ufsroot */
- } su;
-+static char *strat_stage;             /* wired staging copy, allocated on first use */
- 
- static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
- static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
 @@ -170,7 +173,7 @@
  static LCK_MTX_DECLARE(sweet_raw_lock, &sweet_ufs_grp);
  
@@ -98,16 +98,14 @@
  	ufs_lock(UFS_LK_STRATEGY);
  	/* Published only while holding the lock: a thread that is merely
  	 * waiting for it would otherwise overwrite the stuck holder's
-@@ -1138,16 +1163,18 @@
+@@ -1138,16 +1163,15 @@
  	su.strat_done = 0;
  	su.strat_t0 = mach_absolute_time();
  	su.strat_step = 1;
 -	if (su.trace) {
 -		sweet_tracef("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
 -		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
-+	if (strat_stage == NULL) {
-+		strat_stage = kalloc_data(STAGE_SIZE, Z_NOWAIT);
- 	}
+-	}
  	for (uint32_t done = 0; done < count;) {
  		su.strat_step = 2;
  		uint64_t pos = off + done;
@@ -121,7 +119,7 @@
  		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
  		void *bounce = (void *)(su.dma + DMA_BOUNCE);
  		if (rd) {
-@@ -1177,14 +1204,30 @@
+@@ -1177,14 +1201,25 @@
  				}
  			}
  			if (error == EINVAL) {
@@ -133,28 +131,24 @@
 -				sweet_tracef("SWEET UFS s3r: err %d\n", error);
 +				su.io_phase = 32;
  				su.strat_step = 3;
--				if (!error) {
-+				if (!error && strat_stage != NULL) {
-+					/* The caller's buffer may page-fault, and that fault comes
-+					 * back through this driver wanting the lock we hold: copy to
-+					 * wired memory first, then release it for the real copy. */
-+					memcpy(strat_stage, (const char *)bounce + skip, want);
+ 				if (!error) {
+-					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
+-					    want, &su.strat_done);
++					/* Copy out of the driver lock: the caller's buffer may fault and
++					 * come back through this driver wanting the lock we would hold.
++					 * The stage is the upper 256 KiB of the wired bounce area, so no
++					 * allocation can fail and no extra memory is reserved. */
++					char *stage = (char *)(su.dma + DMA_STAGE);
++					memcpy(stage, (const char *)bounce + skip, want);
 +					ufs_unlock();
 +					su.io_phase = 40;
-+					ufs_copy_out(vaddr + done, strat_stage, want, &su.strat_done);
++					ufs_copy_out(vaddr + done, stage, want, &su.strat_done);
 +					su.io_phase = 41;
 +					ufs_lock(UFS_LK_STRATEGY);
-+				} else if (!error) {
-+					su.io_phase = 40;
- 					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
- 					    want, &su.strat_done);
-+					su.io_phase = 41;
-+				}
-+				if (!error) {
  					su.strat_step = 4;
  				}
  			}
-@@ -1474,6 +1517,7 @@
+@@ -1474,6 +1509,7 @@
  int sweet_log_ferr_g;
  volatile uint64_t sweet_log_last_g;
  uint64_t sweet_log_base_g, sweet_log_nblocks_g;
@@ -162,7 +156,7 @@
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -1795,16 +1839,26 @@
+@@ -1795,16 +1831,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -193,7 +187,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,6 +1916,64 @@
+@@ -1862,7 +1908,65 @@
  	}
  }
  
@@ -226,7 +220,7 @@
 + * The chunked flusher only updates its header when a whole round completes, which
 + * is exactly what loses the final seconds of a wedged boot.
 + */
-+static void
+ static void
 +sweet_tail_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	while (!su.ready || !su.writable || sweet_log_base_g == 0) {
@@ -255,10 +249,11 @@
 +	}
 +}
 +
- static void
++static void
  sweet_log_start(void)
  {
-@@ -1879,6 +1991,10 @@
+ 	uint32_t on = 1;
+@@ -1879,6 +1983,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
