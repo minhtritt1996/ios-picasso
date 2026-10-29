@@ -1,6 +1,6 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -91,6 +91,10 @@
+@@ -91,12 +91,37 @@
  #define SWEET_FB_LOGICAL_H              2436
  #define SWEET_FB_FORMAT_BGRA            0x42475241
  
@@ -11,7 +11,34 @@
  class IOMobileFramebuffer : public IOService {
  	OSDeclareDefaultStructors(IOMobileFramebuffer);
  };
-@@ -109,6 +113,17 @@
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
++/* Userspace asks IOServiceMatching("SweetGPU") and gives up when it is absent (the
++ * CoreAnimation bridge only loads with a GPU service present). Publish a stub so the
++ * bridge loads; Mesa finds no usable hardware behind it and draws in software. */
++class SweetGPU : public IOService {
++	OSDeclareDefaultStructors(SweetGPU);
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE
++	{
++		if (!IOService::start(provider)) {
++			return false;
++		}
++		setProperty("stub", true);
++		registerService();
++		return true;
++	}
++};
++
++OSDefineMetaClassAndStructors(SweetGPU, IOService);
++
++
++
+ class IOMobileFramebufferUserClient;
+ 
+ class AppleCLCD : public IOMobileFramebuffer {
+@@ -109,6 +134,17 @@
  	static void vsyncFired(OSObject *owner, IOTimerEventSource *sender);
  
  public:
@@ -29,7 +56,7 @@
  	uint64_t      fPhys;
  	uint32_t      fWidth, fHeight, fRowBytes;
  	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
-@@ -147,6 +162,21 @@
+@@ -147,6 +183,21 @@
  OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
  OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
  
@@ -51,7 +78,7 @@
  class IOMobileFramebufferUserClient : public IOUserClient {
  	OSDeclareDefaultStructors(IOMobileFramebufferUserClient);
  
-@@ -198,6 +228,12 @@
+@@ -198,6 +249,24 @@
  	}
  	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
  	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
@@ -59,6 +86,18 @@
 +		thread_t t = NULL;
 +		if (kernel_thread_start(sweet_fb_clear_thread, this, &t) == KERN_SUCCESS) {
 +			thread_deallocate(t);
++		}
++	}
++	{
++		SweetGPU *gpu = new SweetGPU;
++
++		if (gpu != NULL) {
++			if (gpu->init() && gpu->attach(this)) {
++				gpu->start(this);
++				IOLog("SWEET GPU: stub SweetGPU published (no hardware; Mesa will use softpipe)\n");
++			} else {
++				gpu->release();
++			}
 +		}
 +	}
  	fLock = IOLockAlloc();
