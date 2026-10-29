@@ -6117,3 +6117,19 @@ Sample series (ping + L2 `info` every ~14 s):
   next cheap test.
 - Practical state: `sweetlogflush` defaults to 0, so boots are quieter but recovery-side ring pulls
   only contain early boot; the L2 channel remains the live view.
+
+### 2026-10-29 - t24 (bundle) regressed; t23 is the good baseline
+- t24 (kernel k207 = silent UFS hot path + `rxw enter/returned/threads/rescues` in `info`,
+  image cc4cb833) **never answers any L2 command** (not even `ringpos`) while the gadget enumerates:
+  it dies before the responder starts. Re-flashing the deterministic rebuild of t23
+  (`2b7f225f`, kernel k206) boots normally again, so the rootfs and flash are fine and the
+  regression is in that kernel, not in the device state. Do not ship k207 as is; bisect it
+  (print removal vs the `info` fields) before rebuilding.
+- On the good t23 baseline the timeline is now clear and repeatable:
+  12:25:27..12:25:55 ping OK; 12:26:09 ping stops; `info` still answers until 12:26:39, then
+  silence. `lock 0/0` throughout, `cmd` serial advancing until the end.
+  So the *whole USB stack* (RX/TX and the command thread), not storage, degrades about 90-120 s
+  into userland boot - the same family as the old "event thread stalls" finding, only later.
+- Next: bisect k207, then instrument the DWC3 side at the moment of death (event ring head/tail,
+  TRB states, GEVNTCOUNT/GEVNTADR, tx_busy, probe age) and print it through `info` so the last
+  reply before silence carries the state.
