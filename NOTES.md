@@ -6133,3 +6133,13 @@ Sample series (ping + L2 `info` every ~14 s):
 - Next: bisect k207, then instrument the DWC3 side at the moment of death (event ring head/tail,
   TRB states, GEVNTCOUNT/GEVNTADR, tx_busy, probe age) and print it through `info` so the last
   reply before silence carries the state.
+
+### 2026-10-29 - the L2-silence regressions were caused by MMIO in the info handler
+k207 (t24) and k208 (t25) both enumerated USB and then answered **no** L2 command at all. The only
+common change was the extended `info` reply, and in k207/k208 it read `GEVNTCOUNT` (a DWC3 register)
+from the command thread. A register read on a controller that is not clocked/armed waits, the
+command thread never returns, the rescue spawns at most four replacements and then stops - so the
+whole channel goes silent while the kernel lives. Rule: **never touch DWC3 registers from the
+command thread**; `info` must only read RAM (and `sweet_ufs_state()` is safe).
+k209 (t26) keeps exactly the k206 behaviour and adds only RAM fields (`evt_pos`, `rxw_loops`,
+`rxw_enter/returned`, `rxw_threads`, `rxw_rescues`, `cmd_busy/cmd_done`) to `info`.
