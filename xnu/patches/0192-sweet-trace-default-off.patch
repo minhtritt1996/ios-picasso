@@ -1,0 +1,36 @@
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -188,8 +188,15 @@
+ 	 */
+ 	if ((proc->p_comm[0] == 'x' && strcmp(proc->p_comm, "xpcproxy") == 0) ||
+ 	    strcmp(proc->p_comm, "backboardd") == 0) {
+-		static int sweet_xp_prints = 400;
++		static int sweet_xp_prints = -1;
+ 
++		if (sweet_xp_prints < 0) {
++			/* Off by default: the trace fills the 4 MB ring in a few minutes and
++			 * evicts the evidence we are chasing. sweetsyscalltrace=1 enables it. */
++			uint32_t on = 0;
++			PE_parse_boot_argn("sweetsyscalltrace", &on, sizeof(on));
++			sweet_xp_prints = on ? 400 : 0;
++		}
+ 		if (sweet_xp_prints > 0) {
+ 			sweet_xp_prints--;
+ 			if (error != 0 && (code == 5 || code == 33)) {
+--- a/bsd/kern/kern_fork.c
++++ b/bsd/kern/kern_fork.c
+@@ -622,8 +622,13 @@
+ 		/* "Return" to the child */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 		{
+-			static int sweet_fork_prints = 64;
++			static int sweet_fork_prints = -1;
+ 			task_clear_return_wait(get_threadtask(child_thread), TCRW_CLEAR_ALL_WAIT);
++			if (sweet_fork_prints < 0) {
++				uint32_t on = 0;
++				PE_parse_boot_argn("sweetsyscalltrace", &on, sizeof(on));
++				sweet_fork_prints = on ? 64 : 0;
++			}
+ 			if (sweet_fork_prints > 0) {
+ 				sweet_fork_prints--;
+ 				printf("SWEET FORK %s pid %d -> child %d released\n",
