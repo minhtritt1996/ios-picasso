@@ -6000,3 +6000,31 @@ quiet for exactly that reason - not because kernel timeouts are broken. Patch 01
 with `absolutetime_to_nanoseconds()` before every comparison (and the 0186 self-test, which was
 only there to prove the false hypothesis, is dropped). The UFS code's habit of spinning rather
 than sleeping may still be needed, but it is no longer evidence of a broken timer.
+
+## 2026-10-29 evening - where the port stands (t15, kernel k198)
+Working: launchd as PID 1 boots the real iOS userland (early boot complete, the daemon set spawns
+through xpcproxy, boot tasks exit 0, no panic). Not working: after a few minutes every vnode
+operation stops and the system looks dead (heartbeat/ringpos still advance, ping/TCP 2223/L2 die).
+Evidence from the live L2 ring on t15 (`picasso-ecm.py ring`):
+- `SWEET KICK 150: ... lk 4/1 st 9 ... fage 9900` - the UFS lock is held by owner **4 =
+  UFS_LK_STRATEGY** (see the enum in sweet_ufs.c), the log flusher is idle (`st 9` = its own
+  try-lock skip), and no `SWEET UFS gd:` follows the last `in:` request, i.e. the strategy thread
+  holds the driver lock and blocks **before issuing any command**.
+- The reads that did run all completed (`s7 -> s3 -> gd -> cd -> s3r err 0`), so the bounce path and
+  the command plumbing are fine up to that point.
+- Our own diagnostics are part of the hazard: the flusher used to hold the lock across its whole
+  loop (patch 0186 v2 now writes one 64-block chunk per round and only with a try-lock), and the
+  files-server watchdog prints through the same log path. Anything that prints while holding the
+  UFS lock can hang userland I/O.
+- Host note: from THIS workstation ping/ARP to 192.168.7.2 has never answered even on builds that
+  were plainly alive (L2 ringpos advancing), while the same builds answered from k60 - so treat a
+  failed `ping -I enx...` here as a host-side routing question, not as evidence about the phone.
+Next steps, in order:
+1. Make the strategy path unable to hold the lock while blocked: print `s7`/`s3` *before* taking
+   the lock, keep the lock only around the command issue+wait, and add a KICK-time report of the
+   holder's step + blk so the next stall names itself.
+2. Reduce the diagnostic surface: `sweetufstrace=1` currently prints ~7 lines per read; turn it off
+   for userland boots (keep it behind the boot-arg, which it already is) and rely on KICK/HB.
+3. Then re-run the launchd boot and see whether it reaches SpringBoard; the remaining userland
+   blockers from Bergamota's experience (containermanagerd/MCM answering no container lookup) will
+   show up next and are a separate, known class of work.
