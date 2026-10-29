@@ -260,7 +260,15 @@
  			snprintf(out, sizeof(out), "%s: read failed\n", path);
  		}
  	} else if (strncmp(buf, "ufslog", 6) == 0) {
-@@ -1797,16 +1829,94 @@
+@@ -1762,7 +1794,6 @@
+ 		uint32_t n = sweet_ufs_trace_copy(from, out, 1200);
+ 
+ 		out[n] = 0;
+-		return;
+ 	} else if (strncmp(buf, "putend ", 7) == 0) {
+ 		char path[200];
+ 		strlcpy(path, buf + 7, sizeof(path));
+@@ -1797,16 +1828,93 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -305,7 +313,6 @@
 +			used += n;
 +		}
 +		proc_list_unlock();
-+		return;   /* out already filled */
 +	} else if (strncmp(buf, "mkdir ", 6) == 0) {
 +		extern int sweet_vfs_mkdir(const char *path, int mode);
 +		unsigned mode = 0755;
