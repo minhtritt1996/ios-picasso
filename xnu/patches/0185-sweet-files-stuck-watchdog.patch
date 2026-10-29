@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_files.c
 +++ b/bsd/dev/sweet_files.c
-@@ -43,7 +43,29 @@
+@@ -43,6 +43,28 @@
  static char *sf_buf;
  static int sf_chan;
  
@@ -11,7 +11,7 @@
 +static volatile uint64_t fs_t0;
 +static char fs_what[96];
 +
- static void
++static void
 +sf_mark(uint32_t step, const char *fmt, ...)
 +{
 +	va_list ap;
@@ -26,10 +26,9 @@
 +	}
 +}
 +
-+static void
+ static void
  sf_sleep_ms(int ms)
  {
- 	(void)tsleep(&sf_chan, PZERO, "sweetfiles", MAX(1, ms * hz / 1000));
 @@ -197,8 +219,10 @@
  static int
  sf_put(socket_t so, const char *path, int mode, uint64_t size)
@@ -104,7 +103,7 @@
  	char a[512], b[512];
  	unsigned long long n = 0;
  	int err = sf_line(so, line, sizeof(line));
-@@ -416,17 +453,59 @@
+@@ -416,17 +453,62 @@
  			sf_sleep_ms(100);
  			continue;
  		}
@@ -123,7 +122,10 @@
 +	uint64_t alive_next = 0, stuck_next = 0;
 +	for (;;) {
 +		sf_sleep_ms(2000);
-+		uint64_t now = mach_absolute_time(), age_ns = 0;
++		/* mach_absolute_time() counts ticks (timebase != 1 GHz here), so every
++		 * comparison against a millisecond budget goes through nanoseconds. */
++		uint64_t now = 0, age_ns = 0;
++		absolutetime_to_nanoseconds(mach_absolute_time(), &now);
 +		uint32_t step = fs_step;
 +		if (now >= alive_next) {
 +			alive_next = now + 30000000000ull;     /* every 30 s of real time */
@@ -133,7 +135,7 @@
 +		if (step == 0) {
 +			continue;
 +		}
-+		absolutetime_to_nanoseconds(now - fs_t0, &age_ns);
++		absolutetime_to_nanoseconds(mach_absolute_time() - fs_t0, &age_ns);
 +		if (age_ns < 5000000000ull) {
 +			continue;
 +		}

@@ -5991,3 +5991,12 @@ observed live over the L2 channel (no recovery needed, `picasso-ecm.py ring`):
   whether `hz`/`mach_absolute_time` deadlines are sane), then convert our own helper sleeps
   (`sf_sleep_ms`, log pacing, sampler) to a mach_absolute_time spin or to an explicit
   `thread_call`-based wakeup so the port stops depending on it.
+
+### Correction (same day): the "timeouts never fire" conclusion was my own unit bug
+`mach_absolute_time()` returns **ticks**, and this port's timebase is not 1 GHz, so comparing or
+adding a nanosecond budget (`5e9`, `30e9`) to a tick stamp stretched the watchdog's cadence to
+roughly 1250 s and its stuck threshold to ~208 s. The watchdog printed `ALIVE` once and then went
+quiet for exactly that reason - not because kernel timeouts are broken. Patch 0185 now converts
+with `absolutetime_to_nanoseconds()` before every comparison (and the 0186 self-test, which was
+only there to prove the false hypothesis, is dropped). The UFS code's habit of spinning rather
+than sleeping may still be needed, but it is no longer evidence of a broken timer.
