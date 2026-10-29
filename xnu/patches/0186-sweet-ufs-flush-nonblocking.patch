@@ -74,9 +74,8 @@
  	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x28; su.cmd_lun = su.lun;
  	su.cmd_serial++;
  	su.cmd_start = mach_absolute_time();
--	ufs_trace();
 +	su.io_phase = 1;
-+
+ 	ufs_trace();
 +	su.io_phase = 2;
  	uint8_t cdb[10] = {
  		0x28, 0,
@@ -88,7 +87,18 @@
  	su.cmd_start = 0;
  	if (error) {
  		su.last_err = error;
-@@ -1138,16 +1159,15 @@
+@@ -1127,6 +1148,10 @@
+ 		goto done;
+ 	}
+ 
++	if (su.trace) {
++		sweet_tracef("SWEET UFS want: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
++		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
++	}
+ 	ufs_lock(UFS_LK_STRATEGY);
+ 	/* Published only while holding the lock: a thread that is merely
+ 	 * waiting for it would otherwise overwrite the stuck holder's
+@@ -1138,16 +1163,15 @@
  	su.strat_done = 0;
  	su.strat_t0 = mach_absolute_time();
  	su.strat_step = 1;
@@ -109,25 +119,14 @@
  		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
  		void *bounce = (void *)(su.dma + DMA_BOUNCE);
  		if (rd) {
-@@ -1165,11 +1185,8 @@
- 			if (su.direct && skip == 0 && (want % UFS_BLOCK) == 0 &&
- 			    (((uintptr_t)vaddr + done) % PAGE_SIZE) == 0) {
- 				su.strat_step = 6;      /* direct DMA into the buffer */
--				sweet_tracef("SWEET UFS s6: dma lba 0x%llx blocks %u\n",
--				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
- 				error = ufs_read_blocks_dma(su.first_block + lba, blocks,
- 				    vaddr + done);
--				sweet_tracef("SWEET UFS s6r: err %d\n", error);
- 				if (!error) {
- 					su.strat_done = want;
- 					su.direct_reads++;
-@@ -1177,14 +1194,22 @@
+@@ -1177,14 +1201,25 @@
  				}
  			}
  			if (error == EINVAL) {
--				sweet_tracef("SWEET UFS s3: bounce lba 0x%llx blocks %u\n",
--				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
 +				su.io_phase = 30;
+ 				sweet_tracef("SWEET UFS s3: bounce lba 0x%llx blocks %u\n",
+ 				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
++				su.io_phase = 31;
  				error = ufs_read_blocks(su.first_block + lba, blocks);
 -				sweet_tracef("SWEET UFS s3r: err %d\n", error);
 +				su.io_phase = 32;
@@ -149,7 +148,7 @@
  					su.strat_step = 4;
  				}
  			}
-@@ -1474,6 +1499,7 @@
+@@ -1474,6 +1509,7 @@
  int sweet_log_ferr_g;
  volatile uint64_t sweet_log_last_g;
  uint64_t sweet_log_base_g, sweet_log_nblocks_g;
@@ -157,7 +156,7 @@
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -1795,16 +1821,26 @@
+@@ -1795,16 +1831,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -188,7 +187,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,11 +1898,74 @@
+@@ -1862,11 +1908,74 @@
  	}
  }
  
@@ -221,7 +220,7 @@
 + * The chunked flusher only updates its header when a whole round completes, which
 + * is exactly what loses the final seconds of a wedged boot.
 + */
-+static void
+ static void
 +sweet_tail_thread(void *arg __unused, wait_result_t wr __unused)
 +{
 +	while (!su.ready || !su.writable || sweet_log_base_g == 0) {
@@ -250,7 +249,7 @@
 +	}
 +}
 +
- static void
++static void
  sweet_log_start(void)
  {
  	uint32_t on = 1;
@@ -263,7 +262,7 @@
  
  	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
  	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
-@@ -1879,6 +1978,10 @@
+@@ -1879,6 +1988,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}

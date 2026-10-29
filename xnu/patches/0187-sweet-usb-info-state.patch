@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -1542,10 +1542,22 @@
+@@ -1542,10 +1542,25 @@
  		pos = pos > 1200 ? pos - 1200 : 0;
  		sweet_log_copy(&pos, out, 1200);
  	} else if (strcmp(buf, "info") == 0) {
@@ -9,20 +9,23 @@
 -		    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
 -		    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count);
 +		{
-+			/* Breadcrumbs survive a wedged log: report the driver state here so a
-+			 * stalled boot can still be interrogated over the control channel. */
++			/* One reply carries everything needed to see the DWC3 path fail:
++			 * event-ring position, how many frames went out and came back, and
++			 * whether a command thread is still inside a command. */
 +			extern void sweet_ufs_state(char *out, size_t max);
 +			char st[220];
 +			st[0] = 0;
 +			sweet_ufs_state(st, sizeof(st));
 +			snprintf(out, sizeof(out),
 +			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
-+			    " | rxw %llu/%llu thr %u resc %u\n%s",
++			    " | evpos %u gcnt %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
 +			    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count,
-+			    (unsigned long long)os_atomic_load(&ud.rxw_enter, relaxed),
-+			    (unsigned long long)os_atomic_load(&ud.rxw_returned, relaxed),
-+			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues, st);
++			    (unsigned)ud.evt_pos, (unsigned)(dwc_rd(GEVNTCOUNT) & 0xffff),
++			    (unsigned long long)ud.rxw_loops,
++			    (unsigned long long)ud.rxw_enter, (unsigned long long)ud.rxw_returned,
++			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues,
++			    (int)ud.cmd_busy, (unsigned long long)ud.cmd_done, st);
 +		}
  	} else if (strcmp(buf, "ringpos") == 0) {
  		snprintf(out, sizeof(out), "ringpos %llu\n", sweet_log_position());
