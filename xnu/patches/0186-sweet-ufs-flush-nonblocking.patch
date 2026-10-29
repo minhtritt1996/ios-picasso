@@ -1,6 +1,14 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -140,6 +140,7 @@
+@@ -76,6 +76,7 @@
+ 
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
++#define STAGE_SIZE      (1u << 20)   /* wired staging copy, see ufs_copy_out */
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+ /* The bounce path needs one entry per 256 KiB; a direct transfer into a
+  * buffer needs one per page, so the table is sized for the worse case. */
+@@ -140,6 +141,7 @@
  	volatile uint32_t lock_users;
  	volatile uint32_t lock_tid;
  	volatile uint32_t flush_stage;
@@ -8,7 +16,15 @@
  	/* Where a GPT partition lookup is right now: the heartbeat prints it, so
  	 * a lookup that never returns names its own LUN and step. */
  	volatile uint32_t part_lun;
-@@ -170,7 +171,7 @@
+@@ -163,6 +165,7 @@
+ 	volatile uint64_t direct_bytes;
+ 	char want[24];                          /* root partition name, boot-arg ufsroot */
+ } su;
++static char *strat_stage;             /* wired: bounce -> stage under the lock, stage -> buf without it */
+ 
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+ static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
+@@ -170,7 +173,7 @@
  static LCK_MTX_DECLARE(sweet_raw_lock, &sweet_ufs_grp);
  
  enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
@@ -17,7 +33,7 @@
  
  void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
  
-@@ -199,6 +200,18 @@
+@@ -199,6 +202,18 @@
  	su.lock_tid = (uint32_t)thread_tid(current_thread());
  }
  
@@ -36,7 +52,7 @@
  static inline void
  ufs_unlock(void)
  {
-@@ -499,7 +512,9 @@
+@@ -499,7 +514,9 @@
  		su.wait = false;
  		sweet_tracef("SWEET UFS: sleepable wait disabled, spinning\n");
  	}
@@ -46,7 +62,7 @@
  		uint64_t now = mach_absolute_time();
  		su.poll_iters++;
  		if (now > deadline) {
-@@ -543,6 +558,7 @@
+@@ -543,6 +560,7 @@
  		__builtin_arm_isb(0xf);
  	}
  	__builtin_arm_dsb(0xf);
@@ -54,7 +70,7 @@
  	if (write && su.wr_done++ < 8) {
  		const uint8_t *r = ucd->resp;
  		sweet_tracef("SWEET UFS WR DONE %u: dw2 0x%08x ocs %u it %llu IS 0x%x rsp %02x %02x"
-@@ -598,13 +614,16 @@
+@@ -598,13 +616,16 @@
  	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x28; su.cmd_lun = su.lun;
  	su.cmd_serial++;
  	su.cmd_start = mach_absolute_time();
@@ -71,7 +87,7 @@
  	su.cmd_start = 0;
  	if (error) {
  		su.last_err = error;
-@@ -1127,6 +1146,10 @@
+@@ -1127,6 +1148,10 @@
  		goto done;
  	}
  
@@ -82,7 +98,7 @@
  	ufs_lock(UFS_LK_STRATEGY);
  	/* Published only while holding the lock: a thread that is merely
  	 * waiting for it would otherwise overwrite the stuck holder's
-@@ -1138,10 +1161,6 @@
+@@ -1138,10 +1163,6 @@
  	su.strat_done = 0;
  	su.strat_t0 = mach_absolute_time();
  	su.strat_step = 1;
@@ -93,7 +109,17 @@
  	for (uint32_t done = 0; done < count;) {
  		su.strat_step = 2;
  		uint64_t pos = off + done;
-@@ -1177,14 +1196,20 @@
+@@ -1152,9 +1173,6 @@
+ 		void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 		if (rd) {
+ 			su.strat_step = 7;
+-			sweet_tracef("SWEET UFS s7: lba 0x%llx blocks %u want %u done %u direct %u\n",
+-			    (unsigned long long)lba, (unsigned)blocks, (unsigned)want,
+-			    (unsigned)done, (unsigned)su.direct);
+ 			error = EINVAL;
+ 			/* Off by default: bp29/bp30 both stopped inside
+ 			 * ufs_read_blocks_dma () at the same read with no gd
+@@ -1177,14 +1195,25 @@
  				}
  			}
  			if (error == EINVAL) {
@@ -102,19 +128,54 @@
  				    (unsigned long long)(su.first_block + lba), (unsigned)blocks);
 +				su.io_phase = 31;
  				error = ufs_read_blocks(su.first_block + lba, blocks);
+-				sweet_tracef("SWEET UFS s3r: err %d\n", error);
 +				su.io_phase = 32;
- 				sweet_tracef("SWEET UFS s3r: err %d\n", error);
-+				su.io_phase = 33;
  				su.strat_step = 3;
- 				if (!error) {
++				if (!error && strat_stage != NULL) {
++					/* Only wired memory is touched while the driver lock is
++					 * held: the caller's buffer can page-fault, and that fault
++					 * would re-enter this driver and wait for our own lock. */
++					memcpy(strat_stage, (const char *)bounce + skip, want);
++					ufs_unlock();
 +					su.io_phase = 40;
- 					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
- 					    want, &su.strat_done);
++					ufs_copy_out(vaddr + done, strat_stage, want, &su.strat_done);
 +					su.io_phase = 41;
++					ufs_lock(UFS_LK_STRATEGY);
++				}
+ 				if (!error) {
+-					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
+-					    want, &su.strat_done);
  					su.strat_step = 4;
  				}
  			}
-@@ -1474,6 +1499,7 @@
+@@ -1193,8 +1222,17 @@
+ 			if (skip || (want % UFS_BLOCK)) {
+ 				error = ufs_read_blocks(su.first_block + lba, blocks);
+ 			}
++			if (!error && strat_stage != NULL) {
++				/* Same rule in the write direction: touch the caller's
++				 * buffer with the driver lock released. */
++				ufs_unlock();
++				memcpy(strat_stage, vaddr + done, want);
++				ufs_lock(UFS_LK_STRATEGY);
++				memcpy((char *)bounce + skip, strat_stage, want);
++			} else if (!error) {
++				memcpy((char *)bounce + skip, vaddr + done, want);
++			}
+ 			if (!error) {
+-				memcpy((char *)bounce + skip, vaddr + done, want);
+ 				su.strat_done = want;
+ 				error = ufs_write_blocks(su.first_block + lba, blocks);
+ 			}
+@@ -1379,6 +1417,7 @@
+ 	}
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
++	strat_stage = kalloc_data(STAGE_SIZE, Z_WAITOK);
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+@@ -1474,6 +1513,7 @@
  int sweet_log_ferr_g;
  volatile uint64_t sweet_log_last_g;
  uint64_t sweet_log_base_g, sweet_log_nblocks_g;
@@ -122,7 +183,7 @@
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -1795,16 +1821,26 @@
+@@ -1795,16 +1835,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -153,7 +214,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,6 +1898,64 @@
+@@ -1862,6 +1912,64 @@
  	}
  }
  
@@ -218,7 +279,7 @@
  static void
  sweet_log_start(void)
  {
-@@ -1879,6 +1973,10 @@
+@@ -1879,6 +1987,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
