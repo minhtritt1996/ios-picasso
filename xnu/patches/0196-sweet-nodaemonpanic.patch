@@ -1,0 +1,33 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1495,7 +1495,8 @@
+ 		static int logged;
+ 		if (logged < 60) {
+ 			logged++;
+-			printf("SWEET EXIT %s pid %d rv 0x%x\n", p->p_comm, proc_getpid(p), rv);
++			printf("SWEET EXIT %s pid %d rv 0x%x cb 0x%x init %d\n", p->p_comm,
++			    proc_getpid(p), rv, p->p_crash_behavior, p == initproc);
+ 		}
+ 	}
+ #endif
+@@ -1681,6 +1682,20 @@
+ static bool
+ proc_should_trigger_panic(proc_t p, int rv)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * sweetnodaemonpanic=1: a daemon that exits (or crashes, or whose spawn
++	 * failed) must not take the machine down while the port is being brought up.
++	 * launchd itself still panics - a dead init is fatal by definition.
++	 */
++	if (p != initproc) {
++		int nodaemon = 0;
++
++		if (PE_parse_boot_argn("sweetnodaemonpanic", &nodaemon, sizeof(nodaemon)) && nodaemon) {
++			return false;
++		}
++	}
++#endif
+ 	if (p == initproc || (p->p_crash_behavior & POSIX_SPAWN_PANIC_ON_EXIT) != 0) {
+ 		/* Always panic for launchd or equivalents */
+ 		return true;
