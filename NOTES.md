@@ -6270,3 +6270,27 @@ persisted tail can then show from recovery).
 - Next measurement (image t39 prepared, md5 b932f50f): boot with
   `sweetsample=backboardd,SpringBoard,runningboardd` to get user pc/lr/backtraces for those three
   processes ~90 s in, which shows where backboardd waits before it ever opens IOMobileFramebuffer.
+
+## 2026-10-29 - UI research: the missing piece is the CoreAnimation bridge (answer found in ios-apollo)
+- aTechGeekDev/ios-apollo (Mi 10T, SD865, same lineage, iOS 16.7.16 iPhone X userland) has the **full
+  GUI working** and documents exactly how: their NOTES boot 37 shows backboardd crash-looping with a
+  **dark screen** before the bridge; boot 38 with
+  `sweetinject=/usr/local/lib/libsweet-ca.dylib:backboardd` shows the Apple logo; boot 39 the whole
+  GUI. So CoreAnimation on these ports does **not** render through Apple's path at all - it needs
+  the bridge.
+- Bridge architecture (`userland/README.md`): `libsweet-gl.dylib` (HackiOS `eagl.c`, MIT) implements
+  OpenGL ES behind `EAGLContext`; `libsweet-ca.dylib` is injected into backboardd, waits for the
+  `SweetGPU` service and loads the bridge; Mesa `libOSMesa.8.dylib` (freedreno on the GPU,
+  **softpipe without it**) does the drawing; `sweet-drm` translates DRM to `SweetGPU` calls.
+  Their IOSurface sel 6/7 (wrap a client's image) had to be implemented/refused; ours may differ.
+- What we already have: `sweet_amfi.c` answering the AMFI 0x5a dyld-policy call and **granting the
+  DYLD_* variables**, plus the /dev/null tee (`sweetnull`). What was missing is the exec side:
+  patch **0194** (this session) ports apollo's `sweet_exec_inject()` - boot-arg
+  `sweetinject=LIBRARY:NAME[,NAME...]` adds `DYLD_INSERT_LIBRARIES` for the named programs.
+- Remaining work for the UI, in order:
+  1. userland build (our `userland.yml` already cross-builds Darwin arm64 on Ubuntu with the theos
+     iPhoneOS SDK + ld64.lld): `libsweet-ca.dylib` + `libsweet-gl.dylib`, then Mesa
+     `libOSMesa.8.dylib` with softpipe (meson cross file for arm64-apple-ios; no GPU needed).
+  2. install them into the root and boot with
+     `sweetinject=/usr/local/lib/libsweet-ca.dylib:backboardd`.
+  3. then decide on GPU (apollo's Adreno 650 path is a different a6xx variant; picasso is Adreno 620).
