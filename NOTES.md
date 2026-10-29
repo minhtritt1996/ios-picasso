@@ -6170,3 +6170,21 @@ in two. Next test is the cheap one: reboot the **same** t27 image and see whethe
 does, bisecting code is pointless until the race is understood, and the priority becomes making
 early bring-up deterministic (log the order of init steps into the ring *before* USB, which the
 persisted tail can then show from recovery).
+
+### 2026-10-29 - flaky boot confirmed; IP/ARP is the remaining userland-facing fault
+- Rebooting the **same** t27 image brought the channel up (kernel k210), so the "no L2 at all"
+  boots are a bring-up race (~1 in 2), not the code changes. When it does come up the system is
+  stable: sampled every 6 s for 3.5 minutes, `rxw enter == returned`, `evpos` advancing steadily,
+  `cmd done` advancing (1/33), `lock 0/0`, no rescues.
+- Event-thread cost: `evb 373` batches vs `eve 11,982,957` empty polls => the DWC3 event thread is a
+  pure spin loop reading GEVNTCOUNT (millions of reads, a core burnt). Worth fixing later (delay or
+  interrupt-driven), it competes with userland.
+- The IP path is XNU's own stack: patch 0075 configures `ue0 192.168.7.2/24` through ifnet, and
+  sweet_usb feeds frames with ifnet_input(). Measured on the stable boot:
+  host tx +4 (ping's ARP requests) while the driver's `rx` grew +5 (frames arrive and are counted)
+  and the device transmitted only **+1** frame, with the host neighbour showing REACHABLE from an
+  earlier answer. So frames reach the stack but ARP/ICMP answers stop.
+- Next single build: expose the BSD side in `info` (plain struct reads, no MMIO): `ifnet_flags(ud.ifp)`
+  and the interface counters (ipackets/opackets/ierrors/iqdrops), plus a per-EtherType count of the
+  frames handed to ifnet_input (0x0800/0x0806/other). That separates "frame never reaches the stack"
+  from "stack answers but the reply is dropped in TX".
