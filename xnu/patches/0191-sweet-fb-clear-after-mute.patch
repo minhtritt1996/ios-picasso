@@ -1,0 +1,66 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -91,6 +91,10 @@
+ #define SWEET_FB_LOGICAL_H              2436
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
++extern "C" int sweet_console_muted;      /* osfmk/console/serial_console.c */
++class IOMobileFramebuffer;
++static void sweet_fb_clear_thread(void *arg, wait_result_t wr);
++
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+ };
+@@ -109,6 +113,17 @@
+ 	static void vsyncFired(OSObject *owner, IOTimerEventSource *sender);
+ 
+ public:
++	/* Wipe the early-boot console image once the console is muted, so the panel
++	 * shows only what userland draws. */
++	void
++	clearPanelOnce(void)
++	{
++		if (fPixels != 0 && fRowBytes != 0 && fHeight != 0) {
++			memset((void *)fPixels, 0, (size_t)fRowBytes * (size_t)fHeight);
++			IOLog("SWEET FB: panel cleared after console mute\n");
++		}
++	}
++
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+@@ -147,6 +162,21 @@
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+ 
++static void
++sweet_fb_clear_thread(void *arg, wait_result_t wr __unused)
++{
++	AppleCLCD *self = (AppleCLCD *)arg;
++
++	for (int i = 0; i < 1200; i++) {          /* up to 120 s */
++		if (sweet_console_muted) {
++			IOSleep(200);              /* let the last console line land */
++			self->clearPanelOnce();
++			return;
++		}
++		IOSleep(100);
++	}
++}
++
+ class IOMobileFramebufferUserClient : public IOUserClient {
+ 	OSDeclareDefaultStructors(IOMobileFramebufferUserClient);
+ 
+@@ -198,6 +228,12 @@
+ 	}
+ 	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	{
++		thread_t t = NULL;
++		if (kernel_thread_start(sweet_fb_clear_thread, this, &t) == KERN_SUCCESS) {
++			thread_deallocate(t);
++		}
++	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
