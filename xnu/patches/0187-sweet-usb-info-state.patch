@@ -100,7 +100,7 @@
  		}
  		ud.ev_ticks = ticks;
  		ud.ev_stamp = mach_absolute_time();
-@@ -1542,10 +1591,37 @@
+@@ -1542,10 +1591,50 @@
  		pos = pos > 1200 ? pos - 1200 : 0;
  		sweet_log_copy(&pos, out, 1200);
  	} else if (strcmp(buf, "info") == 0) {
@@ -116,10 +116,23 @@
 +			char st[220];
 +			st[0] = 0;
 +			sweet_ufs_state(st, sizeof(st));
++			/* Canary: if the mbuf pool is exhausted (the suspected cause of the
++			 * receive side dying after a minute), this allocation fails. */
++			mbuf_t can = NULL;
++			uint32_t canary = 0;
++			if (mbuf_gethdr(MBUF_DONTWAIT, MBUF_TYPE_DATA, &can) == 0) {
++				canary = 1;
++				if (mbuf_mclget(MBUF_DONTWAIT, MBUF_TYPE_DATA, &can) == 0) {
++					canary = 2;
++				}
++				mbuf_freem(can);
++			} else if (can != NULL) {
++				mbuf_freem(can);
++			}
 +			snprintf(out, sizeof(out),
 +			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
 +			    " | evpos %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu"
-+			    " | fl 0x%x rxip %u rxarp %u rxoth %u iferr %u/%d"
++			    " | fl 0x%x mb %u rxip %u rxarp %u rxoth %u iferr %u/%d"
 +			    " | evb %u eve %u evz %u ack %u rec %u\n"
 +			    "evlast %08x/%08x %08x/%08x %08x/%08x %08x/%08x\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
@@ -129,7 +142,7 @@
 +			    (unsigned long long)ud.rxw_enter, (unsigned long long)ud.rxw_returned,
 +			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues,
 +			    (int)ud.cmd_busy, (unsigned long long)ud.cmd_done,
-+			    (unsigned)(ud.ifp != NULL ? ifnet_flags(ud.ifp) : 0),
++			    (unsigned)(ud.ifp != NULL ? ifnet_flags(ud.ifp) : 0), (unsigned)canary,
 +			    (unsigned)ud.rx_ip, (unsigned)ud.rx_arp, (unsigned)ud.rx_other,
 +			    (unsigned)ud.rx_iferr, (int)ud.rx_iferr_last,
 +			    (unsigned)ud.ev_batches, (unsigned)ud.ev_empty,
