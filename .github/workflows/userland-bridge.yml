@@ -1,0 +1,65 @@
+name: userland-bridge
+
+# Build what CoreAnimation needs on this port: Mesa (libOSMesa.8.dylib, freedreno + softpipe)
+# and the CoreAnimation bridge (libsweet-gl.dylib behind EAGL, libsweet-ca.dylib injected into
+# backboardd by the kernel's sweetinject boot-arg).
+#
+# Sources are from aTechGeekDev/ios-apollo (and HackiOS's eagl.c, MIT): tools/userland-bridge/.
+# Mesa 25.0.7 is fetched and checked by the script itself. Runs on macos-14 because Mesa needs
+# Xcode's iPhoneOS SDK.
+#
+# Artifact: sweet-userland (out/lib/*.dylib, out/lib/libOSMesa.8.dylib, SHA256SUMS).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/userland-bridge/**', '.github/workflows/userland-bridge.yml']
+
+jobs:
+  bridge:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          set -eux
+          brew install bison
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build Mesa (libOSMesa.8.dylib: freedreno + softpipe)
+        run: |
+          set -eux
+          tools/userland-bridge/mesa/build.sh out
+          ls -l out/lib
+          file out/lib/libOSMesa.8.dylib
+
+      - name: Build the CoreAnimation bridge
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot $SDK"
+          mkdir -p build-ca out/lib
+          python3 tools/userland-bridge/ca-bridge/mkeagl.py \
+            tools/userland-bridge/ca-bridge/eagl_slots.txt \
+            mesa-work/meta/gl.xml mesa-work/meta/exported-gl.txt \
+            tools/userland-bridge/ca-bridge/eagl.c > build-ca/eagl_gen.h
+          $CC -O1 -Wall -dynamiclib -install_name /usr/local/lib/libsweet-gl.dylib \
+            -Ibuild-ca -Itools/userland-bridge/ca-bridge \
+            -Lout/lib -lOSMesa.8 \
+            -o out/lib/libsweet-gl.dylib \
+            tools/userland-bridge/ca-bridge/eagl.c tools/userland-bridge/ca-bridge/sweet_gl_osmesa.c
+          $CC -O2 -Wall -Wextra -Werror -dynamiclib -install_name /usr/local/lib/libsweet-ca.dylib \
+            -framework IOKit -o out/lib/libsweet-ca.dylib tools/userland-bridge/ca-bridge/sweet_ca.c
+          codesign -s - -f out/lib/libsweet-gl.dylib out/lib/libsweet-ca.dylib
+          (cd out/lib && shasum -a 256 *.dylib > SHA256SUMS && cat SHA256SUMS)
+          otool -L out/lib/libsweet-gl.dylib out/lib/libsweet-ca.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweet-userland
+          path: |
+            out/lib/*.dylib
+            out/lib/SHA256SUMS
