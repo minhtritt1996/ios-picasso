@@ -1,0 +1,80 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5640,6 +5640,53 @@
+  * Note:	The argument and environment vectors are user space pointers
+  *		to arrays of user space pointers.
+  */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * sweetinject=LIBRARY:NAME[,NAME...]: every program whose file name is one of
++ * NAMEs starts with DYLD_INSERT_LIBRARIES=LIBRARY. launchd drops DYLD_*
++ * variables from job descriptions, so the kernel adds this one; dyld honours it
++ * because sweet_amfi.c's "AMFI" policy grants the DYLD_* variables. Used to put
++ * the CoreAnimation bridge into backboardd. After HackiOS's kern.exec_inject.
++ */
++static bool
++sweet_exec_inject(struct image_params *imgp, char *env, size_t size)
++{
++	char conf[200];
++	const char *path = imgp->ip_strings + strlen(EXECUTABLE_KEY), *name = path, *word;
++	size_t namelen, liblen = 0;
++
++	if (!PE_parse_boot_argn("sweetinject", conf, sizeof(conf)) ||
++	    strncmp(imgp->ip_strings, EXECUTABLE_KEY, strlen(EXECUTABLE_KEY)) != 0) {
++		return false;
++	}
++	while (conf[liblen] != 0 && conf[liblen] != ':') {
++		liblen++;
++	}
++	if (conf[liblen] != ':' || liblen == 0) {
++		return false;
++	}
++	for (const char *c = path; *c != 0; c++) {
++		if (*c == '/') {
++			name = c + 1;
++		}
++	}
++	namelen = strlen(name);
++	for (word = conf + liblen + 1; *word != 0;) {
++		size_t len = 0;
++
++		while (word[len] != 0 && word[len] != ',') {
++			len++;
++		}
++		if (len == namelen && namelen != 0 && strncmp(word, name, len) == 0) {
++			snprintf(env, size, "DYLD_INSERT_LIBRARIES=%.*s", (int)liblen, conf);
++			return true;
++		}
++		word += len + (word[len] == ',');
++	}
++	return false;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ __attribute__((noinline))
+ static int
+ exec_extract_strings(struct image_params *imgp)
+@@ -5813,6 +5860,23 @@
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* One more variable for a program that gets a library inserted. */
++	{
++		char inject[240];
++
++		if (sweet_exec_inject(imgp, inject, sizeof(inject))) {
++			error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject),
++			    UIO_SYSSPACE, TRUE);
++			if (error) {
++				goto bad;
++			}
++			imgp->ip_argspace -= new_ptr_size;
++			imgp->ip_envc++;
++		}
++	}
++#endif
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
