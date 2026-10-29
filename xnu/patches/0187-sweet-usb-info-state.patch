@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -1542,10 +1542,18 @@
+@@ -1542,10 +1542,22 @@
  		pos = pos > 1200 ? pos - 1200 : 0;
  		sweet_log_copy(&pos, out, 1200);
  	} else if (strcmp(buf, "info") == 0) {
@@ -16,9 +16,13 @@
 +			st[0] = 0;
 +			sweet_ufs_state(st, sizeof(st));
 +			snprintf(out, sizeof(out),
-+			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u\n%s",
++			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
++			    " | rxw %llu/%llu thr %u resc %u\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
-+			    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count, st);
++			    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count,
++			    (unsigned long long)os_atomic_load(&ud.rxw_enter, relaxed),
++			    (unsigned long long)os_atomic_load(&ud.rxw_returned, relaxed),
++			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues, st);
 +		}
  	} else if (strcmp(buf, "ringpos") == 0) {
  		snprintf(out, sizeof(out), "ringpos %llu\n", sweet_log_position());
