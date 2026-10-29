@@ -6294,3 +6294,28 @@ persisted tail can then show from recovery).
   2. install them into the root and boot with
      `sweetinject=/usr/local/lib/libsweet-ca.dylib:backboardd`.
   3. then decide on GPU (apollo's Adreno 650 path is a different a6xx variant; picasso is Adreno 620).
+
+## 2026-10-29 - UI research consolidated (three sibling ports, same lineage)
+- **ios-sailfish** (Pixel 1, fork of dipa-studio/ios-sweet = our base) - "GPU-accelerated graphics":
+  CoreAnimation's **own OpenGL ES renderer** runs on **Mesa freedreno** through their kernel GPU
+  driver, injected as `sweetgl.dylib` "behind an EAGL shim that CoreAnimation's GL renderer uses as
+  if it were Apple's". Sources: `tools/sweetgl/{eagl.c,build.sh,mesa.patch,mesa-setup.sh,
+  ios-cross.txt,gen-dispatch.py}`, plus their kernel GPU series 0119-0131.
+- **ios-apollo** (Mi 10T, Adreno 650): same shape - `libsweet-gl.dylib` (HackiOS eagl.c) +
+  `libsweet-ca.dylib` injected into backboardd by boot-arg `sweetinject=LIB:NAME,...`, Mesa
+  `libOSMesa.8.dylib` (freedreno, **softpipe fallback**), `sweet-drm` as a libdrm stand-in. Mesa is
+  built on a **macos-14 runner** with Xcode (`userland/mesa/build.sh`, Mesa 25.0.7 + 2 patches).
+- **Decisive detail** (from both ports): if there is **no `SweetGPU` IOService**, `sweet_ca.c` bails
+  out - "CoreAnimation keeps its software renderer" - and on these ports that renderer does **not**
+  produce a picture (apollo boot 37: dark screen, backboardd crash loop). So the bridge is
+  mandatory, and CA has no usable software path of its own.
+- Therefore the cheapest route to a picture on picasso:
+  1. kernel: publish a **stub `SweetGPU` IOService** (name match only) so the bridge loads while
+     Mesa has no real GPU to talk to and falls back to **softpipe** (pure software);
+  2. kernel: `sweetinject=/usr/local/lib/libsweet-ca.dylib:backboardd` - already implemented
+     (patch 0194) and our AMFI already grants the DYLD_* variables;
+  3. userland: build Mesa (`userland/mesa/build.sh`, macos-14 CI) + `libsweet-gl.dylib` +
+     `libsweet-ca.dylib` from the apollo/HackiOS sources (MIT; keep LICENSE.HackiOS), install into
+     the root under /usr/local/lib;
+  4. boot and look for `sweet-ca: loading`, `sweet-gl:` lines and `SWEET FB: swap` in the ring.
+  The real GPU (Adreno 620) can come later; the a6xx series from apollo is the closest reference.
