@@ -19,6 +19,28 @@
  static inline void
  ufs_unlock(void)
  {
+@@ -1127,6 +1139,10 @@
+ 		goto done;
+ 	}
+ 
++	if (su.trace) {
++		sweet_tracef("SWEET UFS want: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
++		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
++	}
+ 	ufs_lock(UFS_LK_STRATEGY);
+ 	/* Published only while holding the lock: a thread that is merely
+ 	 * waiting for it would otherwise overwrite the stuck holder's
+@@ -1138,10 +1154,6 @@
+ 	su.strat_done = 0;
+ 	su.strat_t0 = mach_absolute_time();
+ 	su.strat_step = 1;
+-	if (su.trace) {
+-		sweet_tracef("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
+-		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
+-	}
+ 	for (uint32_t done = 0; done < count;) {
+ 		su.strat_step = 2;
+ 		uint64_t pos = off + done;
 @@ -1795,16 +1807,26 @@
  		int error = 0;
  
