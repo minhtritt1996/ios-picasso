@@ -1,0 +1,104 @@
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -81,6 +81,45 @@
+ 	return false;
+ }
+ 
++/*
++ * One-byte write through the same observer lane the reads use: clear the read
++ * bit, byte count 1, data byte in bits 23:16. Used to set the PON spare byte
++ * that ABL reads to choose fastboot/recovery.
++ */
++static bool
++keys_write(uint16_t apid, uint16_t addr, uint8_t value)
++{
++	if (apid == KEYS_NO_APID) {
++		return false;
++	}
++	uint32_t off = 0x80u * apid;
++	uint32_t cmd = ((uint32_t)value << 16) | (1u << 17) | ((uint32_t)(addr & 0xffu) << 4);
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(keys_obs + off) = cmd;
++	__asm__ volatile("dsb osh" ::: "memory");
++	for (unsigned i = 0; i < 1000; ++i) {
++		keys_last_status = keys_rd(keys_obs, off + 0x08u);
++		if (keys_last_status & 1u) {
++			return (keys_last_status & 0x0eu) == 0;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++/* PON block access for the reboot path (fastboot/recovery reason byte). */
++int
++sweet_pon_read(unsigned addr, uint8_t *out)
++{
++	return keys_read(keys_pon_apid, (uint16_t)addr, out) ? 0 : -1;
++}
++
++int
++sweet_pon_write(unsigned addr, uint8_t value)
++{
++	return keys_write(keys_pon_apid, (uint16_t)addr, value) ? 0 : -1;
++}
++
+ static void
+ keys_wait(void)
+ {
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1588,8 +1588,8 @@
+  * Values are the ones aboot/ABL use: 0x77665500 bootloader, 0x77665502 recovery.
+  */
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+-extern int sweet_spmi_write(unsigned sid, unsigned addr, uint8_t value);
+-extern int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++extern int sweet_pon_write(unsigned addr, uint8_t value);
++extern int sweet_pon_read(unsigned addr, uint8_t *out);
+ 
+ #define SWEET_IMEM_PA        0x146ab000ull
+ #define SWEET_IMEM_REASON    0x65c
+@@ -1638,11 +1638,18 @@
+ 	{
+ 		uint8_t old = 0;
+ 
+-		if (sweet_spmi_write(0, (SWEET_PON_SPARE - 1), sweet_reboot_pon_value()) == 0) {
+-			*pon_err = 0;
+-		}
+-		if (sweet_spmi_read(0, SWEET_PON_SPARE, &old) == 0) {
+-			*pon_read = old;
++		uint8_t want = sweet_reboot_pon_value();
++
++		if (sweet_pon_read(SWEET_PON_SPARE, &old) == 0) {
++			/* Bits 7:1 are the reason field (Linux qcom-pon); keep bit 0. */
++			uint8_t merged = (uint8_t)((old & 1u) | (uint8_t)(want << 1));
++			if (sweet_pon_write(SWEET_PON_SPARE, merged) == 0 &&
++			    sweet_pon_read(SWEET_PON_SPARE, &old) == 0) {
++				*pon_err = 0;
++				*pon_read = old;
++			}
++		} else {
++			*pon_err = -2;          /* PON lane not readable */
+ 		}
+ 	}
+ 	return value;
+@@ -1797,7 +1804,8 @@
+ 		unsigned sid = 0, addr = 0;
+ 		uint8_t val = 0;
+ 		sscanf(buf + 5, "%u %x", &sid, &addr);
+-		if (sweet_spmi_read(sid, addr, &val) == 0) {
++		(void)sid;
++		if (sweet_pon_read(addr, &val) == 0) {
+ 			snprintf(out, sizeof(out), "sid %u addr 0x%x = 0x%02x\n", sid, addr, val);
+ 		} else {
+ 			snprintf(out, sizeof(out), "spmi read failed\n");
+@@ -1806,7 +1814,7 @@
+ 		unsigned sid = 0, addr = 0, val = 0;
+ 		sscanf(buf + 6, "%u %x %x", &sid, &addr, &val);
+ 		snprintf(out, sizeof(out), "spmiw %s\n",
+-		    sweet_spmi_write(sid, addr, (uint8_t)val) == 0 ? "ok" : "failed");
++		    sweet_pon_write(addr, (uint8_t)val) == 0 ? "ok" : "failed");
+ 	} else {
+ 		snprintf(out, sizeof(out),
+ 		    "commands: log | logback <n> | ringpos | info | probe 0|1 | reboot [normal|bootloader|recovery]"
