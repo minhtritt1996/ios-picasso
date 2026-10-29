@@ -6028,3 +6028,22 @@ Next steps, in order:
 3. Then re-run the launchd boot and see whether it reaches SpringBoard; the remaining userland
    blockers from Bergamota's experience (containermanagerd/MCM answering no container lookup) will
    show up next and are a separate, known class of work.
+
+### 2026-10-29 t16 (kernel k199, trace off): still dies ~2.5 min in
+- Boot image b48207b2..., cmdline without `sweetufstrace`, request print moved before the lock
+  (`SWEET UFS want:`), flusher chunked + try-lock. L2 answered for ~2.5 min (ringpos 306487 ->
+  309586) and then went silent for good; the ring pull afterwards returned no markers at all, i.e.
+  the log never persisted the last seconds.
+- So neither the trace prints nor the flusher holding the lock are the whole story: the stall still
+  hits with both mitigated. What is missing is a way to see the state *at the moment* it stalls.
+- Plan for the next session (in order):
+  1. Persist the ring continuously and cheaply: write only the last ~64 KiB every second to a fixed
+     area (single command, no header update needed to read it back), so a stall is always readable
+     from recovery. The current flusher rewrites the whole ring area in chunks and only updates the
+     header when a round completes, which is exactly what loses the tail.
+  2. Have the files-server/watchdog thread never print through the log path while the UFS lock is
+     held; instead keep a small RAM breadcrumb that the L2 `info` reply carries back, so a dead log
+     still reports "who holds the lock and at which step" over USB.
+  3. Then bisect the stall with boot-args only: `sweetusb=0` (no gadget) but keep L2 impossible?
+     Instead compare with `cpus=1` and with launchd disabled (carrier) to see whether the stall
+     needs userland concurrency.
