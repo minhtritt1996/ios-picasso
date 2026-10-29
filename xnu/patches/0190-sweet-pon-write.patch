@@ -195,7 +195,7 @@
 +	 * wipes the IMEM word we just wrote, so ABL boots normally. A warm reset keeps
 +	 * IMEM and lets ABL act on the reason.
 +	 */
-+	{
+ 	{
 +		register uint64_t px0 __asm__("x0") = 0x84000009ULL;
 +
 +		__asm__ volatile("smc #0" : "+r"(px0) : : "x1", "x2", "x3", "x4", "x5",
@@ -204,7 +204,7 @@
 +	}
 +	/* If PSCI did not take, fall back to PS_HOLD (power off) so the command
 +	 * still does something visible. */
- 	{
++	{
  		vm_offset_t psh = ml_io_map(SWEET_PSHOLD_PA, 0x1000);
  
  		if (psh != 0) {
@@ -218,7 +218,7 @@
  	}
  }
  
-@@ -1797,16 +1822,71 @@
+@@ -1797,16 +1822,94 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -241,6 +241,29 @@
 +		int r2 = sweet_pon_lane_read(ppid, addr, &rb);
 +		snprintf(out, sizeof(out), "ppon %#x addr %#x=%#x: read %d/%#x write %d read %d/%#x\n",
 +		    ppid, addr, val, r0, before, r1, r2, rb);
++	} else if (strncmp(buf, "ps", 2) == 0) {
++		/*
++		 * Every daemon on this port is spawned through xpcproxy, and the ring
++		 * cannot show whether the inner exec happened. Walk allproc so the
++		 * host can see which processes really exist (backboardd missing = the
++		 * xpcproxy step never completed).
++		 */
++		extern struct proclist allproc;
++		extern void proc_list_lock(void);
++		extern void proc_list_unlock(void);
++		struct proc *p;
++		size_t used = 0;
++		proc_list_lock();
++		LIST_FOREACH(p, &allproc, p_list) {
++			int n = snprintf(out + used, sizeof(out) - used, "%d %s %d\n",
++			    p->p_pid, p->p_comm[0] ? p->p_comm : "?", p->p_stat);
++			if (n <= 0 || (size_t)n >= sizeof(out) - used) {
++				break;
++			}
++			used += n;
++		}
++		proc_list_unlock();
++		return;   /* out already filled */
 +	} else if (strncmp(buf, "mkdir ", 6) == 0) {
 +		extern int sweet_vfs_mkdir(const char *path, int mode);
 +		unsigned mode = 0755;
