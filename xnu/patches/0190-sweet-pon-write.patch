@@ -195,7 +195,7 @@
 +	 * wipes the IMEM word we just wrote, so ABL boots normally. A warm reset keeps
 +	 * IMEM and lets ABL act on the reason.
 +	 */
- 	{
++	{
 +		register uint64_t px0 __asm__("x0") = 0x84000009ULL;
 +
 +		__asm__ volatile("smc #0" : "+r"(px0) : : "x1", "x2", "x3", "x4", "x5",
@@ -204,7 +204,7 @@
 +	}
 +	/* If PSCI did not take, fall back to PS_HOLD (power off) so the command
 +	 * still does something visible. */
-+	{
+ 	{
  		vm_offset_t psh = ml_io_map(SWEET_PSHOLD_PA, 0x1000);
  
  		if (psh != 0) {
@@ -218,7 +218,7 @@
  	}
  }
  
-@@ -1797,16 +1822,61 @@
+@@ -1797,16 +1822,71 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -241,6 +241,16 @@
 +		int r2 = sweet_pon_lane_read(ppid, addr, &rb);
 +		snprintf(out, sizeof(out), "ppon %#x addr %#x=%#x: read %d/%#x write %d read %d/%#x\n",
 +		    ppid, addr, val, r0, before, r1, r2, rb);
++	} else if (strncmp(buf, "mkdir ", 6) == 0) {
++		extern int sweet_vfs_mkdir(const char *path, int mode);
++		unsigned mode = 0755;
++		char path[256];
++		int n = sscanf(buf + 6, "%255s %o", path, &mode);
++		int err = (n >= 1) ? sweet_vfs_mkdir(path, (int)mode) : -1;
++		if (err == EEXIST) {
++			err = 0;
++		}
++		snprintf(out, sizeof(out), "mkdir %s mode %o -> %d\n", n >= 1 ? path : "?", mode, err);
 +	} else if (strncmp(buf, "ppon2 ", 6) == 0) {
 +		unsigned ppid = 0, val = 0, addr = SWEET_PON_SPARE;
 +		uint8_t rb = 0, before = 0;
