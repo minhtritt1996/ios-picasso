@@ -1,6 +1,63 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -1542,10 +1542,25 @@
+@@ -307,6 +307,16 @@
+ 	unsigned    txq_head, txq_count;
+ 	bool        tx_busy;
+ 	uint32_t    ev_live;            /* event-thread liveness prints */
++	/* RAM-only record of what the event thread last saw, so the last info reply
++	 * before a silent USB stack still says whether events were arriving. */
++	volatile uint32_t ev_batches;   /* GEVNTCOUNT reads with count != 0 */
++	volatile uint32_t ev_empty;     /* ... and with count == 0 */
++	volatile uint32_t ev_zero_dw;   /* zero dwords skipped (parameter slots) */
++	volatile uint32_t ev_acks;      /* GEVNTCOUNT acknowledgements written */
++	volatile uint32_t ev_rec;       /* next record slot (mod 8) */
++	volatile uint32_t ev_val[8];
++	volatile uint32_t ev_peek[8];
++	volatile uint64_t ev_tick[8];
+ 	uint32_t    probe_seen;         /* probe-thread prints */
+ 	uint32_t    probe_hb;           /* probe-thread heartbeat */
+ 	volatile uint64_t rxw_stamp;    /* last RX-worker progress (absolute) */
+@@ -1196,6 +1206,11 @@
+ 	for (;;) {
+ 		ud.ev_stage = 1;                /* about to read the pending count */
+ 		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
++		if (count) {
++			ud.ev_batches++;
++		} else {
++			ud.ev_empty++;
++		}
+ 		if (count >= UD_EVT_SIZE - 16 && ud.ev_press++ < 8) {
+ 			/* A full ring stops the controller: this line is the proof that a
+ 			 * burst outran the drain loop. */
+@@ -1233,6 +1248,7 @@
+ 				    ((ud.evt_pos + 4) % UD_EVT_SIZE));
+ 				ud.evt_pos = (ud.evt_pos + step) % UD_EVT_SIZE;
+ 				if (ev == 0) {
++					ud.ev_zero_dw++;
+ 					continue;       /* parameter dword, not an event */
+ 				}
+ 				if (!(ev & 1)) {
+@@ -1242,12 +1258,19 @@
+ 						    "0x%08x\n", ep, type, (ev >> 12) & 0xf, peek);
+ 					}
+ 				}
++				{
++					uint32_t slot = ud.ev_rec++ & 7;
++					ud.ev_val[slot] = ev;
++					ud.ev_peek[slot] = peek;
++					ud.ev_tick[slot] = mach_absolute_time();
++				}
+ 				ud.ev_stage = 4;
+ 				ud_event(ev, peek);
+ 				ud.ev_stage = 3;
+ 			}
+ 			ud.ev_stage = 5;        /* acknowledging the batch */
+ 			dwc_wr(GEVNTCOUNT, count);
++			ud.ev_acks++;
+ 		}
+ 		ud.ev_ticks = ticks;
+ 		ud.ev_stamp = mach_absolute_time();
+@@ -1542,10 +1565,33 @@
  		pos = pos > 1200 ? pos - 1200 : 0;
  		sweet_log_copy(&pos, out, 1200);
  	} else if (strcmp(buf, "info") == 0) {
@@ -18,14 +75,22 @@
 +			sweet_ufs_state(st, sizeof(st));
 +			snprintf(out, sizeof(out),
 +			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
-+			    " | evpos %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu\n%s",
++			    " | evpos %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu"
++			    " | evb %u eve %u evz %u ack %u rec %u\n"
++			    "evlast %08x/%08x %08x/%08x %08x/%08x %08x/%08x\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
 +			    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count,
 +			    (unsigned)ud.evt_pos,
 +			    (unsigned long long)ud.rxw_loops,
 +			    (unsigned long long)ud.rxw_enter, (unsigned long long)ud.rxw_returned,
 +			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues,
-+			    (int)ud.cmd_busy, (unsigned long long)ud.cmd_done, st);
++			    (int)ud.cmd_busy, (unsigned long long)ud.cmd_done,
++			    (unsigned)ud.ev_batches, (unsigned)ud.ev_empty,
++			    (unsigned)ud.ev_zero_dw, (unsigned)ud.ev_acks, (unsigned)ud.ev_rec,
++			    (unsigned)ud.ev_val[(ud.ev_rec - 1) & 7], (unsigned)ud.ev_peek[(ud.ev_rec - 1) & 7],
++			    (unsigned)ud.ev_val[(ud.ev_rec - 2) & 7], (unsigned)ud.ev_peek[(ud.ev_rec - 2) & 7],
++			    (unsigned)ud.ev_val[(ud.ev_rec - 3) & 7], (unsigned)ud.ev_peek[(ud.ev_rec - 3) & 7],
++			    (unsigned)ud.ev_val[(ud.ev_rec - 4) & 7], (unsigned)ud.ev_peek[(ud.ev_rec - 4) & 7], st);
 +		}
  	} else if (strcmp(buf, "ringpos") == 0) {
  		snprintf(out, sizeof(out), "ringpos %llu\n", sweet_log_position());
