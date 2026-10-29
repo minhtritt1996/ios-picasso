@@ -6047,3 +6047,16 @@ Next steps, in order:
   3. Then bisect the stall with boot-args only: `sweetusb=0` (no gadget) but keep L2 impossible?
      Instead compare with `cpus=1` and with launchd disabled (carrier) to see whether the stall
      needs userland concurrency.
+
+### 2026-10-29 t17 (kernel k200): the state line finally names the stall
+`picasso-ecm.py l2 info` now returns a second line built by `sweet_ufs_state()`:
+```
+lock 4/1 tid 257 strat step 3 blk 0x118da58 c 262144 done 16384 flush 9 err 0 tail 1
+```
+Sampled every 6 s for a minute after boot: **identical each time** - the strategy thread (owner 4 =
+UFS_LK_STRATEGY, tid 257) is frozen in step 3 (the bounce read `ufs_read_blocks`) with 16 KiB of a
+256 KiB request done, holding the driver lock, `err 0`, while the log tail thread still runs
+(`tail 1`). That freezes every later vnode operation, which is why ping/TCP/L2 die.
+Next: the same build also reports `io <phase> cmd <serial> age <ms> it <poll_iters>`; if `age`
+stays 0 the thread never reached `ufs_scsi`, if it grows while `it` grows the spin is running and
+the 5 s deadline in `ufs_scsi` is not firing as written.
