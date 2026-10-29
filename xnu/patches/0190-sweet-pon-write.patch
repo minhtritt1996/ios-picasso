@@ -129,15 +129,12 @@
  
  #define SWEET_IMEM_PA        0x146ab000ull
  #define SWEET_IMEM_REASON    0x65c
-@@ -1638,11 +1641,18 @@
+@@ -1638,12 +1641,19 @@
  	{
  		uint8_t old = 0;
  
 -		if (sweet_spmi_write(0, (SWEET_PON_SPARE - 1), sweet_reboot_pon_value()) == 0) {
 -			*pon_err = 0;
--		}
--		if (sweet_spmi_read(0, SWEET_PON_SPARE, &old) == 0) {
--			*pon_read = old;
 +		uint8_t want = sweet_reboot_pon_value();
 +
 +		if (sweet_pon_read(SWEET_PON_SPARE, &old) == 0) {
@@ -151,8 +148,12 @@
 +		} else {
 +			*pon_err = -2;          /* PON lane not readable */
  		}
+-		if (sweet_spmi_read(0, SWEET_PON_SPARE, &old) == 0) {
+-			*pon_read = old;
+-		}
  	}
  	return value;
+ }
 @@ -1660,15 +1670,29 @@
  	snprintf(out, max, "rebooting %s imem 0x%08x pon %d\n", sweet_reboot_mode_buf,
  	    value, pon_err);
@@ -185,7 +186,7 @@
  	}
  }
  
-@@ -1797,16 +1821,46 @@
+@@ -1797,16 +1821,49 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -197,14 +198,17 @@
  			snprintf(out, sizeof(out), "spmi read failed\n");
  		}
 +	} else if (strncmp(buf, "ppon ", 5) == 0) {
-+		unsigned ppid = 0, val = 0;
++		unsigned ppid = 0, val = 0, addr = SWEET_PON_SPARE;
 +		uint8_t rb = 0, before = 0;
-+		sscanf(buf + 5, "%x %x", &ppid, &val);
-+		int r0 = sweet_pon_lane_read(ppid, SWEET_PON_SPARE, &before);
-+		int r1 = sweet_pon_lane_write(ppid, SWEET_PON_SPARE, (uint8_t)val);
-+		int r2 = sweet_pon_lane_read(ppid, SWEET_PON_SPARE, &rb);
-+		snprintf(out, sizeof(out), "ppon %#x=%#x: read %d/%#x write %d read %d/%#x\n",
-+		    ppid, val, r0, before, r1, r2, rb);
++		if (sscanf(buf + 5, "%x %x %x", &ppid, &addr, &val) < 3) {
++			sscanf(buf + 5, "%x %x", &ppid, &val);
++			addr = SWEET_PON_SPARE;
++		}
++		int r0 = sweet_pon_lane_read(ppid, addr, &before);
++		int r1 = sweet_pon_lane_write(ppid, addr, (uint8_t)val);
++		int r2 = sweet_pon_lane_read(ppid, addr, &rb);
++		snprintf(out, sizeof(out), "ppon %#x addr %#x=%#x: read %d/%#x write %d read %d/%#x\n",
++		    ppid, addr, val, r0, before, r1, r2, rb);
 +	} else if (strncmp(buf, "imem ", 5) == 0) {
 +		unsigned long long v = 0;
 +		sscanf(buf + 5, "%llx", &v);
