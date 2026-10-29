@@ -9,19 +9,19 @@
 -		    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
 -		    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count);
 +		{
-+			/* One reply carries everything needed to see the DWC3 path fail:
-+			 * event-ring position, how many frames went out and came back, and
-+			 * whether a command thread is still inside a command. */
++			/* Plain memory reads only: touching DWC3 registers from the command
++			 * thread can hang it (a wedged controller makes the MMIO read wait),
++			 * and four hung command threads silence the whole channel. */
 +			extern void sweet_ufs_state(char *out, size_t max);
 +			char st[220];
 +			st[0] = 0;
 +			sweet_ufs_state(st, sizeof(st));
 +			snprintf(out, sizeof(out),
 +			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
-+			    " | evpos %u gcnt %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu\n%s",
++			    " | evpos %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
 +			    ud.tx_drops, ud.probes, (int)ud.tx_busy, ud.txq_count,
-+			    (unsigned)ud.evt_pos, (unsigned)(dwc_rd(GEVNTCOUNT) & 0xffff),
++			    (unsigned)ud.evt_pos,
 +			    (unsigned long long)ud.rxw_loops,
 +			    (unsigned long long)ud.rxw_enter, (unsigned long long)ud.rxw_returned,
 +			    (unsigned)ud.rxw_threads, (unsigned)ud.rxw_rescues,
