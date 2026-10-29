@@ -6159,3 +6159,14 @@ the log flusher.
 Next instrumentation must run *in the event thread* and only publish to RAM: a small ring of the
 last N events (type, TRB, tick) plus per-branch counters (no-event tick, endpoint mismatch, TRB
 short, tx kick fail, phy reset), read back by `info`. Poll `info` every 2 s to catch the boundary.
+
+### Correction: the early "L2 never answers" failures look like a flaky boot, not the info handler
+Boot outcomes with identical flash procedure so far: t21 ok, t22 ok, t23 ok (twice), t24 dead,
+t25 dead, t26 ok, t27 dead. The dead ones all enumerate the gadget (1209:0001, carrier 1) but never
+answer even `ringpos`, and the last one (t27) differs from the working t26 only by RAM-only counters
+inside the event loop. So the MMIO-in-info explanation above is *not* supported by the data: the
+pattern is a race in early bring-up (USB configured, responder thread not running), roughly one boot
+in two. Next test is the cheap one: reboot the **same** t27 image and see whether it comes up; if it
+does, bisecting code is pointless until the race is understood, and the priority becomes making
+early bring-up deterministic (log the order of init steps into the ring *before* USB, which the
+persisted tail can then show from recovery).
