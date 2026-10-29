@@ -1,0 +1,37 @@
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -280,10 +280,24 @@
+ 	sweet_panel_on = true;
+ }
+ 
++static bool sweet_panel_panic;
++
+ static void
+ sweet_panel_newline(void)
+ {
+ 	sweet_panel_x = 0;
++	/*
++	 * During a panic the dump is written top-down: the reason is the first
++	 * line and used to scroll off the panel (and the visible bottom only ever
++	 * showed "panic(cpu N caller ...):"), so panic text now starts at y = 0 and
++	 * stops at the last row instead of wrapping upwards.
++	 */
++	if (sweet_panel_panic) {
++		if (sweet_panel_y + 16 + 16 <= sweet_panel_h) {
++			sweet_panel_y += 16;
++		}
++		return;
++	}
+ 	if (sweet_panel_y < 16)
+ 		sweet_panel_y = sweet_panel_h - 16;
+ 	else
+@@ -328,7 +342,8 @@
+ 			row[x] = 0;
+ 	}
+ 	sweet_panel_x = 0;
+-	sweet_panel_y = sweet_panel_h > 16 ? sweet_panel_h - 16 : 0;
++	sweet_panel_panic = true;
++	sweet_panel_y = 0;
+ }
+ 
+ static void
