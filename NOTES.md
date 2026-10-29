@@ -6252,3 +6252,21 @@ persisted tail can then show from recovery).
   matches), and that byte is where we are stuck. Next: get the picasso PON register map (vendor DT
   in the Droidian install, or `pmic_pon_reason()` in Bergamota's enxerto/charge_mode.c which reads
   the same field on a sibling PMIC) and retry with the right register/shift.
+
+## 2026-10-29 - GPU survey across the ports (answer: nobody has GPU, software CA is the proven path)
+- Bergamota (Adreno 630 / Poco F1): `xnu/patches/0103-beryllium-gpu-a630-bringup.patch` +
+  `bsd/dev/sweet_a630.c` + PAS zap loader is **compiled only, never run on hardware**;
+  `docs/GPU_EAGL.md` is phase A/B userland work (our own OpenGLES over Mesa) and explicitly says
+  "nothing runs inside backboardd yet"; `docs/METAL_ADRENO630.md` is research/design only. Their
+  newest commit (`37a7a7a`) adds freedreno-sweet syncobjs and **Turnip** (Mesa Vulkan for Adreno) -
+  the GPU userland route, no on-device result yet.
+- The UI that actually boots on their iOS 16 does **not** use the GPU: `docs/IOS16_README.md` says
+  "Kernel IOSurface + IOMobileFramebuffer (AppleCLCD) services; **CoreAnimation renders in
+  software**; frames are copied into the bootloader's framebuffer". Kernel pieces: patch 0046
+  (IOSurface `IOCoreSurfaceRoot` + `IOMobileFramebuffer` user clients), 0056 throttled present,
+  0068 cached surface lookup.
+- We already carry 0046 + 0056 + 0068 + 0087/0088, with the same class names, so the kernel side of
+  the software-CA path is in place. Therefore the UI blocker is on the backboardd side, not GPU.
+- Next measurement (image t39 prepared, md5 b932f50f): boot with
+  `sweetsample=backboardd,SpringBoard,runningboardd` to get user pc/lr/backtraces for those three
+  processes ~90 s in, which shows where backboardd waits before it ever opens IOMobileFramebuffer.
