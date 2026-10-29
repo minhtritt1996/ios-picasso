@@ -6060,3 +6060,16 @@ UFS_LK_STRATEGY, tid 257) is frozen in step 3 (the bounce read `ufs_read_blocks`
 Next: the same build also reports `io <phase> cmd <serial> age <ms> it <poll_iters>`; if `age`
 stays 0 the thread never reached `ufs_scsi`, if it grows while `it` grows the spin is running and
 the 5 s deadline in `ufs_scsi` is not firing as written.
+
+## 2026-10-29 - ROOT CAUSE of the wedge: page-fault re-entry inside ufs_copy_out
+- Patch 0186 v5 bracketed the bounce read with `io_phase` marks; the L2 `info` state line at the
+  freeze then read `... strat step 3 ... done 0 | io 40 ...` - `io 40` is the mark immediately
+  BEFORE `ufs_copy_out()`, and `done 0` means the very first 4 KiB `memcpy` never finished.
+- `ufs_copy_out()` is a plain page-at-a-time memcpy from the DMA bounce buffer into the *caller's*
+  buffer, done while the driver lock is held. Touching that caller buffer can page-fault; the fault
+  goes through the pager back into this same driver, which waits for the lock the faulting thread
+  already holds => permanent deadlock, holding the UFS lock, so every later vnode operation (and
+  every printf that flushes) waits forever. That is exactly the "system goes quiet" signature.
+- Fix (0186 v6): a 1 MiB wired staging buffer. Reads: bounce -> stage under the lock, unlock, then
+  stage -> caller buffer. Writes: caller buffer -> stage with the lock released, relock, stage ->
+  bounce. The caller's memory is never dereferenced while the driver lock is held.
