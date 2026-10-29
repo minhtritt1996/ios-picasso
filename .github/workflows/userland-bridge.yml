@@ -29,7 +29,7 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Build Mesa (libOSMesa.8.dylib: freedreno + softpipe)
+      - name: Build Mesa (libOSMesa.8.dylib, freedreno + softpipe)
         run: |
           set -eux
           tools/userland-bridge/mesa/build.sh out
