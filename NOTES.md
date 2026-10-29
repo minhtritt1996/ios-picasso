@@ -6188,3 +6188,16 @@ persisted tail can then show from recovery).
   and the interface counters (ipackets/opackets/ierrors/iqdrops), plus a per-EtherType count of the
   frames handed to ifnet_input (0x0800/0x0806/other). That separates "frame never reaches the stack"
   from "stack answers but the reply is dropped in TX".
+
+### 2026-10-29 - full-health window measured (t28) and the mbuf fix is unconfirmed (t29)
+- t28 (kernel k211) showed a fully healthy window: `ping 4/4 0% loss` (0.2-9.8 ms), TCP 2223 open,
+  `fl 0x8843` (UP|BROADCAST|RUNNING|SIMPLEX|MULTICAST), `lock 0/0`, and during the ping
+  `rxip +19 rxarp +1 rxoth +2`, `tx +22` - i.e. the BSD stack answered ICMP and the driver sent the
+  replies. IP path works when the boot comes up cleanly.
+- Within ~90 s of that window IP and TCP died first and L2 followed ~10 s later.
+- t29 (kernel k212, mbuf freed when `ifnet_input()` fails) came up on the second power cycle, then
+  died the same way (~30-60 s) with `iferr 0/0`, so that leak is not the (only) cause.
+- Next: k213 adds an mbuf canary to `info` (`mb` field: 0 = gethdr failed, 1 = header only,
+  2 = header + cluster). If the receive side dies because the pool is exhausted, the last reply
+  before silence will show `mb 0`; if it stays 2, exhaustion is ruled out and the fault is in the
+  event/TRB path again.
