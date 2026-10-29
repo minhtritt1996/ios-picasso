@@ -6097,3 +6097,23 @@ L2 `info` sampled every 12 s for 3+ minutes:
   free, so its own writer/sync path is the suspect.
 - `sweetlogflush` boot-arg (default off) now gates the periodic writer: with it disabled, if the
   system keeps running the remaining stall is the log write path; if IP still dies it is lwIP.
+
+### 2026-10-29 t23 (kernel k206, sweetlogflush=0): two separate remaining faults
+Sample series (ping + L2 `info` every ~14 s):
+```
+11:26:57 PING-OK  lock 0/0 ... strat step 3 done 147456 | io 23 cmd 2885
+11:27:39 PING-OK  ... cmd 2895
+11:27:53 ping-no  ... cmd 2897        <- IP stops answering, L2 keeps working
+11:29:39 ping-no  ... cmd 2919        <- command serial still advancing, lock still free
+```
+- With the periodic log writer disabled the system stays healthy longer, so the log write path was a
+  real contributor, but IP still dies after ~1.5-2 minutes on its own (ARP/ping stop, TCP 2223
+  closed) while the raw L2 channel and UFS commands continue. That points at our lwIP/ifnet glue
+  (probe/heartbeat watchdog or queue drain) rather than at storage.
+- Independently, one strategy request freezes mid-copy (`done 147456` of `262144`, `io 23`,
+  `lock 0/0`): the thread is neither holding nor waiting for our lock, so it is blocked inside the
+  driver's own call chain (the `ufs_read_blocks` return path, which still prints through
+  `sweet_tracef` -> `sweet_log_append` -> early flush). Removing every print from that path is the
+  next cheap test.
+- Practical state: `sweetlogflush` defaults to 0, so boots are quieter but recovery-side ring pulls
+  only contain early boot; the L2 channel remains the live view.
