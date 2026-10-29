@@ -6201,3 +6201,18 @@ persisted tail can then show from recovery).
   2 = header + cluster). If the receive side dies because the pool is exhausted, the last reply
   before silence will show `mb 0`; if it stays 2, exhaustion is ruled out and the fault is in the
   event/TRB path again.
+
+### 2026-10-29 t30 (kernel k213): the IP fault is in XNU's own input path; the UI daemons start
+- Mbuf canary never left `mb 2` (header + cluster always allocatable) and `iferr 0/0`, so the pool is
+  not exhausted and the leak fix was not the cause of the IP death.
+- Measured at the moment ping stops answering: the host sends 4 frames, the driver counts them
+  (`rx +5`, `rxip +4`) and hands them to `ifnet_input()` (`rxw` unchanged afterwards), but nothing is
+  answered (`tx +1`). So frames reach XNU's stack and the **BSD/dlil input path stops processing**
+  them - while the same driver keeps answering the L2 control channel for minutes afterwards.
+- Practical consequence: **L2 outlives IP by minutes**, so the control channel remains the debugging
+  view; the IP path is only needed later for SSH and can wait.
+- With real launchd plus the fixes above, the ring now shows the UI stack being started:
+  `exec SpringBoard argv /System/Library/CoreServices/SpringBoard.app/SpringBoard` and
+  `exec xpcproxy com.apple.backboardd`, plus ~35 daemons (runningboardd, logd, mediaserverd,
+  mobile.keybagd, identityservicesd, powerd, thermalmonitord, ...), with no CRASH lines. That is the
+  first time this port has backboardd and SpringBoard requested by launchd.
