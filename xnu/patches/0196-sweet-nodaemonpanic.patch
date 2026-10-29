@@ -10,7 +10,7 @@
  		}
  	}
  #endif
-@@ -1681,6 +1682,20 @@
+@@ -1681,6 +1682,27 @@
  static bool
  proc_should_trigger_panic(proc_t p, int rv)
  {
@@ -20,10 +20,17 @@
 +	 * failed) must not take the machine down while the port is being brought up.
 +	 * launchd itself still panics - a dead init is fatal by definition.
 +	 */
-+	if (p != initproc) {
++	{
 +		int nodaemon = 0;
 +
-+		if (PE_parse_boot_argn("sweetnodaemonpanic", &nodaemon, sizeof(nodaemon)) && nodaemon) {
++		/*
++		 * Compare the NAME, not the initproc pointer: on this port initproc
++		 * matches ordinary daemons (a configd exit was reported as
++		 * "initproc failed to start"), so only a process really called
++		 * launchd may take the machine down.
++		 */
++		if (PE_parse_boot_argn("sweetnodaemonpanic", &nodaemon, sizeof(nodaemon)) && nodaemon &&
++		    strncmp(p->p_comm, "launchd", sizeof("launchd")) != 0) {
 +			return false;
 +		}
 +	}
