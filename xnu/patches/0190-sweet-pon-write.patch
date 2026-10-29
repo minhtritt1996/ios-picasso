@@ -147,6 +147,24 @@
  		printf("SWEET KEYS: unsupported arbiter version=%#x apids=%u\n",
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
+@@ -1493,7 +1493,7 @@
+ }
+ 
+ static int
+-ud_cat(const char *path, int len, char *out, size_t outsz)
++ud_cat(const char *path, off_t off, int len, char *out, size_t outsz)
+ {
+ 	vfs_context_t ctx = vfs_context_kernel();
+ 	vnode_t vp = NULL;
+@@ -1507,7 +1507,7 @@
+ 	if (len > (int)outsz - 1) {
+ 		len = (int)outsz - 1;
+ 	}
+-	err = vn_rdwr(UIO_READ, vp, out, len, 0, UIO_SYSSPACE,
++	err = vn_rdwr(UIO_READ, vp, out, len, off, UIO_SYSSPACE,
+ 	    IO_NODELOCKED | IO_NOCACHE, vfs_context_ucred(ctx), &resid,
+ 	    vfs_context_proc(ctx));
+ 	vnode_put(vp);
 @@ -1588,8 +1588,12 @@
   * Values are the ones aboot/ABL use: 0x77665500 bootloader, 0x77665502 recovery.
   */
@@ -195,7 +213,7 @@
 +	 * wipes the IMEM word we just wrote, so ABL boots normally. A warm reset keeps
 +	 * IMEM and lets ABL act on the reason.
 +	 */
- 	{
++	{
 +		register uint64_t px0 __asm__("x0") = 0x84000009ULL;
 +
 +		__asm__ volatile("smc #0" : "+r"(px0) : : "x1", "x2", "x3", "x4", "x5",
@@ -204,7 +222,7 @@
 +	}
 +	/* If PSCI did not take, fall back to PS_HOLD (power off) so the command
 +	 * still does something visible. */
-+	{
+ 	{
  		vm_offset_t psh = ml_io_map(SWEET_PSHOLD_PA, 0x1000);
  
  		if (psh != 0) {
@@ -218,7 +236,31 @@
  	}
  }
  
-@@ -1797,16 +1822,94 @@
+@@ -1746,14 +1771,21 @@
+ 		ud_stat(buf + 5, out, sizeof(out));
+ 	} else if (strncmp(buf, "cat ", 4) == 0) {
+ 		char path[256];
++		off_t off = 0;
+ 		int len = 1200;
+ 		strlcpy(path, buf + 4, sizeof(path));
+ 		char *sp = strchr(path, ' ');
+ 		if (sp != NULL) {
+ 			*sp = 0;
+-			len = (int)ud_atoll(sp + 1);
++			/* cat <path> [offset] [len]: launchd.log only matters at its tail. */
++			char *sp2;
++			off = (off_t)ud_atoll(sp + 1);
++			sp2 = strchr(sp + 1, ' ');
++			if (sp2 != NULL) {
++				len = (int)ud_atoll(sp2 + 1);
++			}
+ 		}
+-		if (ud_cat(path, len, out, sizeof(out)) < 0) {
++		if (ud_cat(path, off, len, out, sizeof(out)) < 0) {
+ 			snprintf(out, sizeof(out), "%s: read failed\n", path);
+ 		}
+ 	} else if (strncmp(buf, "ufslog", 6) == 0) {
+@@ -1797,16 +1829,94 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
