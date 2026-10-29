@@ -48,7 +48,7 @@ jobs:
             tools/userland-bridge/ca-bridge/eagl.c > build-ca/eagl_gen.h
           $CC -O1 -Wall -dynamiclib -install_name /usr/local/lib/libsweet-gl.dylib \
             -Ibuild-ca -Itools/userland-bridge/ca-bridge \
-            -Lout/lib -lOSMesa.8 \
+            -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc out/lib/libOSMesa.8.dylib \
             -o out/lib/libsweet-gl.dylib \
             tools/userland-bridge/ca-bridge/eagl.c tools/userland-bridge/ca-bridge/sweet_gl_osmesa.c
           $CC -O2 -Wall -Wextra -Werror -dynamiclib -install_name /usr/local/lib/libsweet-ca.dylib \
