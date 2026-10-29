@@ -8,7 +8,7 @@
  static bool keys_started;
  static int keys_sleep_chan;
  
-@@ -81,6 +82,96 @@
+@@ -81,6 +82,128 @@
  	return false;
  }
  
@@ -69,6 +69,38 @@
 +}
 +
 +/*
++ * Write with the data byte in the lane's data register instead of the command
++ * dword (the controller completes our inline-data commands without writing
++ * anything, so this is the other plausible encoding).
++ */
++int
++sweet_pon_lane_write2(unsigned ppid, unsigned addr, uint8_t value)
++{
++	uint16_t apid = keys_find_apid((uint16_t)ppid, keys_apid_count);
++
++	if (apid == KEYS_NO_APID) {
++		return -1;
++	}
++	uint32_t off = 0x80u * apid;
++	uint32_t cmd = ((uint32_t)(addr & 0xffu) << 4);   /* write, byte count 0 */
++
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(keys_obs + off + 0x18u) = (uint32_t)value;
++	__asm__ volatile("dsb osh" ::: "memory");
++	*(volatile uint32_t *)(keys_obs + off) = cmd;
++	__asm__ volatile("dsb osh" ::: "memory");
++	for (unsigned i = 0; i < 1000; ++i) {
++		uint32_t st = keys_rd(keys_obs, off + 0x08u);
++
++		if (st & 1u) {
++			return (st & 0x0eu) ? -2 : 0;
++		}
++		delay(1);
++	}
++	return -3;
++}
++
++/*
 + * PON access on an explicitly named lane: the PPID carries the SID in its high
 + * byte (0x008 = PON of SID 0, 0x108 = SID 1, ...), which matters because the
 + * phone has several PMICs and ABL may read a different one than we default to.
@@ -105,7 +137,7 @@
  static void
  keys_wait(void)
  {
-@@ -145,6 +236,7 @@
+@@ -145,6 +268,7 @@
  	}
  	keys_version = keys_rd(keys_core, 0);
  	uint32_t count = keys_rd(keys_core, 4) & 0x7ffu;
@@ -115,7 +147,7 @@
  		printf("SWEET KEYS: unsupported arbiter version=%#x apids=%u\n",
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -1588,8 +1588,11 @@
+@@ -1588,8 +1588,12 @@
   * Values are the ones aboot/ABL use: 0x77665500 bootloader, 0x77665502 recovery.
   */
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
@@ -125,16 +157,20 @@
 +extern int sweet_pon_raw(uint32_t cmd, uint32_t *status, uint8_t *data);
 +extern int sweet_pon_lane_write(unsigned ppid, unsigned addr, uint8_t value);
 +extern int sweet_pon_lane_read(unsigned ppid, unsigned addr, uint8_t *out);
++extern int sweet_pon_lane_write2(unsigned ppid, unsigned addr, uint8_t value);
 +extern int sweet_pon_read(unsigned addr, uint8_t *out);
  
  #define SWEET_IMEM_PA        0x146ab000ull
  #define SWEET_IMEM_REASON    0x65c
-@@ -1638,12 +1641,19 @@
+@@ -1638,11 +1642,18 @@
  	{
  		uint8_t old = 0;
  
 -		if (sweet_spmi_write(0, (SWEET_PON_SPARE - 1), sweet_reboot_pon_value()) == 0) {
 -			*pon_err = 0;
+-		}
+-		if (sweet_spmi_read(0, SWEET_PON_SPARE, &old) == 0) {
+-			*pon_read = old;
 +		uint8_t want = sweet_reboot_pon_value();
 +
 +		if (sweet_pon_read(SWEET_PON_SPARE, &old) == 0) {
@@ -148,13 +184,9 @@
 +		} else {
 +			*pon_err = -2;          /* PON lane not readable */
  		}
--		if (sweet_spmi_read(0, SWEET_PON_SPARE, &old) == 0) {
--			*pon_read = old;
--		}
  	}
  	return value;
- }
-@@ -1660,15 +1670,29 @@
+@@ -1660,15 +1671,29 @@
  	snprintf(out, max, "rebooting %s imem 0x%08x pon %d\n", sweet_reboot_mode_buf,
  	    value, pon_err);
  	__asm__ volatile("dsb sy" ::: "memory");
@@ -163,7 +195,7 @@
 +	 * wipes the IMEM word we just wrote, so ABL boots normally. A warm reset keeps
 +	 * IMEM and lets ABL act on the reason.
 +	 */
-+	{
+ 	{
 +		register uint64_t px0 __asm__("x0") = 0x84000009ULL;
 +
 +		__asm__ volatile("smc #0" : "+r"(px0) : : "x1", "x2", "x3", "x4", "x5",
@@ -172,7 +204,7 @@
 +	}
 +	/* If PSCI did not take, fall back to PS_HOLD (power off) so the command
 +	 * still does something visible. */
- 	{
++	{
  		vm_offset_t psh = ml_io_map(SWEET_PSHOLD_PA, 0x1000);
  
  		if (psh != 0) {
@@ -186,7 +218,7 @@
  	}
  }
  
-@@ -1797,16 +1821,49 @@
+@@ -1797,16 +1822,61 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -208,6 +240,18 @@
 +		int r1 = sweet_pon_lane_write(ppid, addr, (uint8_t)val);
 +		int r2 = sweet_pon_lane_read(ppid, addr, &rb);
 +		snprintf(out, sizeof(out), "ppon %#x addr %#x=%#x: read %d/%#x write %d read %d/%#x\n",
++		    ppid, addr, val, r0, before, r1, r2, rb);
++	} else if (strncmp(buf, "ppon2 ", 6) == 0) {
++		unsigned ppid = 0, val = 0, addr = SWEET_PON_SPARE;
++		uint8_t rb = 0, before = 0;
++		if (sscanf(buf + 6, "%x %x %x", &ppid, &addr, &val) < 3) {
++			sscanf(buf + 6, "%x %x", &ppid, &val);
++			addr = SWEET_PON_SPARE;
++		}
++		int r0 = sweet_pon_lane_read(ppid, addr, &before);
++		int r1 = sweet_pon_lane_write2(ppid, addr, (uint8_t)val);
++		int r2 = sweet_pon_lane_read(ppid, addr, &rb);
++		snprintf(out, sizeof(out), "ppon2 %#x addr %#x=%#x: read %d/%#x write %d read %d/%#x\n",
 +		    ppid, addr, val, r0, before, r1, r2, rb);
 +	} else if (strncmp(buf, "imem ", 5) == 0) {
 +		unsigned long long v = 0;
