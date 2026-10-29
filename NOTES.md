@@ -5967,3 +5967,27 @@ observed live over the L2 channel (no recovery needed, `picasso-ecm.py ring`):
   boot with `sweetsample=launchd,configd,securityd,watchdogd` and symbolicate the prints; for the
   kernel side (files server, UFS strategy thread) add a watchdog that dumps the pc of every thread
   when `ringpos` has not advanced for N seconds.
+
+## 2026-10-29 - why the system "goes quiet": kernel timeouts do not fire
+- Patch 0185 (files-server breadcrumbs + watchdog, time-based) prints
+  `SWEET FILES: threads server 0 watchdog 0` (both threads start, KERN_SUCCESS) and then exactly
+  one `SWEET FILES ALIVE: serial 0 step 0`; after that the watchdog never prints again, while
+  `ringpos` keeps growing from the USB debug + heartbeat threads. Nothing was ever reported as
+  STUCK, i.e. no request was in flight when the system "went quiet".
+- The watchdog loop is `for (;;) { sf_sleep_ms(2000); ... }` with
+  `sf_sleep_ms(ms) = tsleep(&sf_chan, PZERO, "sweetfiles", MAX(1, ms * hz / 1000))`. It runs once
+  and never wakes: **`tsleep` with a timeout is not being woken on this port.** That is the same
+  hazard sweet_ufs.c already documents ("a thread parked on a kernel timeout can stay parked for
+  ever", which is why the UFS command wait spins on mach_absolute_time instead of sleeping).
+- Consequence: every kernel path that waits with a timeout (our watchdog, log flusher pacing,
+  UFS retry/kick, and any userland wait that ends up in a timed kernel wait) can park for good,
+  which looks exactly like the observed "userland I/O stops, kernel keeps printing heartbeats".
+- Previous conclusions corrected: the t8 boot that died early was most likely the same phenomenon
+  (the sampler sleeps 90 s/120 s in tsleep) and *not* the sampler itself; and the earlier
+  "files server is single-threaded and one stalled READ wedges it" is also consistent with a
+  parked thread rather than a busy lock.
+- Next concrete step: audit the timeout machinery instead of adding more sleeps - check that the
+  kernel's timer/thread_call path works on this port (etimer/`timer_call_enter` wakeups, and
+  whether `hz`/`mach_absolute_time` deadlines are sane), then convert our own helper sleeps
+  (`sf_sleep_ms`, log pacing, sampler) to a mach_absolute_time spin or to an explicit
+  `thread_call`-based wakeup so the port stops depending on it.
