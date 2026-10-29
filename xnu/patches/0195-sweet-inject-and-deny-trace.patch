@@ -1,0 +1,18 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5679,6 +5679,7 @@
+ 		}
+ 		if (len == namelen && namelen != 0 && strncmp(word, name, len) == 0) {
+ 			snprintf(env, size, "DYLD_INSERT_LIBRARIES=%.*s", (int)liblen, conf);
++			printf("SWEET INJECT: %s gets %.*s\n", name, (int)liblen, conf);
+ 			return true;
+ 		}
+ 		word += len + (word[len] == ',');
+@@ -7518,6 +7519,7 @@
+ 	if (imgp->ip_mac_return != 0) {
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,
+ 		    proc_getpid(p), OS_REASON_EXEC, EXEC_EXIT_REASON_SECURITY_POLICY, 0, 0);
++		printf("SWEET EXEC DENIED: %s (%s)\n", p->p_name, p->p_comm);
+ 		signature_failure_reason = os_reason_create(OS_REASON_EXEC, EXEC_EXIT_REASON_SECURITY_POLICY);
+ 		error = imgp->ip_mac_return;
+ 		unexpected_failure = TRUE;
