@@ -1,6 +1,14 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -170,7 +170,7 @@
+@@ -140,6 +140,7 @@
+ 	volatile uint32_t lock_users;
+ 	volatile uint32_t lock_tid;
+ 	volatile uint32_t flush_stage;
++	volatile uint32_t io_phase;              /* where the in-flight command is */
+ 	/* Where a GPT partition lookup is right now: the heartbeat prints it, so
+ 	 * a lookup that never returns names its own LUN and step. */
+ 	volatile uint32_t part_lun;
+@@ -170,7 +171,7 @@
  static LCK_MTX_DECLARE(sweet_raw_lock, &sweet_ufs_grp);
  
  enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
@@ -9,7 +17,7 @@
  
  void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
  
-@@ -199,6 +199,18 @@
+@@ -199,6 +200,18 @@
  	su.lock_tid = (uint32_t)thread_tid(current_thread());
  }
  
@@ -28,7 +36,42 @@
  static inline void
  ufs_unlock(void)
  {
-@@ -1127,6 +1139,10 @@
+@@ -499,7 +512,9 @@
+ 		su.wait = false;
+ 		sweet_tracef("SWEET UFS: sleepable wait disabled, spinning\n");
+ 	}
++	su.io_phase = 21;
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
++		su.io_phase = 22;
+ 		uint64_t now = mach_absolute_time();
+ 		su.poll_iters++;
+ 		if (now > deadline) {
+@@ -543,6 +558,7 @@
+ 		__builtin_arm_isb(0xf);
+ 	}
+ 	__builtin_arm_dsb(0xf);
++	su.io_phase = 23;
+ 	if (write && su.wr_done++ < 8) {
+ 		const uint8_t *r = ucd->resp;
+ 		sweet_tracef("SWEET UFS WR DONE %u: dw2 0x%08x ocs %u it %llu IS 0x%x rsp %02x %02x"
+@@ -598,13 +614,16 @@
+ 	su.cmd_lba = lba; su.cmd_count = count; su.cmd_op = 0x28; su.cmd_lun = su.lun;
+ 	su.cmd_serial++;
+ 	su.cmd_start = mach_absolute_time();
++	su.io_phase = 1;
+ 	ufs_trace();
++	su.io_phase = 2;
+ 	uint8_t cdb[10] = {
+ 		0x28, 0,
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+ 	int error = ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false, NULL);
++	su.io_phase = 3;
+ 	su.cmd_start = 0;
+ 	if (error) {
+ 		su.last_err = error;
+@@ -1127,6 +1146,10 @@
  		goto done;
  	}
  
@@ -39,7 +82,7 @@
  	ufs_lock(UFS_LK_STRATEGY);
  	/* Published only while holding the lock: a thread that is merely
  	 * waiting for it would otherwise overwrite the stuck holder's
-@@ -1138,10 +1154,6 @@
+@@ -1138,10 +1161,6 @@
  	su.strat_done = 0;
  	su.strat_t0 = mach_absolute_time();
  	su.strat_step = 1;
@@ -50,7 +93,7 @@
  	for (uint32_t done = 0; done < count;) {
  		su.strat_step = 2;
  		uint64_t pos = off + done;
-@@ -1474,6 +1486,7 @@
+@@ -1474,6 +1493,7 @@
  int sweet_log_ferr_g;
  volatile uint64_t sweet_log_last_g;
  uint64_t sweet_log_base_g, sweet_log_nblocks_g;
@@ -58,7 +101,7 @@
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -1795,16 +1808,26 @@
+@@ -1795,16 +1815,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -89,7 +132,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,7 +1885,57 @@
+@@ -1862,7 +1892,65 @@
  	}
  }
  
@@ -98,12 +141,20 @@
 +void
 +sweet_ufs_state(char *out, size_t max)
 +{
++	uint64_t age_ms = 0;
++	if (su.cmd_start) {
++		uint64_t d = 0;
++		absolutetime_to_nanoseconds(mach_absolute_time() - su.cmd_start, &d);
++		age_ms = d / 1000000ull;
++	}
 +	snprintf(out, max, "lock %u/%u tid %u strat step %u blk 0x%llx c %llu done %u "
-+	    "flush %u err %d tail %u\n",
++	    "flush %u err %d tail %u | io %u cmd %u age %llu it %llu\n",
 +	    (unsigned)su.lock_owner, (unsigned)su.lock_users, (unsigned)su.lock_tid,
 +	    (unsigned)su.strat_step, (unsigned long long)su.strat_blk,
 +	    (unsigned long long)su.strat_count, (unsigned)su.strat_done,
-+	    (unsigned)su.flush_stage, su.last_err, (unsigned)sweet_tail_seq_g);
++	    (unsigned)su.flush_stage, su.last_err, (unsigned)sweet_tail_seq_g,
++	    (unsigned)su.io_phase, (unsigned)su.cmd_serial, (unsigned long long)age_ms,
++	    (unsigned long long)su.poll_iters);
 +}
 +
 +#define SWEET_TAIL_BLOCKS 16
@@ -147,7 +198,7 @@
  sweet_log_start(void)
  {
  	uint32_t on = 1;
-@@ -1879,6 +1952,10 @@
+@@ -1879,6 +1967,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
