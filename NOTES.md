@@ -6143,3 +6143,19 @@ whole channel goes silent while the kernel lives. Rule: **never touch DWC3 regis
 command thread**; `info` must only read RAM (and `sweet_ufs_state()` is safe).
 k209 (t26) keeps exactly the k206 behaviour and adds only RAM fields (`evt_pos`, `rxw_loops`,
 `rxw_enter/returned`, `rxw_threads`, `rxw_rescues`, `cmd_busy/cmd_done`) to `info`.
+
+### 2026-10-29 t26 (kernel k209): RAM-only info works, but the USB stack still dies fast
+Two clean samples then silence (~40 s of contact):
+```
+13:01:38 PING ... rx 35 tx 21 | evpos 556 loops 34 rxw 34/34 th 0 resc 0 cmd 1/0 | lock 0/0
+13:01:50 PING ... rx 60 tx 23 | evpos 664 loops 58 rxw 58/58 th 0 resc 0 cmd 1/1 | lock 0/0
+13:02:02 [no reply] ... (silent for the next 4 minutes)
+```
+So at the last reply every counter looked healthy: the RX worker was not stuck (enter == returned), no
+rescue threads, the command thread had completed a command, the UFS lock was free, and the event
+ring position was advancing (556 -> 664). The channel then died between two samples 12 s apart, which
+means the failure is in the DWC3 event/TRB path itself (or the PHY), not in userland, storage, or
+the log flusher.
+Next instrumentation must run *in the event thread* and only publish to RAM: a small ring of the
+last N events (type, TRB, tick) plus per-branch counters (no-event tick, endpoint mismatch, TRB
+short, tx kick fail, phy reset), read back by `info`. Poll `info` every 2 s to catch the boundary.
