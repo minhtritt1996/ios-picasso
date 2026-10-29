@@ -17,15 +17,17 @@
  	uint32_t    probe_seen;         /* probe-thread prints */
  	uint32_t    probe_hb;           /* probe-thread heartbeat */
  	volatile uint64_t rxw_stamp;    /* last RX-worker progress (absolute) */
-@@ -355,6 +365,7 @@
+@@ -355,6 +365,9 @@
  	uint32_t    cmd_drop;
  	uint64_t    rx_frames, tx_frames;
  	uint32_t    rx_seen, tx_calls, tx_drops, tx_done, ev_other, probes;
 +	volatile uint32_t rx_ip, rx_arp, rx_other;   /* frames handed to ifnet_input by EtherType */
++	volatile uint32_t rx_iferr;   /* ifnet_input() failures (each one used to leak an mbuf) */
++	volatile int32_t  rx_iferr_last;
  } ud;
  
  
-@@ -873,6 +884,17 @@
+@@ -873,8 +886,31 @@
  				stats.packets_in = 1;
  				stats.bytes_in = len;
  				ud.rxw_stamp = mach_absolute_time();
@@ -41,9 +43,24 @@
 +					}
 +				}
  				os_atomic_inc(&ud.rxw_enter, relaxed);
- 				(void)ifnet_input(ud.ifp, m, &stats);
+-				(void)ifnet_input(ud.ifp, m, &stats);
++				{
++					/* xnu convention: ifnet_input() does NOT consume the
++					 * mbuf when it returns an error, the caller frees it.
++					 * Ignoring that leaks one mbuf plus its cluster per bad
++					 * frame and exhausts the pool after a minute of traffic. */
++					errno_t ierr = ifnet_input(ud.ifp, m, &stats);
++
++					if (ierr != 0) {
++						ud.rx_iferr++;
++						ud.rx_iferr_last = ierr;
++						mbuf_freem_list(m);
++					}
++				}
  				os_atomic_inc(&ud.rxw_returned, relaxed);
-@@ -1196,6 +1218,11 @@
+ 				if (trace) {
+ 					ud_log("SWEET USB: rxw %u ifnet_input returned\n",
+@@ -1196,6 +1232,11 @@
  	for (;;) {
  		ud.ev_stage = 1;                /* about to read the pending count */
  		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
@@ -55,7 +72,7 @@
  		if (count >= UD_EVT_SIZE - 16 && ud.ev_press++ < 8) {
  			/* A full ring stops the controller: this line is the proof that a
  			 * burst outran the drain loop. */
-@@ -1233,6 +1260,7 @@
+@@ -1233,6 +1274,7 @@
  				    ((ud.evt_pos + 4) % UD_EVT_SIZE));
  				ud.evt_pos = (ud.evt_pos + step) % UD_EVT_SIZE;
  				if (ev == 0) {
@@ -63,7 +80,7 @@
  					continue;       /* parameter dword, not an event */
  				}
  				if (!(ev & 1)) {
-@@ -1242,12 +1270,19 @@
+@@ -1242,12 +1284,19 @@
  						    "0x%08x\n", ep, type, (ev >> 12) & 0xf, peek);
  					}
  				}
@@ -83,7 +100,7 @@
  		}
  		ud.ev_ticks = ticks;
  		ud.ev_stamp = mach_absolute_time();
-@@ -1542,10 +1577,36 @@
+@@ -1542,10 +1591,37 @@
  		pos = pos > 1200 ? pos - 1200 : 0;
  		sweet_log_copy(&pos, out, 1200);
  	} else if (strcmp(buf, "info") == 0) {
@@ -102,7 +119,7 @@
 +			snprintf(out, sizeof(out),
 +			    "configured %d rx %llu tx %llu calls %u drops %u probes %u busy %d q %u"
 +			    " | evpos %u loops %llu rxw %llu/%llu th %u resc %u cmd %d/%llu"
-+			    " | fl 0x%x rxip %u rxarp %u rxoth %u"
++			    " | fl 0x%x rxip %u rxarp %u rxoth %u iferr %u/%d"
 +			    " | evb %u eve %u evz %u ack %u rec %u\n"
 +			    "evlast %08x/%08x %08x/%08x %08x/%08x %08x/%08x\n%s",
 +			    (int)ud.configured, ud.rx_frames, ud.tx_frames, ud.tx_calls,
@@ -114,6 +131,7 @@
 +			    (int)ud.cmd_busy, (unsigned long long)ud.cmd_done,
 +			    (unsigned)(ud.ifp != NULL ? ifnet_flags(ud.ifp) : 0),
 +			    (unsigned)ud.rx_ip, (unsigned)ud.rx_arp, (unsigned)ud.rx_other,
++			    (unsigned)ud.rx_iferr, (int)ud.rx_iferr_last,
 +			    (unsigned)ud.ev_batches, (unsigned)ud.ev_empty,
 +			    (unsigned)ud.ev_zero_dw, (unsigned)ud.ev_acks, (unsigned)ud.ev_rec,
 +			    (unsigned)ud.ev_val[(ud.ev_rec - 1) & 7], (unsigned)ud.ev_peek[(ud.ev_rec - 1) & 7],
