@@ -6216,3 +6216,25 @@ persisted tail can then show from recovery).
   `exec xpcproxy com.apple.backboardd`, plus ~35 daemons (runningboardd, logd, mediaserverd,
   mobile.keybagd, identityservicesd, powerd, thermalmonitord, ...), with no CRASH lines. That is the
   first time this port has backboardd and SpringBoard requested by launchd.
+
+## 2026-10-29 - reboot-to-mode: what works and what does not (kernel k217)
+- `imem <hex>` writes and reads back correctly (`imem write 0x77665500 readback 0x77665500`), so the
+  lilo restart_reason word (0x146ab65c) is reachable.
+- `reboot bootloader` with **PS_HOLD=0** powers the phone **off** (USB disappears); because IMEM is
+  SRAM, the reason is lost and the next power-on boots iOS. Fixed in 0193: the reset is now
+  **PSCI SYSTEM_RESET (smc 0x84000009)**, which is a warm reset and keeps IMEM.
+- With the PSCI reset the phone reboots cleanly but still lands in **iOS**: ABL ignores the IMEM
+  reason on its own. This matches Bergamota's SDM845 note ("IMEM alone did not select fastboot,
+  hence the PON byte").
+- The PMIC side is the blocker: the PON spare at 0x88f (mainline `PON_SOFT_RB_SPARE`, the word the
+  keys lane reads at 0x810 for the power key) **reads 0x00 and does not change** after any of the
+  probe writes (`rawpon 48f0`, `608f0`, `2048f0`, `48f00`; all report status 0x1). Either the
+  register is protected or ABL reads the PON of the *other* PMIC: our keys lane takes the first
+  APID matching PPID 0x008, which may be PM6150's PON (SID 0) while ABL looks at PM7250B.
+  Next step for this feature: let the probe name the lane explicitly (PPID including the SID) and
+  try PPID 0x108/0x208, then the same write + `reboot bootloader`.
+- UI: panel is now clean (console muted, `panel cleared after console mute`), but there are
+  **0 framebuffer swaps and not a single `SWEET FB: ... sel` line**, i.e. no userland process has
+  even opened IOMobileFramebuffer. backboardd/SpringBoard are exec'd (2 and 1 times) with no EXIT
+  line, so they run but never reach the display: the missing piece is the userland render path
+  (Bergamota needed bglrender + OSMesa + an EAGL shim), not the kernel framebuffer.
