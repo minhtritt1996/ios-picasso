@@ -6083,3 +6083,17 @@ the 5 s deadline in `ufs_scsi` is not firing as written.
   lazily with `Z_NOWAIT` on first use, each chunk capped to the stage size, `bounce -> stage` under
   the lock and `stage -> caller buffer` with the lock released. If the stage cannot be allocated it
   falls back to the old in-lock copy (no deadlock fix, but no regression either).
+
+### 2026-10-29 t22 (kernel k205): the UFS lock deadlock is gone
+Boot image addc6827 (`0186 v8`: stage carved out of the wired bounce area, copy-out after unlocking).
+L2 `info` sampled every 12 s for 3+ minutes:
+`lock 0/0 tid 0 ... strat step 3 ... done 16384 flush 0 err 0 tail 14 | io 23 cmd <advancing>`
+- **The driver lock is never held** (was `4/1` forever), and the command serial keeps advancing, so
+  the pager re-entry deadlock is fixed: the caller's buffer is no longer touched under the lock.
+- `SWEET FILES ALIVE` now prints every 30 s (9 times), i.e. kernel timers/tsleep wake correctly -
+  the earlier "watchdog speaks once" was only the tick/nanosecond bug.
+- Still broken: lwIP never answers ARP/ping (TCP 2223 closed) even though the L2 control channel
+  works, and the log flusher stalls (`fage 230021` = no flush round for 230 s) while the lock is
+  free, so its own writer/sync path is the suspect.
+- `sweetlogflush` boot-arg (default off) now gates the periodic writer: with it disabled, if the
+  system keeps running the remaining stall is the log write path; if IP still dies it is lwIP.

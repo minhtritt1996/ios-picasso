@@ -187,7 +187,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,7 +1908,65 @@
+@@ -1862,11 +1908,74 @@
  	}
  }
  
@@ -253,7 +253,16 @@
  sweet_log_start(void)
  {
  	uint32_t on = 1;
-@@ -1879,6 +1983,10 @@
++	uint32_t flush = 0;           /* sweetlogflush=1 enables the periodic writer */
+ 	thread_t thread;
++	if (PE_parse_boot_argn("sweetlogflush", &flush, sizeof(flush)) && flush == 0) {
++		printf("SWEET LOG: periodic flush disabled (sweetlogflush=0)\n");
++		return;
++	}
+ 
+ 	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
+ 	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
+@@ -1879,6 +1988,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
