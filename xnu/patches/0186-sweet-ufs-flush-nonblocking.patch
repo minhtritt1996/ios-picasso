@@ -1,5 +1,14 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
+@@ -170,7 +170,7 @@
+ static LCK_MTX_DECLARE(sweet_raw_lock, &sweet_ufs_grp);
+ 
+ enum { UFS_LK_PART = 1, UFS_LK_PWRITE, UFS_LK_PREAD, UFS_LK_STRATEGY, UFS_LK_SYNC,
+-       UFS_LK_INIT, UFS_LK_FLUSH, UFS_LK_STATUS };
++       UFS_LK_INIT, UFS_LK_FLUSH, UFS_LK_STATUS, UFS_LK_TAIL };
+ 
+ void sweet_tracef(const char *fmt, ...) __printflike(1, 2);
+ 
 @@ -199,6 +199,18 @@
  	su.lock_tid = (uint32_t)thread_tid(current_thread());
  }
@@ -41,7 +50,15 @@
  	for (uint32_t done = 0; done < count;) {
  		su.strat_step = 2;
  		uint64_t pos = off + done;
-@@ -1795,16 +1807,26 @@
+@@ -1474,6 +1486,7 @@
+ int sweet_log_ferr_g;
+ volatile uint64_t sweet_log_last_g;
+ uint64_t sweet_log_base_g, sweet_log_nblocks_g;
++volatile uint32_t sweet_tail_seq_g;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
+ 
+ /* Called for all console output, any context: never blocks. */
+@@ -1795,16 +1808,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -72,3 +89,72 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
+@@ -1862,7 +1885,57 @@
+ 	}
+ }
+ 
++/* A one-line state report for the USB control channel, so a stalled system can still
++ * say who holds the driver lock and at which step, without going through the log. */
++void
++sweet_ufs_state(char *out, size_t max)
++{
++	snprintf(out, max, "lock %u/%u tid %u strat step %u blk 0x%llx c %llu done %u "
++	    "flush %u err %d tail %u\n",
++	    (unsigned)su.lock_owner, (unsigned)su.lock_users, (unsigned)su.lock_tid,
++	    (unsigned)su.strat_step, (unsigned long long)su.strat_blk,
++	    (unsigned long long)su.strat_count, (unsigned)su.strat_done,
++	    (unsigned)su.flush_stage, su.last_err, (unsigned)sweet_tail_seq_g);
++}
++
++#define SWEET_TAIL_BLOCKS 16
++
++/*
++ * Persist the last 64 KiB of the ring every second to a fixed block range, one
++ * command, no header update: a stall can then always be read back from recovery.
++ * The chunked flusher only updates its header when a whole round completes, which
++ * is exactly what loses the final seconds of a wedged boot.
++ */
+ static void
++sweet_tail_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	while (!su.ready || !su.writable || sweet_log_base_g == 0) {
++		(void)tsleep(&sweet_log_chan, PZERO, "sweettail", hz);
++	}
++	uint64_t tail_blk = sweet_log_base_g - 32;
++	printf("SWEET TAIL: last %u KiB at block 0x%llx\n",
++	    (unsigned)(SWEET_TAIL_BLOCKS * UFS_BLOCK >> 10), tail_blk);
++	for (;;) {
++		(void)tsleep(&sweet_log_chan, PZERO, "sweettail", hz);
++		uint64_t total = sweet_log_position();
++		uint32_t bytes = SWEET_TAIL_BLOCKS * UFS_BLOCK;
++		if (total == 0) {
++			continue;
++		}
++		if (!ufs_trylock(UFS_LK_TAIL)) {
++			continue;
++		}
++		uint64_t start = total > bytes ? total - bytes : 0;
++		sweet_log_copy(&start, (char *)(su.dma + DMA_BOUNCE), bytes);
++		int err = ufs_write_blocks(tail_blk, SWEET_TAIL_BLOCKS);
++		ufs_unlock();
++		if (!err) {
++			sweet_tail_seq_g++;
++		}
++	}
++}
++
++static void
+ sweet_log_start(void)
+ {
+ 	uint32_t on = 1;
+@@ -1879,6 +1952,10 @@
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	thread_t ttail;
++	if (kernel_thread_start(sweet_tail_thread, NULL, &ttail) == KERN_SUCCESS) {
++		thread_deallocate(ttail);
++	}
+ }
+ 
+ /*
