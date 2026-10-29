@@ -103,7 +103,14 @@
  	char a[512], b[512];
  	unsigned long long n = 0;
  	int err = sf_line(so, line, sizeof(line));
-@@ -421,6 +458,33 @@
+@@ -416,17 +453,57 @@
+ 			sf_sleep_ms(100);
+ 			continue;
+ 		}
++		sf_mark(2, "handle new connection");
+ 		sf_handle(c);
++		fs_step = 0;
+ 		sock_close(c);
  	}
  }
  
@@ -112,10 +119,15 @@
 +{
 +	uint64_t last = 0;
 +	uint32_t last_serial = 0;
++	uint32_t beats = 0;
 +	for (;;) {
 +		sf_sleep_ms(2000);
 +		uint64_t now = mach_absolute_time(), age_ns = 0;
 +		uint32_t step = fs_step;
++		if (++beats % 15 == 0) {
++			printf("SWEET FILES ALIVE: beats %u serial %u step %u\n",
++			    (unsigned)beats, (unsigned)fs_serial, (unsigned)step);
++		}
 +		if (step == 0) {
 +			continue;
 +		}
@@ -137,12 +149,16 @@
  void
  sweet_files_start(void)
  {
-@@ -428,5 +492,8 @@
- 	if (kernel_thread_start(sf_thread, NULL, &thread) == KERN_SUCCESS) {
+ 	thread_t thread;
+-	if (kernel_thread_start(sf_thread, NULL, &thread) == KERN_SUCCESS) {
++	kern_return_t kr1 = kernel_thread_start(sf_thread, NULL, &thread);
++	if (kr1 == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
-+	if (kernel_thread_start(sf_watchdog, NULL, &thread) == KERN_SUCCESS) {
++	kern_return_t kr2 = kernel_thread_start(sf_watchdog, NULL, &thread);
++	if (kr2 == KERN_SUCCESS) {
 +		thread_deallocate(thread);
 +	}
++	printf("SWEET FILES: threads server %d watchdog %d\n", (int)kr1, (int)kr2);
  }
  #endif /* ARM64_BOARD_CONFIG_SWEET */
