@@ -4,7 +4,7 @@
  
  #define UFS_BLOCK       4096u
  #define BOUNCE_SIZE     (1u << 20)
-+#define STAGE_SIZE      (1u << 20)   /* wired staging copy, see ufs_copy_out */
++#define STAGE_SIZE      (256u << 10)
  #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
  /* The bounce path needs one entry per 256 KiB; a direct transfer into a
   * buffer needs one per page, so the table is sized for the worse case. */
@@ -20,7 +20,7 @@
  	volatile uint64_t direct_bytes;
  	char want[24];                          /* root partition name, boot-arg ufsroot */
  } su;
-+static char *strat_stage;             /* wired: bounce -> stage under the lock, stage -> buf without it */
++static char *strat_stage;             /* wired staging copy, allocated on first use */
  
  static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
  static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
@@ -98,28 +98,30 @@
  	ufs_lock(UFS_LK_STRATEGY);
  	/* Published only while holding the lock: a thread that is merely
  	 * waiting for it would otherwise overwrite the stuck holder's
-@@ -1138,10 +1163,6 @@
+@@ -1138,16 +1163,18 @@
  	su.strat_done = 0;
  	su.strat_t0 = mach_absolute_time();
  	su.strat_step = 1;
 -	if (su.trace) {
 -		sweet_tracef("SWEET UFS in: %c lba 0x%llx c %u cmd %u\n", rd ? 'R' : 'W',
 -		    (unsigned long long)buf_blkno(bp), count, (unsigned)su.cmd_serial);
--	}
++	if (strat_stage == NULL) {
++		strat_stage = kalloc_data(STAGE_SIZE, Z_NOWAIT);
+ 	}
  	for (uint32_t done = 0; done < count;) {
  		su.strat_step = 2;
  		uint64_t pos = off + done;
-@@ -1152,9 +1173,6 @@
+ 		uint64_t lba = pos / UFS_BLOCK;
+ 		uint32_t skip = (uint32_t)(pos % UFS_BLOCK);
+-		uint32_t want = MIN(count - done, BOUNCE_SIZE - skip);
++		uint32_t want = MIN(count - done, STAGE_SIZE - skip);
++		if (want > STAGE_SIZE) {
++			want = STAGE_SIZE;
++		}
+ 		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
  		void *bounce = (void *)(su.dma + DMA_BOUNCE);
  		if (rd) {
- 			su.strat_step = 7;
--			sweet_tracef("SWEET UFS s7: lba 0x%llx blocks %u want %u done %u direct %u\n",
--			    (unsigned long long)lba, (unsigned)blocks, (unsigned)want,
--			    (unsigned)done, (unsigned)su.direct);
- 			error = EINVAL;
- 			/* Off by default: bp29/bp30 both stopped inside
- 			 * ufs_read_blocks_dma () at the same read with no gd
-@@ -1177,14 +1195,25 @@
+@@ -1177,14 +1204,30 @@
  				}
  			}
  			if (error == EINVAL) {
@@ -131,51 +133,28 @@
 -				sweet_tracef("SWEET UFS s3r: err %d\n", error);
 +				su.io_phase = 32;
  				su.strat_step = 3;
+-				if (!error) {
 +				if (!error && strat_stage != NULL) {
-+					/* Only wired memory is touched while the driver lock is
-+					 * held: the caller's buffer can page-fault, and that fault
-+					 * would re-enter this driver and wait for our own lock. */
++					/* The caller's buffer may page-fault, and that fault comes
++					 * back through this driver wanting the lock we hold: copy to
++					 * wired memory first, then release it for the real copy. */
 +					memcpy(strat_stage, (const char *)bounce + skip, want);
 +					ufs_unlock();
 +					su.io_phase = 40;
 +					ufs_copy_out(vaddr + done, strat_stage, want, &su.strat_done);
 +					su.io_phase = 41;
 +					ufs_lock(UFS_LK_STRATEGY);
++				} else if (!error) {
++					su.io_phase = 40;
+ 					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
+ 					    want, &su.strat_done);
++					su.io_phase = 41;
 +				}
- 				if (!error) {
--					ufs_copy_out(vaddr + done, (const char *)bounce + skip,
--					    want, &su.strat_done);
++				if (!error) {
  					su.strat_step = 4;
  				}
  			}
-@@ -1193,8 +1222,17 @@
- 			if (skip || (want % UFS_BLOCK)) {
- 				error = ufs_read_blocks(su.first_block + lba, blocks);
- 			}
-+			if (!error && strat_stage != NULL) {
-+				/* Same rule in the write direction: touch the caller's
-+				 * buffer with the driver lock released. */
-+				ufs_unlock();
-+				memcpy(strat_stage, vaddr + done, want);
-+				ufs_lock(UFS_LK_STRATEGY);
-+				memcpy((char *)bounce + skip, strat_stage, want);
-+			} else if (!error) {
-+				memcpy((char *)bounce + skip, vaddr + done, want);
-+			}
- 			if (!error) {
--				memcpy((char *)bounce + skip, vaddr + done, want);
- 				su.strat_done = want;
- 				error = ufs_write_blocks(su.first_block + lba, blocks);
- 			}
-@@ -1379,6 +1417,7 @@
- 	}
- 
- 	su.regs = ml_io_map(reg[0], reg[1]);
-+	strat_stage = kalloc_data(STAGE_SIZE, Z_WAITOK);
- 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
- 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
- 		printf("SWEET UFS: no contiguous DMA memory\n");
-@@ -1474,6 +1513,7 @@
+@@ -1474,6 +1517,7 @@
  int sweet_log_ferr_g;
  volatile uint64_t sweet_log_last_g;
  uint64_t sweet_log_base_g, sweet_log_nblocks_g;
@@ -183,7 +162,7 @@
  static uint32_t sweet_log_secs = SWEET_LOG_SECS;
  
  /* Called for all console output, any context: never blocks. */
-@@ -1795,16 +1835,26 @@
+@@ -1795,16 +1839,26 @@
  		int error = 0;
  
  		su.flush_stage = 1;
@@ -214,7 +193,7 @@
  		}
  		if (!error) {
  			struct sweet_log_header h = {
-@@ -1862,6 +1912,64 @@
+@@ -1862,6 +1916,64 @@
  	}
  }
  
@@ -279,7 +258,7 @@
  static void
  sweet_log_start(void)
  {
-@@ -1879,6 +1987,10 @@
+@@ -1879,6 +1991,10 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}

@@ -6073,3 +6073,13 @@ the 5 s deadline in `ufs_scsi` is not firing as written.
 - Fix (0186 v6): a 1 MiB wired staging buffer. Reads: bounce -> stage under the lock, unlock, then
   stage -> caller buffer. Writes: caller buffer -> stage with the lock released, relock, stage ->
   bounce. The caller's memory is never dereferenced while the driver lock is held.
+
+### 2026-10-29 t20 regression, t21 minimal variant
+- The first staging-copy build (t20, md5 37af3154, 1 MiB stage allocated in driver init plus a
+  rewired write path) **enumerates USB but never answers L2** for 4 minutes, i.e. it hangs earlier
+  than the bug it fixes. Treat both changes as suspect (init-time 1 MiB `kalloc_data`, and the
+  write-path unlock/relock).
+- t21 keeps only the read-path part, with the smallest possible footprint: 256 KiB stage allocated
+  lazily with `Z_NOWAIT` on first use, each chunk capped to the stage size, `bounce -> stage` under
+  the lock and `stage -> caller buffer` with the lock released. If the stage cannot be allocated it
+  falls back to the old in-lock copy (no deadlock fix, but no regression either).
