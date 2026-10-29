@@ -6238,3 +6238,17 @@ persisted tail can then show from recovery).
   even opened IOMobileFramebuffer. backboardd/SpringBoard are exec'd (2 and 1 times) with no EXIT
   line, so they run but never reach the display: the missing piece is the userland render path
   (Bergamota needed bglrender + OSMesa + an EAGL shim), not the kernel framebuffer.
+
+### 2026-10-29 - fastboot flashing works; the PON byte is still the missing piece
+- `fastboot flash boot <image>` + `fastboot reboot` on k60 both return OKAY, and the phone boots the
+  new kernel (t37, md5 16a6cfc2), so boot images can be shipped through fastboot from now on
+  (`adb reboot bootloader` from **recovery** reaches fastboot without the buttons).
+- PON probe on the new kernel (`ppon <ppid> <value>` reads, writes and re-reads the PON spare 0x8f):
+  `ppid 0x008` read 0x00 -> write ok -> read 0x00; `ppid 0x208` (PM7250B) same; `0x108`/`0x308` have
+  no lane. So the spare does not change on either PMIC: either it is protected or the register we
+  think is the spare is not the one ABL reads.
+- Status of "reboot to fastboot from iOS": IMEM reason writes and reads back, the reset itself is a
+  proper warm reset (PSCI 0x84000009), but ABL needs the PON byte as well (Bergamota's SDM845 note
+  matches), and that byte is where we are stuck. Next: get the picasso PON register map (vendor DT
+  in the Droidian install, or `pmic_pon_reason()` in Bergamota's enxerto/charge_mode.c which reads
+  the same field on a sibling PMIC) and retry with the right register/shift.
