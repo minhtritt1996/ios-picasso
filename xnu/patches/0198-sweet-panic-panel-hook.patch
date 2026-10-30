@@ -1,6 +1,6 @@
 --- a/osfmk/kern/debug.c
 +++ b/osfmk/kern/debug.c
-@@ -1075,6 +1075,15 @@
+@@ -1075,6 +1075,22 @@
  #if defined(SWEET)
  	/* No CPU/thread/debugger state is required for this first panic copy. */
  	sweet_early_panic(panic_format_str, panic_args);
@@ -11,7 +11,14 @@
 +	 */
 +	{
 +		extern void sweet_panel_begin_panic(void);
++		extern void sweet_ufs_panic_mark(const char *);
++		char pbuf[240];
++
 +		sweet_panel_begin_panic();
++		/* The reason must survive even if the ring flush fails: one raw block
++		 * at the end of the partition, readable from recovery. */
++		snprintf(pbuf, sizeof(pbuf), "caller %lx fmt: %s", panic_caller, panic_format_str);
++		sweet_ufs_panic_mark(pbuf);
 +	}
  #endif
  

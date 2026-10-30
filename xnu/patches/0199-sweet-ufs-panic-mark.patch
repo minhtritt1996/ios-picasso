@@ -1,0 +1,41 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1717,6 +1717,38 @@
+  * in load_init_program() that way).  Only when the lock is already stuck - the
+  * case this thread exists for - write without it.
+  */
++/*
++ * Last-resort panic record: one block at the end of the partition, written
++ * without the driver lock. The ring flush in the console path can fail when the
++ * host is mid-command, and then the panic reason is lost - the screen only ever
++ * shows "panic(cpu N caller 0x...):" because the message scrolls away. This
++ * block survives the reboot and is read from recovery with a single dd.
++ */
++void
++sweet_ufs_panic_mark(const char *text)
++{
++	static char blk[UFS_BLOCK];
++	void *bounce;
++	uint64_t lba;
++	size_t n;
++
++	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0) {
++		return;
++	}
++	memset(blk, 0, sizeof(blk));
++	memcpy(blk, "SWEETPNC", 8);
++	n = strlen(text);
++	if (n > sizeof(blk) - 24) {
++		n = sizeof(blk) - 24;
++	}
++	memcpy(blk + 16, text, n);
++	bounce = (void *)(su.dma + DMA_BOUNCE);
++	memcpy(bounce, blk, UFS_BLOCK);
++	__asm__ volatile("dsb sy" ::: "memory");
++	lba = su.first_block + su.nblocks - 1;
++	(void)ufs_write_blocks(lba, 1);
++}
++
+ int
+ sweet_ufs_emergency_dump(void)
+ {
