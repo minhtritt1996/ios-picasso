@@ -104,6 +104,14 @@ def cmd_up():
             have = get_addr(iface)
         except OSError:
             have = None
+    try:
+        sp = __import__('subprocess')
+        sp.run(['ip', 'rule', 'del', 'to', '192.168.7.0/24', 'lookup', 'main', 'pref', '100'],
+               capture_output=True, timeout=3)
+        sp.run(['ip', 'rule', 'add', 'to', '192.168.7.0/24', 'lookup', 'main', 'pref', '100'],
+               capture_output=True, timeout=3)
+    except Exception:
+        pass
     print("%s up, %s/24%s" % (iface, OUR_IP, "" if have == OUR_IP else " (ADDRESS MISSING)"))
     return iface
 

@@ -18,6 +18,7 @@ typedef unsigned int u32;
 
 #define SYS_exit     1
 #define SYS_fork     2
+#define SYS_access   33
 #define SYS_read     3
 #define SYS_write    4
 #define SYS_open     5
@@ -745,7 +746,7 @@ run(char *line)
 	}
 	if (streq(argv[0], "ssh")) {
 		puts_("starting dropbear...\r\n");
-		start_ssh();
+		/* SWEET 2026-10-28: no fork before the listener - fork() blocks on this port */
 		puts_("done\r\n");
 		return 0;
 	}
@@ -1123,6 +1124,7 @@ start_ssh(void)
 void
 cstart(void)
 {
+	console_always_num("sweetsh: carrier build ", 20261028, " tcp\r\n");
 	/* As PID 1 this process must never exit: the kernel panics with
 	 * "initproc failed ... handshake structure not initialized" if it does.
 	 * It also runs before the network stack has an interface, so binding can
@@ -1162,7 +1164,37 @@ cstart(void)
 	 * it. Serve in this process instead: the carrier job is what launchd started,
 	 * and it lives until the boot stalls.
 	 */
-	start_ssh();
+	/*
+	 * SWEET 2026-10-28: on this port a fork()ed child is frequently never
+	 * scheduled, and dropbear daemonises by forking, which is why port 22
+	 * never opened although everything else in userland ran. Exec dropbear
+	 * in the foreground (no fork at all) and only fall back to the UDP
+	 * serving loop if the exec itself fails; the launchd job respawns us.
+	 */
+	{
+		char *dargv[] = { "/private/var/root/dropbear", "-F", "-R", "-p", "22", 0 };
+		char *xargv[] = { "/private/var/root/xdropbear", "-F", "-R", "-p", "22", 0 };
+		char *denvp[] = { "PATH=/private/var/root:/bin:/sbin:/usr/bin:/usr/libexec", 0 };
+		/* launchd may route our stdio to /dev/null: take the console
+		 * ourselves so dropbear's diagnostics reach the kernel ring. */
+		{
+			i64 cfd = sys3(SYS_open, (i64)"/dev/console", 1 /* O_WRONLY */, 0);
+
+			if (cfd >= 0) {
+				sys3(SYS_dup2, cfd, 1, 0);
+				sys3(SYS_dup2, cfd, 2, 0);
+				if (cfd > 2) {
+					sys3(SYS_close, cfd, 0, 0);
+				}
+			}
+		}
+		i64 e = sys3(SYS_execve, (i64)dargv[0], (i64)dargv, (i64)denvp);
+
+		console_always_num("sweetsh: exec dropbear err ", e, "\r\n");
+		e = sys3(SYS_execve, (i64)xargv[0], (i64)xargv, (i64)denvp);
+		console_always_num("sweetsh: exec xdropbear err ", e, "\r\n");
+	}
+	/* SWEET 2026-10-28: no fork before the listener - fork() blocks on this port */
 	for (;;) {
 		serve_udp();            /* never returns */
 	}
@@ -1172,7 +1204,85 @@ cstart(void)
 	 * process existing rather than to its socket calls */
 	sleep_ms(SWEETSH_DELAY_MS);
 #endif
-	start_ssh();
+	/* SWEET 2026-10-28: dropbear is written into the backboardd slot (same-size
+	 * block write via the files server); exec it in the foreground, no fork. */
+	{
+		char *argv[] = { "/usr/libexec/configd", "-F", "-R", "-p", "22", 0 };
+		char *envp[] = { "PATH=/private/var/root:/bin:/sbin:/usr/bin:/usr/libexec", 0 };
+		i64 cfd = sys3(SYS_open, (i64)"/dev/console", 1, 0);
+		i64 e;
+
+		console_always_num("sweetsh: carrier build ", 20261028, " usermanagerd\r\n");
+		if (cfd >= 0) {
+			sys3(SYS_dup2, cfd, 1, 0);
+			sys3(SYS_dup2, cfd, 2, 0);
+			if (cfd > 2) {
+				sys3(SYS_close, cfd, 0, 0);
+			}
+		}
+		/*
+		 * SWEET 2026-10-28: this slot is a launchd BOOT TASK, and launchd waits
+		 * for it to exit before the boot continues (it stopped right after
+		 * keybag while dropbear ran here). Fork dropbear into its own session and
+		 * return so the boot proceeds to SpringBoard.
+		 */
+		i64 pid = sys_fork();
+
+		if (pid == 0) {
+			sys3(SYS_setsid, 0, 0, 0);
+			(void)sys3(SYS_execve, (i64)argv[0], (i64)argv, (i64)envp);
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		console_always_num("sweetsh: forked dropbear pid ", pid, "\r\n");
+		/*
+		 * SWEET: keep the boot task alive for a while so the USB link is usable
+		 * (launchd is blocked here, so the xpcproxy storm that starves dropbear
+		 * has not started yet). Then let the boot continue to SpringBoard.
+		 */
+		/*
+		 * SWEET: hold the boot task (launchd is blocked here, so the USB link is
+		 * calm and SSH works). Release the boot, and with it SpringBoard, by
+		 * creating /private/var/root/go from an SSH session: `: > /private/var/root/go`
+		 */
+		/*
+		 * SWEET 2026-10-28: launchd's xpcproxy trampoline never execs its target on
+		 * this port, so backboardd/SpringBoard never start. Start them ourselves,
+		 * as children of this launchd job (so they inherit launchd's bootstrap
+		 * namespace), and keep the boot task alive: the xpcproxy storm that
+		 * starves dropbear never begins, so SSH stays usable next to the UI.
+		 */
+		for (;;) {
+			if (sys3(SYS_access, (i64)"/private/var/root/ui2", 0, 0) == 0) {
+				console_always_num("sweetsh: starting UI directly\r\n", 0, "\r\n");
+				break;
+			}
+			sleep_ms(1000);
+		}
+		{
+			char *bb[] = { "/usr/libexec/backboardd", 0 };
+			char *sb[] = { "/System/Library/CoreServices/SpringBoard", 0 };
+			char *envp[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/libexec", 0 };
+			i64 p2 = sys_fork();
+
+			if (p2 == 0) {
+				sys3(SYS_setsid, 0, 0, 0);
+				(void)sys3(SYS_execve, (i64)bb[0], (i64)bb, (i64)envp);
+				sys3(SYS_exit, 1, 0, 0);
+			}
+			console_always_num("sweetsh: backboardd forked ", p2, "\r\n");
+			sleep_ms(5000);
+			p2 = sys_fork();
+			if (p2 == 0) {
+				sys3(SYS_setsid, 0, 0, 0);
+				(void)sys3(SYS_execve, (i64)sb[0], (i64)sb, (i64)envp);
+				sys3(SYS_exit, 1, 0, 0);
+			}
+			console_always_num("sweetsh: SpringBoard forked ", p2, "\r\n");
+		}
+		for (;;) {
+			sleep_ms(60000);
+		}
+	}
 	for (;;) {
 		i64 lfd = listen_4444();
 

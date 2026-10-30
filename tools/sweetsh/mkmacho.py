@@ -114,12 +114,27 @@ def main():
     # header, the segment command and the CodeDirectory consistent - patching any
     # of them after signing invalidates the hashes.
     code_end = LC_AREA + len(code)
+    total = int(args[args.index('--total-size') + 1], 0) if '--total-size' in args else 0
     if sign:
-        dataoff = code_end + ((-code_end) % PAGE)
-        nslots = dataoff // PAGE
-        cd_len = max(48 + len(ident) + 1 + 32 * nslots, CD_MIN)
-        sig_len = 20 + cd_len
-        filesize = dataoff
+        if total:
+            # Replace a file of exactly `total` bytes in place: the signature has to
+            # sit at the end of the REAL file size, or the kernel reads the blob from
+            # the wrong offset and csops(CS_OPS_IDENTITY) fails with EINVAL.
+            dataoff = total
+            for _ in range(6):
+                nslots = (dataoff + PAGE - 1) // PAGE
+                cd_len = max(48 + len(ident) + 1 + 32 * nslots, CD_MIN)
+                sig_len = 20 + cd_len
+                if total - sig_len == dataoff:
+                    break
+                dataoff = total - sig_len
+            filesize = total
+        else:
+            dataoff = code_end + ((-code_end) % PAGE)
+            nslots = dataoff // PAGE
+            cd_len = max(48 + len(ident) + 1 + 32 * nslots, CD_MIN)
+            sig_len = 20 + cd_len
+            filesize = dataoff
         extra = struct.pack('<IIII', LC_CODE_SIGNATURE, 16, dataoff, sig_len)
     else:
         filesize = code_end
@@ -143,7 +158,10 @@ def main():
     body = blob + b'\0' * (LC_AREA - len(blob)) + code
     if sign:
         body += b'\0' * (dataoff - len(body))     # the blob never shares a page
-        body += adhoc_signature(body, ident)
+        sig = adhoc_signature(body, ident)
+        assert len(sig) == sig_len, (len(sig), sig_len)
+        body += sig
+        assert len(body) == filesize, (len(body), filesize)
 
     with open(out_path, 'wb') as f:
         f.write(body)

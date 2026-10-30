@@ -33,7 +33,7 @@
 +	 * the old behaviour.
 +	 */
 +	{
-+		int delay = 30;
++		int delay = 120;   /* default: see the note above - 30 s was still too early */
 +
 +		PE_parse_boot_argn("sweetlogdelay", &delay, sizeof(delay));
 +		if (delay > 0) {
