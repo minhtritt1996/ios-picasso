@@ -52,3 +52,33 @@
  	hfs_lock_mount (hfsmp);
  	if ((hfsmp->vcbAtrb & kHFSVolumeInconsistentMask) == 0) {
  		hfsmp->vcbAtrb |= kHFSVolumeInconsistentMask;
+--- a/bsd/sweet_hfs/core/hfs_cnode.c
++++ b/bsd/sweet_hfs/core/hfs_cnode.c
+@@ -943,6 +943,27 @@
+ 			 howmany((uint64_t)forkp->cf_size, hfsmp->blockSize) > forkp->cf_blocks ||
+ 			 (vtype == VLNK && (uint64_t)forkp->cf_size > MAXPATHLEN)))) {
+ 		/* Mark the FS as corrupt and bail out */
++		{
++			/*
++			 * SWEET: say which side of the check failed and by how much. The stock
++			 * code only marks the volume corrupt, which made this look like random
++			 * corruption while it is a size/blocks accounting error in the write path.
++			 */
++			extern void proc_selfname(char *buf, int size);
++			extern void sweet_ufs_panic_mark_at(const char *text, unsigned int back);
++			char pcomm[24] = "?";
++			char detail[220];
++
++			proc_selfname(pcomm, (int)sizeof(pcomm));
++			snprintf(detail, sizeof(detail),
++			    "HFSBAD vtype %d size %llu cf_blocks %u ca_blocks %u bs %u comm %s",
++			    (int)vtype,
++			    forkp ? (unsigned long long)forkp->cf_size : 0ull,
++			    forkp ? (unsigned)forkp->cf_blocks : 0u,
++			    (unsigned)attrp->ca_blocks, (unsigned)hfsmp->blockSize, pcomm);
++			printf("%s\n", detail);
++			sweet_ufs_panic_mark_at(detail, 2);
++		}
+ 		hfs_mark_inconsistent(hfsmp, HFS_INCONSISTENCY_DETECTED);
+ 		retval = EINVAL;
+ 		goto gnv_exit;
