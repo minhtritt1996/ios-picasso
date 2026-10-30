@@ -38,3 +38,36 @@
  	if (p == initproc || (p->p_crash_behavior & POSIX_SPAWN_PANIC_ON_EXIT) != 0) {
  		/* Always panic for launchd or equivalents */
  		return true;
+@@ -1795,6 +1817,32 @@
+ 		return;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * Record WHO is dying and why, in the block next to the panic mark: the
++	 * screen only shows the reason line for a moment and the ring flush fails
++	 * when the host is mid-command, so this block is the only reliable record.
++	 */
++	{
++		extern void sweet_ufs_panic_mark_at(const char *, unsigned int);
++		char ebuf[400];
++		char desc[160] = "none";
++
++		if (PROC_HAS_EXITREASON(p)) {
++			char *d = exit_reason_get_string_desc(p->p_exit_reason);
++			if (d != NULL) {
++				strlcpy(desc, d, sizeof(desc));
++			}
++		}
++		snprintf(ebuf, sizeof(ebuf),
++		    "EXIT comm=%s pid=%d rv=0x%x cb=0x%x init=%d ns=%u code=0x%llx desc=%s",
++		    p->p_comm, proc_getpid(p), rv, p->p_crash_behavior, p == initproc,
++		    PROC_HAS_EXITREASON(p) ? p->p_exit_reason->osr_namespace : 0u,
++		    PROC_HAS_EXITREASON(p) ? p->p_exit_reason->osr_code : 0ull, desc);
++		sweet_ufs_panic_mark_at(ebuf, 1);
++	}
++#endif
++
+ #if DEVELOPMENT
+ 	if (crash_behavior_test_mode) {
+ 		crash_behavior_test_would_panic = TRUE;

@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -1717,6 +1717,38 @@
+@@ -1717,6 +1717,45 @@
   * in load_init_program() that way).  Only when the lock is already stuck - the
   * case this thread exists for - write without it.
   */
@@ -12,14 +12,15 @@
 + * block survives the reboot and is read from recovery with a single dd.
 + */
 +void
-+sweet_ufs_panic_mark(const char *text)
++sweet_ufs_panic_mark_at(const char *text, unsigned int back)
 +{
 +	static char blk[UFS_BLOCK];
 +	void *bounce;
 +	uint64_t lba;
 +	size_t n;
 +
-+	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0) {
++	if (!su.ready || !su.writable || su.nblocks == 0 || su.first_block == 0 ||
++	    back >= su.nblocks) {
 +		return;
 +	}
 +	memset(blk, 0, sizeof(blk));
@@ -32,8 +33,14 @@
 +	bounce = (void *)(su.dma + DMA_BOUNCE);
 +	memcpy(bounce, blk, UFS_BLOCK);
 +	__asm__ volatile("dsb sy" ::: "memory");
-+	lba = su.first_block + su.nblocks - 1;
++	lba = su.first_block + su.nblocks - 1 - back;
 +	(void)ufs_write_blocks(lba, 1);
++}
++
++void
++sweet_ufs_panic_mark(const char *text)
++{
++	sweet_ufs_panic_mark_at(text, 0);
 +}
 +
  int
