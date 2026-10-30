@@ -7,6 +7,12 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 13:10 (`launchd_unsecure_cache=0` panics in the userspace-reboot path; the cache is required) <<<
+- Test t65 (same kernel, cmdline `launchd_unsecure_cache=0` so launchd would read `/System/Library/LaunchDaemons/*.plist` instead of the patched cache): the phone panicked with `caller 0xfffffe0007b19e24` = **`_reboot_kernel.cold.1`**, and the only matching panic string in that kernel is `osfmk/kern/zalloc.c:7693 "Zone %s should be empty upon userspace reboot. Actual size: %lu."`.
+- Read as: without the cache launchd fails its own set-up and requests a **userspace reboot**; this port does not implement that teardown (zones are not emptied), so the kernel panics instead.
+- Consequence: **keep `launchd_unsecure_cache=1`**. The jobs do exist in the cache (522 entries, e.g. `com.apple.configd -> ProgramArguments ['/usr/libexec/configd']`), so the missing job delivery to xpcproxy is not "job not in the cache".
+- Cost of that experiment: one flash; the previous image (t64, cache=1) is the configuration to boot from here.
+
 ### >>> UPDATE 2026-10-30 12:20 (both sides talk; launchd never sends the job dict - only tiny COMPLEX replies) <<<
 Patch 0202 v5 traces the launchd side too (its COMPLEX `mach_msg2`). On t64 the ring has **52** such messages and they are all small:
 ```
