@@ -1,6 +1,6 @@
 --- a/osfmk/arm64/bsd_arm64.c
 +++ b/osfmk/arm64/bsd_arm64.c
-@@ -224,8 +224,29 @@
+@@ -224,7 +224,25 @@
  	if (argc) {
  		retval = arm_get_mach_syscall_args(state, &args, &mach_trap_table[call_number]);
  		if (retval != KERN_SUCCESS) {
@@ -9,14 +9,11 @@
 +	{
 +		extern struct proc *current_proc(void);
 +		extern int proc_pid(struct proc *);
-+		extern int proc_name(int pid, void *buffer, uint32_t buffersize);
++		extern const char *proc_best_name(struct proc *);
 +		struct proc *cp2 = current_proc();
-+		char cnm2[24] = "";
- 
-+		if (cp2 != NULL) {
-+			proc_name(proc_pid(cp2), cnm2, sizeof(cnm2));
-+		}
-+		if (cnm2[0] == 'x' && strcmp(cnm2, "xpcproxy") == 0) {
++		const char *cnm2 = cp2 != NULL ? proc_best_name(cp2) : NULL;
++
++		if (cnm2 != NULL && cnm2[0] == 'x' && strcmp(cnm2, "xpcproxy") == 0) {
 +			static int sweet_mt_done = 240;
 +
 +			if (sweet_mt_done > 0) {
@@ -27,11 +24,10 @@
 +	}
 +#endif
 +	arm_set_mach_syscall_ret(state, retval);
-+
+ 
  			DEBUG_KPRINT_SYSCALL_MACH(
  				"mach_syscall: retval=0x%x\n", retval);
- 			return;
-@@ -278,6 +299,41 @@
+@@ -278,6 +296,38 @@
  #endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
  
  
@@ -44,14 +40,11 @@
 +	{
 +		extern struct proc *current_proc(void);
 +		extern int proc_pid(struct proc *);
-+		extern int proc_name(int pid, void *buffer, uint32_t buffersize);
++		extern const char *proc_best_name(struct proc *);
 +		struct proc *cp = current_proc();
-+		char cnm[24] = "";
++		const char *cnm = cp != NULL ? proc_best_name(cp) : NULL;
 +
-+		if (cp != NULL) {
-+			proc_name(proc_pid(cp), cnm, sizeof(cnm));
-+		}
-+		if (cnm[0] == 'x' && strcmp(cnm, "xpcproxy") == 0) {
++		if (cnm != NULL && cnm[0] == 'x' && strcmp(cnm, "xpcproxy") == 0) {
 +			static int sweet_mt_prints = 240;
 +
 +			if (sweet_mt_prints > 0) {
