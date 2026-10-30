@@ -6460,3 +6460,13 @@ That is the `hfs_getnewvnode` sanity check:
 so a catalog record whose **fork size and allocated block count disagree** makes HFS declare the volume corrupt and return EINVAL. `launchd_cache_loader` is the first process that writes a file after boot, which is why the corruption appears within seconds and why every later write path (and the USB L2 responder) then wedges.
 - This confirms bergamota's suspicion ("hfs_getnewvnode sanity check ... Not proven") and narrows our fix to the write/extend path: after extending a file, either `cf_blocks` (in-memory fork) or the record's `totalBlocks` written by `hfs_update`/`hfs_extendfile`/`CatUpdate` is wrong, or the order of "allocate blocks then update the catalog" leaves a window where the record is inconsistent.
 - Next: extend the trace at that site to print `vtype, cf_size, cf_blocks, ca_blocks, blockSize` (and ideally the file name via the cnode), so the arithmetic error is visible in one boot.
+
+### >>> UPDATE 2026-10-30 17:50 (state after the HFS experiments: boot image t64, rootfs metadata needs a restore) <<<
+- Findings kept: corruption site `hfs_cnode.c:946` (getnewvnode sanity check), trigger `launchd_cache_loader` writing 375 bytes with `cf_blocks = 0`, first attempt at a fix as patch 0205 (`hfs_prepare_fork_for_update` syncs `cf_size`/`cf_blocks` from the live fork before CatUpdate).
+- 0205 did **not** survive bring-up: with t70 (0205) the phone never enumerated again, and flashing t69 back (same kernel minus 0205) reproduced "no USB device", so the boot failure is the device's, not the patch's - the rootfs on `darwin` has been marked inconsistent and written by many boots, and `hfsplus-tool`/fsck state is unknown now.
+- Current device state: boot partition = **t64** (k239: 0196+0197+0198+0199+0202 v5+0203, `sweetinject` on, `xpcstub` in the rootfs). The phone is off/unplugged as of this note.
+- Restore plan (fast path, ~1 min): boot recovery and copy back only the HFS **metadata** from `ios-work/work9.img` (the known-good image: base + 3 bridge libs + stock usermanagerd + xpcstub):
+  block 0 count 1 (volume header), 183682 count 16384, 219304 count 8192, 1137727 count 8192, 1756860 count 8192 (the catalog extents), i.e.
+  `dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=<b> count=<c> | md5sum` compared against the same slice of work9.img.
+  If that does not bring the system back, write the whole `work9.img` (16 GiB apparent / 12 GiB real) - `fastboot flash darwin work9.img` in fastbootd is the least error-prone route, but it needs the file on k60 first.
+- `vcbAtrb` in work9.img is `0x80000100`: the inconsistent bit is set by design in our shipped image (tools/hfsplus-tool.py unjournal), so it is not what blocks the mount.
