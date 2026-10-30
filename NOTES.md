@@ -6470,3 +6470,12 @@ so a catalog record whose **fork size and allocated block count disagree** makes
   `dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=<b> count=<c> | md5sum` compared against the same slice of work9.img.
   If that does not bring the system back, write the whole `work9.img` (16 GiB apparent / 12 GiB real) - `fastboot flash darwin work9.img` in fastbootd is the least error-prone route, but it needs the file on k60 first.
 - `vcbAtrb` in work9.img is `0x80000100`: the inconsistent bit is set by design in our shipped image (tools/hfsplus-tool.py unjournal), so it is not what blocks the mount.
+
+### >>> UPDATE 2026-10-30 18:40 (0205 works: the getnewvnode site is gone; the next HFS site is the delete path) <<<
+Verification without L2 (the gadget enumerates but the responder is often silent now): read block 5,243,128 from recovery and compare the text written by `sweet_ufs_panic_mark_at(..., 2)`.
+- Boot with t70 (0205: `hfs_prepare_fork_for_update` syncs cf_size/cf_blocks from the live fork) left **no new `HFSBAD`/`hfs_cnode.c:946` record**; the first record is now
+  `HFSINC bsd/sweet_hfs/core/hfs_vnops.c:4340 reason 2 comm usermanagerd`
+  i.e. `hfs_vnop_remove()`: `hfs_release_storage()` failed **after** the catalog entry was deleted, so the free-space update could not complete and the volume is marked inconsistent (reason 2 = HFS_OP_INCOMPLETE).
+- So the write-side accounting bug is fixed and the next defect is on the **delete** side: `hfs_release_storage()` (extent record removal + allocation bitmap update) returns an error for a file `usermanagerd` unlinks. Next probe: instrument `hfs_release_storage()`'s failure (which of CatDeleteRecord/BlockDeallocate/journal returns non-zero) with the same one-block mark.
+- Rootfs state: metadata (volume header + catalog extents + bitmaps) was restored from `work9.img` and verified per range; boot partition = t70.
+- Practical note: several consecutive boots now enumerate the gadget but leave the L2 responder silent (`ringpos` returns empty frames while ping also fails). The disk mark at the end of the partition is the reliable probe in that state; the ring (persisted) may be stale.
