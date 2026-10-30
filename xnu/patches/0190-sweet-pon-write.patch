@@ -213,7 +213,7 @@
 +	 * wipes the IMEM word we just wrote, so ABL boots normally. A warm reset keeps
 +	 * IMEM and lets ABL act on the reason.
 +	 */
-+	{
+ 	{
 +		register uint64_t px0 __asm__("x0") = 0x84000009ULL;
 +
 +		__asm__ volatile("smc #0" : "+r"(px0) : : "x1", "x2", "x3", "x4", "x5",
@@ -222,7 +222,7 @@
 +	}
 +	/* If PSCI did not take, fall back to PS_HOLD (power off) so the command
 +	 * still does something visible. */
- 	{
++	{
  		vm_offset_t psh = ml_io_map(SWEET_PSHOLD_PA, 0x1000);
  
  		if (psh != 0) {
@@ -268,7 +268,7 @@
  	} else if (strncmp(buf, "putend ", 7) == 0) {
  		char path[200];
  		strlcpy(path, buf + 7, sizeof(path));
-@@ -1797,16 +1828,93 @@
+@@ -1797,16 +1828,114 @@
  		unsigned sid = 0, addr = 0;
  		uint8_t val = 0;
  		sscanf(buf + 5, "%u %x", &sid, &addr);
@@ -313,6 +313,27 @@
 +			used += n;
 +		}
 +		proc_list_unlock();
++	} else if (strncmp(buf, "tdump ", 6) == 0) {
++		/*
++		 * Dump the user pc/lr/backtrace of a pid's threads. The boot-arg
++		 * sampler cannot be used: proc_iterate() does not call back on this
++		 * port, and every xpcproxy clone must be inspected live.
++		 */
++		extern task_t proc_task(proc_t);
++		extern void sweet_sample_task(const char *name, int pid, task_t task);
++		proc_t tp = proc_find((int)ud_atoll(buf + 6));
++
++		if (tp == NULL) {
++			snprintf(out, sizeof(out), "no process %s\n", buf + 6);
++		} else {
++			task_t tk = proc_task(tp);
++
++			if (tk != TASK_NULL) {
++				sweet_sample_task(tp->p_comm, proc_getpid(tp), tk);
++			}
++			proc_rele(tp);
++			snprintf(out, sizeof(out), "tdump %s done\n", buf + 6);
++		}
 +	} else if (strncmp(buf, "mkdir ", 6) == 0) {
 +		extern int sweet_vfs_mkdir(const char *path, int mode);
 +		unsigned mode = 0755;
