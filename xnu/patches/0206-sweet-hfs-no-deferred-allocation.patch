@@ -1,0 +1,50 @@
+--- a/bsd/sweet_hfs/core/FileExtentMapping.c
++++ b/bsd/sweet_hfs/core/FileExtentMapping.c
+@@ -889,10 +889,29 @@
+ 	/*
+ 	 * For deferred allocations just reserve the blocks.
+ 	 */
+-	if ((flags & kEFDeferMask)
+-	&&  (vcb->vcbSigWord == kHFSPlusSigWord)
+-	&&  (bytesToAdd < (int64_t)HFS_MAX_DEFERED_ALLOC)
+-	&&  (blocksToAdd < hfs_freeblks(VCBTOHFS(vcb), 1))) {
++	/*
++	 * SWEET: deferred ("loaned") allocation is off by default on this port.
++	 * With it on, a file written once keeps its blocks as loaned: they are never
++	 * marked in the allocation bitmap and the catalog records totalBlocks as 0, so
++	 * hfs_getnewvnode's sanity check marks the volume corrupt and a later unlink
++	 * fails in BlockMarkFreeInternal ("trying to free unallocated blocks", EIO) -
++	 * measured with keybagd/usermanagerd on 2026-10-30. Real allocation on every
++	 * extend costs a bitmap update per write but keeps the volume consistent.
++	 * sweetdeferalloc=1 restores the stock behaviour.
++	 */
++	{
++		static int sweet_defer = -1;
++
++		if (sweet_defer < 0) {
++			int on = 0;
++
++			sweet_defer = (PE_parse_boot_argn("sweetdeferalloc", &on, sizeof(on)) && on) ? 1 : 0;
++		}
++		if (sweet_defer &&
++		    (flags & kEFDeferMask)
++		&&  (vcb->vcbSigWord == kHFSPlusSigWord)
++		&&  (bytesToAdd < (int64_t)HFS_MAX_DEFERED_ALLOC)
++		&&  (blocksToAdd < hfs_freeblks(VCBTOHFS(vcb), 1))) {
+ 		hfs_lock_mount (hfsmp);
+ 		vcb->loanedBlocks += blocksToAdd;
+ 		hfs_unlock_mount(hfsmp);
+@@ -906,9 +925,10 @@
+ 		 * allocated and the volume will not be inconsistent if we
+ 		 * don't update the catalog record immediately.
+ 		 */
+-		FTOC(fcb)->c_flag |= C_MINOR_MOD;
+-		*actualBytesAdded = bytesToAdd;
+-		return (0);
++			FTOC(fcb)->c_flag |= C_MINOR_MOD;
++			*actualBytesAdded = bytesToAdd;
++			return (0);
++		}
+ 	}
+ 	/* 
+ 	 * Give back any unallocated blocks before doing real allocations.
