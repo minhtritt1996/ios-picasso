@@ -7,6 +7,11 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 10:25 (0203 service-port fix had no effect on iOS 16; check-in still stalls) <<<
+- Traced `mach_msg2` messages of `xpcproxy` (patch 0202 v4, `bits/size/id`): they are real libxpc traffic - `bits 0x1513` (copy-send to launchd, make-send-once reply port), one `0x80001513` (**COMPLEX**, i.e. with OOL descriptors/fds), ids 1283/1799/7683, option `0x200000003` (send|receive) - and **every one returns 0**. So the Mach layer accepts the exchange.
+- Ported bergamota's iOS 18 fix (`mach_port_is_connection_for_service` must not return `KERN_NOT_SUPPORTED` without Sandbox filters) as patch **0203**; booted t63: still **39 `xpcproxy`, 0 services at `running`, no `exec backboardd`**, `launchd.log` still ends at `service state: xpcproxy`. That routine is part of the iOS 18 (22H352) check-in verification; the iOS 16 rootfs in this repo does not use it on this path, so the patch is harmless but not the fix here.
+- Where it stands: launchd spawns xpcproxy, xpcproxy performs the libxpc message exchange successfully, and never execs the service binary. The next measurement with real value is the **spawn attributes/fds launchd hands the child** (`posix_spawn` port/file actions) and the *reply* launchd sends - i.e. trace the launchd side of the same pipe, not the child.
+
 ### >>> UPDATE 2026-10-30 09:50 (xpcproxy does run the Mach handshake: mach_msg2 round-trips return 0) <<<
 The BSD syscall trace never fired for `xpcproxy` because dyld/libsystem start-up uses **mach traps**. Patch 0202 traces them for `p_comm == "xpcproxy"` (must compare `proc_best_name`, `proc_name` does not match) and prints the trap name plus its return value. On t61 the ring shows 522 lines of a real sequence:
 ```
