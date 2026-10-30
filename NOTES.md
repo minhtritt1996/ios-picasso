@@ -7,6 +7,21 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 09:05 (launchd fixed; the remaining wall is xpcproxy: 40 clones, zero syscalls, PC captured) <<<
+1. **Restoring the stock `/usr/libexec/usermanagerd` fixed the panic** (it is the boot-task carrier that had no code-signing identity). With stock usermanagerd the boot reaches `Early boot complete`, execs `SpringBoard` (size 112960) and stays up; the ring shows `SWEET EXIT … cb 0x3 init 0` for the early boot tasks and `sweetnodaemonpanic=1` keeps them from panicking.
+2. **The wall: every XPC daemon stops at `service state: xpcproxy`.** Measured on t57 (k232):
+   - `l2 ps` lists `launchd 1` plus **40 `xpcproxy`** processes (pids 23..63); `launchd.log` has 39 services at `service state: xpcproxy` and **0** at `service state: running`.
+   - The kernel's per-syscall trace for `xpcproxy` (bsd/dev/arm/systemcalls.c, 400-line budget) printed **nothing**: those processes execute no syscalls at all.
+   - `l2 tdump <pid>` (patch 0190 v11) gives the live user state of a pid - the boot-arg sampler cannot be used (`proc_iterate()` never calls back on this port, so `SMP --- sample 0` was followed by nothing; `proc_name()` also does not match these clones, hence patch 0200 is a no-op here).
+   - Captured: `SMP xpcproxy[62] slide 0x1fcd0000 mh 0x104be8000` / `t0 pc 0x1c42ef610 lr 0x1c42ef60c sp 0x16b217ad0 bt 0x1c42f3d60 0x0` (**pc == lr+4**: a self-loop, i.e. a spin, not a blocking syscall), and for launchd `t0/t3 pc 0x1e22e14f0 lr 0x1f186ac1c`, `t1 pc 0x1e22e5538 bt 0x1ad927f38 0x100ebcac0 0x100ec1474 0x100ec1340 0x100eafe4c 0x100eb0d4c`.
+   - Unslid xpcproxy pc = `0x1a461f610` (subtract slide 0x1fcd0000). In the image's dyld cache it lands in payload **iNode817586835** (115,867,648 B; mapping 0x1a25e4000 + 0x6e3c000, file offset 0x203b610) - that payload reports `imagesText count 0`, so the image name has to come from the main cache's table or from the linkedit subcache.
+3. **Next concrete steps for whoever picks this up.**
+   - Finish the symbolication offline: extract the main `dyld_shared_cache_arm64` (the stub files in `/System/Library/Caches/com.apple.dyld` are 0-byte hardlinks; `tools/dsc-from-image.py work.img list/extract` walks CNID 18) and read its `imagesText` (0x88/0x90) to name the image that covers 0x1a461f610, then disassemble at the mapping offset with the multi-instruction spin in mind (`pc == lr+4`).
+   - The files server never listened on these boots (TCP 2223 dead although `SWEET FILES ALIVE` prints and ping works), so `tools/dsc-trap.py` (which reads through it) could not be used; either fix `sf_thread`'s accept path or use the offline cache.
+   - `cpus=1` is not a workaround: the machine wedges (L2 stops answering) instead of making progress.
+4. **Boot/measure loop that works now.** `fastboot flash boot shim/out/shim-boot.img` (2 s) -> boot -> `ip addr add 192.168.7.1/24 dev <usb0|enx…>` -> `picasso-ecm.py l2 ringpos|ps|tdump <pid>` / `ring`. Roughly one boot in two fails to bring the gadget up; re-powering the same image usually works, do not bisect code for it.
+5. Panic forensics without any link: blocks 5,243,129 (`EXIT comm/pid/rv/cb/init/ns/code/desc`) and 5,243,130 (`SWEETPNC caller … fmt: …`) are written by patch 0199; read them with `adb shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=5243129 count=2"`.
+
 ### >>> UPDATE 2026-10-30 07:45 (panic root cause: our usermanagerd carrier has no code-signing identity -> launchd SIGABRT) <<<
 1. **The panic was ours, not iOS.** The panic mark (one raw block at the end of `darwin`, written inside `panic()` from patch 0198/0199) read back from recovery:
    `EXIT comm=launchd pid=1 rv=0x6 cb=0x0 init=1 ns=7 code=0x1 desc=failed to get the code signing identity for a boot-task (usermanagerd, /usr/libexec/usermanagerd) errno: 22`
