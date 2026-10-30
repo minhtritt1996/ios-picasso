@@ -7,6 +7,17 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 12:20 (both sides talk; launchd never sends the job dict - only tiny COMPLEX replies) <<<
+Patch 0202 v5 traces the launchd side too (its COMPLEX `mach_msg2`). On t64 the ring has **52** such messages and they are all small:
+```
+SWEET LMSG launchd mach_msg2 bits 0x80001513 size 0x34 id 1287   (x many)
+SWEET LMSG launchd mach_msg2 bits 0x80001513 size 0x38/0x3c id 1287 / 6659
+```
+while xpcproxy sends `bits 0x1513 size 0x18..0x74 id 1283 / 1799 / 7683` (+ one COMPLEX `0x80001513 size 0x34 id 1799`), all returning 0.
+- So: the Mach layer carries the exchange in *both* directions, the message ids match up (1283 -> 1287), and launchd answers - but nothing anywhere near the size of a serialized job (the job dict for a daemon is hundreds of bytes plus OOL fds/ports). xpcproxy keeps looping and never execs.
+- Read as: the libxpc pipe handshake completes, and launchd's **"job" reply never materialises**. That points at the launchd-side decision (its in-memory job table / the `posix_spawn` attributes it hands the trampoline), not at a failing Mach operation.
+- Boot flakiness note: two consecutive boots enumerated the gadget (`1209:0001`, carrier 1, correct MAC) while the L2 responder stayed silent, and a `k60` host reboot wipes `/tmp` (tools + images), which looks identical from the host side ("can't open file /tmp/picasso-ecm.py"). Check both before blaming a build.
+
 ### >>> UPDATE 2026-10-30 10:25 (0203 service-port fix had no effect on iOS 16; check-in still stalls) <<<
 - Traced `mach_msg2` messages of `xpcproxy` (patch 0202 v4, `bits/size/id`): they are real libxpc traffic - `bits 0x1513` (copy-send to launchd, make-send-once reply port), one `0x80001513` (**COMPLEX**, i.e. with OOL descriptors/fds), ids 1283/1799/7683, option `0x200000003` (send|receive) - and **every one returns 0**. So the Mach layer accepts the exchange.
 - Ported bergamota's iOS 18 fix (`mach_port_is_connection_for_service` must not return `KERN_NOT_SUPPORTED` without Sandbox filters) as patch **0203**; booted t63: still **39 `xpcproxy`, 0 services at `running`, no `exec backboardd`**, `launchd.log` still ends at `service state: xpcproxy`. That routine is part of the iOS 18 (22H352) check-in verification; the iOS 16 rootfs in this repo does not use it on this path, so the patch is harmless but not the fix here.
