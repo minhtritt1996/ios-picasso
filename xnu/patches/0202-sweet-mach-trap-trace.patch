@@ -1,33 +1,6 @@
 --- a/osfmk/arm64/bsd_arm64.c
 +++ b/osfmk/arm64/bsd_arm64.c
-@@ -224,7 +224,25 @@
- 	if (argc) {
- 		retval = arm_get_mach_syscall_args(state, &args, &mach_trap_table[call_number]);
- 		if (retval != KERN_SUCCESS) {
--			arm_set_mach_syscall_ret(state, retval);
-+		#if defined(ARM64_BOARD_CONFIG_SWEET)
-+	{
-+		extern struct proc *current_proc(void);
-+		extern int proc_pid(struct proc *);
-+		extern const char *proc_best_name(struct proc *);
-+		struct proc *cp2 = current_proc();
-+		const char *cnm2 = cp2 != NULL ? proc_best_name(cp2) : NULL;
-+
-+		if (cnm2 != NULL && cnm2[0] == 'x' && strcmp(cnm2, "xpcproxy") == 0) {
-+			static int sweet_mt_done = 240;
-+
-+			if (sweet_mt_done > 0) {
-+				sweet_mt_done--;
-+				printf("SWEET MTRAP xpcproxy n=%d ret %#x\n", call_number, retval);
-+			}
-+		}
-+	}
-+#endif
-+	arm_set_mach_syscall_ret(state, retval);
- 
- 			DEBUG_KPRINT_SYSCALL_MACH(
- 				"mach_syscall: retval=0x%x\n", retval);
-@@ -278,6 +296,38 @@
+@@ -278,6 +278,40 @@
  #endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
  
  
@@ -49,14 +22,16 @@
 +
 +			if (sweet_mt_prints > 0) {
 +				sweet_mt_prints--;
-+				if (call_number == 26) {
-+					printf("SWEET MTRAP xpcproxy n=%d msg rcv %#llx opt %#llx snd %#llx\n",
-+					    call_number, (unsigned long long)args.arg1,
-+					    (unsigned long long)args.arg3,
-+					    (unsigned long long)args.arg4);
-+				} else {
-+					printf("SWEET MTRAP xpcproxy n=%d a1 %#llx\n", call_number,
-+					    (unsigned long long)args.arg1);
++				{
++					extern const char *const mach_syscall_name_table[];
++					const char *tn = (call_number < 128) ?
++					    mach_syscall_name_table[call_number] : "?";
++
++					printf("SWEET MTRAP xpcproxy n=%d %s a1 %#llx a2 %#llx a3 %#llx\n",
++					    call_number, tn ? tn : "?",
++					    (unsigned long long)args.arg1,
++					    (unsigned long long)args.arg2,
++					    (unsigned long long)args.arg3);
 +				}
 +			}
 +		}
@@ -66,3 +41,28 @@
  	retval = mach_call(&args);
  
  skip_machcall:
+@@ -289,6 +323,24 @@
+ 	    MACHDBG_CODE(DBG_MACH_EXCP_SC, (call_number)) | DBG_FUNC_END,
+ 	    retval, 0, 0, 0, 0);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	{
++		extern struct proc *current_proc(void);
++		extern int proc_pid(struct proc *);
++		extern const char *proc_best_name(struct proc *);
++		struct proc *cp3 = current_proc();
++		const char *cnm3 = cp3 != NULL ? proc_best_name(cp3) : NULL;
++
++		if (cnm3 != NULL && cnm3[0] == 'x' && strcmp(cnm3, "xpcproxy") == 0) {
++			static int sweet_mt_done2 = 240;
++
++			if (sweet_mt_done2 > 0) {
++				sweet_mt_done2--;
++				printf("SWEET MTRAP xpcproxy n=%d ret %#x\n", call_number, retval);
++			}
++		}
++	}
++#endif
+ 	arm_set_mach_syscall_ret(state, retval);
+ 
+ 	throttle_lowpri_io(1);
