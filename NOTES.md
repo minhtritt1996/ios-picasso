@@ -6479,3 +6479,19 @@ Verification without L2 (the gadget enumerates but the responder is often silent
 - So the write-side accounting bug is fixed and the next defect is on the **delete** side: `hfs_release_storage()` (extent record removal + allocation bitmap update) returns an error for a file `usermanagerd` unlinks. Next probe: instrument `hfs_release_storage()`'s failure (which of CatDeleteRecord/BlockDeallocate/journal returns non-zero) with the same one-block mark.
 - Rootfs state: metadata (volume header + catalog extents + bitmaps) was restored from `work9.img` and verified per range; boot partition = t70.
 - Practical note: several consecutive boots now enumerate the gadget but leave the L2 responder silent (`ringpos` returns empty frames while ping also fails). The disk mark at the end of the partition is the reliable probe in that state; the ring (persisted) may be stale.
+
+### >>> UPDATE 2026-10-30 19:40 (the free-space failure is EIO from BlockMarkFreeInternal: the written blocks were never marked allocated) <<<
+One boot of t71 (0205 + full HFS tracing) produced, in the persisted ring:
+```
+HFSBAD vtype 1 size 5018 cf_blocks 0 ca_blocks 0 bs 4096 comm keybagd        (hfs_cnode.c:967)
+SWEET HFSINC VolumeAllocation.c:3362 reason 0 comm usermanagerd             (x2)
+SWEET HFSINC hfs_vnops.c:4340 reason 2 comm usermanagerd                    (x2)
+RELSTG truncate_data err 5 blocks 1 fileid 321657                            (err 5 = EIO)
+```
+Reading it: `hfs_release_storage()` fails because `TruncateFileC()` -> `BlockMarkFreeInternal()` hits its "Corruption" arm ("trying to free unallocated blocks", `VolumeAllocation.c:3362`) and returns EIO. So at delete time the allocation bitmap says those blocks were **never allocated**, matching the catalog records that also say `totalBlocks = 0` for files that do have data (`size 5018`, `cf_blocks 0`).
+- Leading hypothesis: this port's write path leaves blocks in HFS+'s **delayed-allocation** state (`ff_unallocblocks`) and never converts them: the file's data lands in blocks the bitmap still marks free, the catalog keeps `totalBlocks = 0`, `hfs_getnewvnode`'s sanity check fires (keybagd), and the later unlink cannot free what was never marked allocated (EIO -> volume marked inconsistent, which is what wedges the mount and the USB responder afterwards).
+- Fix directions, in order of cost:
+  1. Disable delayed allocation for this port (or flush the invalid ranges at the end of `hfs_vnop_write` / in `hfs_fsync`) so that `ff_unallocblocks` is 0 and `BlockAllocate` really marks the bitmap.
+  2. Instrument `BlockAllocate` (does it get called during a 5018-byte write? with what result?) and `ff_unallocblocks` at write end - one boot tells whether allocation is skipped or fails.
+  3. Check whether the *unjournaled* volume changes the transaction path (our images ship with `vcbAtrb 0x80000100`, journaling off): if allocation is skipped when there is no journal, re-journaling the volume may be the cheaper fix.
+- Note: 0205 is still worthwhile (it keeps size/blocks consistent at catalog-update time) but it cannot fix records whose blocks were never allocated in the first place.
