@@ -1,0 +1,52 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -879,9 +879,17 @@
+ #endif
+ 
+ 		bsd_init_kprintf("vfs_mountroot\n");
++		/*
++		 * SWEET: a "flaky" boot on this port goes silent right after the UFS
++		 * driver finishes init, and the persisted ring cannot say whether the
++		 * root mount or the log flusher stuck. Two markers settle it.
++		 */
++		printf("SWEET MOUNT: enter\n");
+ 		if (0 == (err = vfs_mountroot())) {
++			printf("SWEET MOUNT: ok\n");
+ 			break;
+ 		}
++		printf("SWEET MOUNT: failed %d\n", err);
+ 		rootdevice[0] = '\0';
+ #if CONFIG_NETBOOT
+ 		if (netboot) {
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1854,8 +1854,29 @@
+ 	uint64_t flushed = 0, seq = 0;
+ 	unsigned fails = 0;
+ 
++	/*
++	 * SWEET: stay off the UFS path for a while after boot. The early flusher
++	 * (sweet_log_early_flush) already persists the prologue, and this thread's
++	 * first write happens at exactly the point where some boots stop making
++	 * progress (right after the UFS driver's "read-write, DMA at" line), so the
++	 * delay separates the flusher from the root mount. sweetlogdelay=0 restores
++	 * the old behaviour.
++	 */
++	{
++		int delay = 30;
++
++		PE_parse_boot_argn("sweetlogdelay", &delay, sizeof(delay));
++		if (delay > 0) {
++			printf("SWEET LOG: flusher deferred %d s\n", delay);
++			(void)tsleep(&sweet_log_chan, PZERO, "sweetlogd", hz * delay);
++		}
++	}
+ 	sweet_log_base_g = base;
+ 	sweet_log_nblocks_g = su.nblocks;
++	/*
++	 * Keep started_g clear while the delay runs so the early flusher stays
++	 * active; set it here, after the wait.
++	 */
+ 	sweet_log_started_g = 1;
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 
