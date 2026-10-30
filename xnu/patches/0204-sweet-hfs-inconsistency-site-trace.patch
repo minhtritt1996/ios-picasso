@@ -1,0 +1,44 @@
+--- a/bsd/sweet_hfs/core/hfs.h
++++ b/bsd/sweet_hfs/core/hfs.h
+@@ -901,8 +901,17 @@
+ 	HFS_FSCK_FORCED,
+ } hfs_inconsistency_reason_t;
+ 
+-void hfs_mark_inconsistent(struct hfsmount *hfsmp,
+-						   hfs_inconsistency_reason_t reason);
++void hfs_mark_inconsistent_at(struct hfsmount *hfsmp,
++							  hfs_inconsistency_reason_t reason,
++							  const char *file, int line);
++/*
++ * SWEET: every call site records itself. The stock function prints only the
++ * reason class, which cannot tell 38 sites apart; with a daemon population
++ * running, the HFS root is marked inconsistent within seconds and the log only
++ * says "Runtime corruption detected", never where.
++ */
++#define hfs_mark_inconsistent(hfsmp, reason) \
++	hfs_mark_inconsistent_at((hfsmp), (reason), __FILE__, __LINE__)
+ 
+ void hfs_scan_blocks (struct hfsmount *hfsmp);
+ int hfs_vfs_root(struct mount *mp, struct vnode **vpp, vfs_context_t context);
+--- a/bsd/sweet_hfs/core/hfs_vfsops.c
++++ b/bsd/sweet_hfs/core/hfs_vfsops.c
+@@ -4433,9 +4433,17 @@
+  * a repair operation fails.  The bit should be cleared only from file system 
+  * verify/repair utility like fsck_hfs when a verify/repair succeeds.
+  */
+-void hfs_mark_inconsistent(struct hfsmount *hfsmp,
+-								  hfs_inconsistency_reason_t reason)
++void hfs_mark_inconsistent_at(struct hfsmount *hfsmp,
++								  hfs_inconsistency_reason_t reason,
++								  const char *file, int line)
+ {
++	{
++		extern void proc_selfname(char *buf, int size);
++		char comm[24] = "?";
++
++		proc_selfname(comm, (int)sizeof(comm));
++		printf("SWEET HFSINC %s:%d reason %d comm %s\n", file, line, (int)reason, comm);
++	}
+ 	hfs_lock_mount (hfsmp);
+ 	if ((hfsmp->vcbAtrb & kHFSVolumeInconsistentMask) == 0) {
+ 		hfsmp->vcbAtrb |= kHFSVolumeInconsistentMask;
