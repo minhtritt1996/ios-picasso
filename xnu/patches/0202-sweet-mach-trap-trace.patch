@@ -1,51 +1,55 @@
 --- a/osfmk/arm64/bsd_arm64.c
 +++ b/osfmk/arm64/bsd_arm64.c
-@@ -278,6 +278,53 @@
+@@ -278,6 +278,57 @@
  #endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
  
  
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	/*
-+	 * The BSD syscall trace never fires for xpcproxy: dyld's start-up calls
-+	 * MACH TRAPS (thread_self_trap, mach_msg_trap), not unix syscalls. Trace
-+	 * those with their arguments so a trap that never returns is visible.
++	 * Trace the Mach layer of the launchd <-> xpcproxy handshake. The BSD
++	 * syscall trace never fires for these processes: dyld/libsystem start up
++	 * with mach traps (thread_self_trap, mach_reply_port, mach_msg2). For
++	 * launchd only COMPLEX messages are shown - the job dict it hands the
++	 * trampoline carries OOL ports/fds, so their absence is the answer to
++	 * "why does xpcproxy never exec".
 +	 */
 +	{
 +		extern struct proc *current_proc(void);
-+		extern int proc_pid(struct proc *);
 +		extern const char *proc_best_name(struct proc *);
++		extern const char *const mach_syscall_name_table[];
 +		struct proc *cp = current_proc();
 +		const char *cnm = cp != NULL ? proc_best_name(cp) : NULL;
++		bool is_xp = (cnm != NULL && strcmp(cnm, "xpcproxy") == 0);
++		bool is_ld = (cnm != NULL && strcmp(cnm, "launchd") == 0);
 +
-+		if (cnm != NULL && cnm[0] == 'x' && strcmp(cnm, "xpcproxy") == 0) {
-+			static int sweet_mt_prints = 240;
++		if (is_xp || (is_ld && call_number == 47)) {
++			static int xp_budget = 240;
++			static int ld_budget = 80;
++			uint32_t hdr[4] = { 0, 0, 0, 0 };
++			bool have = (copyin((user_addr_t)args.arg1, hdr, sizeof(hdr)) == 0);
 +
-+			if (sweet_mt_prints > 0) {
-+				sweet_mt_prints--;
-+				{
-+					extern const char *const mach_syscall_name_table[];
++			if (is_xp && xp_budget-- > 0) {
++				if (call_number == 47) {
++					if (have) {
++						printf("SWEET MTRAP xpcproxy n=47 mach_msg2 bits %#x size %#x id %d opt %#llx\n",
++						    hdr[0], hdr[1], (int)hdr[3],
++						    (unsigned long long)args.arg2);
++					}
++				} else {
 +					const char *tn = (call_number < 128) ?
 +					    mach_syscall_name_table[call_number] : "?";
 +
-+					if (call_number == 47) {
-+						/* mach_msg2: log the user message header (bits/size/id)
-+						 * so the launchd request being repeated is identifiable. */
-+						uint32_t hdr[4] = { 0, 0, 0, 0 };
-+
-+						if (copyin((user_addr_t)args.arg1, hdr, sizeof(hdr)) == 0) {
-+							printf("SWEET MTRAP xpcproxy n=47 mach_msg2 "
-+							    "bits %#x size %#x id %d opt %#llx\n",
-+							    hdr[0], hdr[1], (int)hdr[3],
-+							    (unsigned long long)args.arg2);
-+						}
-+					} else {
-+						printf("SWEET MTRAP xpcproxy n=%d %s a1 %#llx a2 %#llx a3 %#llx\n",
-+						    call_number, tn ? tn : "?",
-+						    (unsigned long long)args.arg1,
-+						    (unsigned long long)args.arg2,
-+						    (unsigned long long)args.arg3);
-+					}
++					printf("SWEET MTRAP xpcproxy n=%d %s a1 %#llx a2 %#llx a3 %#llx\n",
++					    call_number, tn ? tn : "?",
++					    (unsigned long long)args.arg1,
++					    (unsigned long long)args.arg2,
++					    (unsigned long long)args.arg3);
 +				}
++			}
++			if (is_ld && call_number == 47 && have && (hdr[0] & 0x80000000u) != 0 &&
++			    ld_budget-- > 0) {
++				printf("SWEET LMSG launchd mach_msg2 bits %#x size %#x id %d\n",
++				    hdr[0], hdr[1], (int)hdr[3]);
 +			}
 +		}
 +	}
@@ -54,28 +58,3 @@
  	retval = mach_call(&args);
  
  skip_machcall:
-@@ -289,6 +336,24 @@
- 	    MACHDBG_CODE(DBG_MACH_EXCP_SC, (call_number)) | DBG_FUNC_END,
- 	    retval, 0, 0, 0, 0);
- 
-+#if defined(ARM64_BOARD_CONFIG_SWEET)
-+	{
-+		extern struct proc *current_proc(void);
-+		extern int proc_pid(struct proc *);
-+		extern const char *proc_best_name(struct proc *);
-+		struct proc *cp3 = current_proc();
-+		const char *cnm3 = cp3 != NULL ? proc_best_name(cp3) : NULL;
-+
-+		if (cnm3 != NULL && cnm3[0] == 'x' && strcmp(cnm3, "xpcproxy") == 0) {
-+			static int sweet_mt_done2 = 240;
-+
-+			if (sweet_mt_done2 > 0) {
-+				sweet_mt_done2--;
-+				printf("SWEET MTRAP xpcproxy n=%d ret %#x\n", call_number, retval);
-+			}
-+		}
-+	}
-+#endif
- 	arm_set_mach_syscall_ret(state, retval);
- 
- 	throttle_lowpri_io(1);
