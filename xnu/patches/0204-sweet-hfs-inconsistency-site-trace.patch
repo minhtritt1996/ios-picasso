@@ -133,3 +133,95 @@
  				break;
  			}
  			
+--- a/bsd/sweet_hfs/core/FileExtentMapping.c
++++ b/bsd/sweet_hfs/core/FileExtentMapping.c
+@@ -889,10 +889,29 @@
+ 	/*
+ 	 * For deferred allocations just reserve the blocks.
+ 	 */
+-	if ((flags & kEFDeferMask)
+-	&&  (vcb->vcbSigWord == kHFSPlusSigWord)
+-	&&  (bytesToAdd < (int64_t)HFS_MAX_DEFERED_ALLOC)
+-	&&  (blocksToAdd < hfs_freeblks(VCBTOHFS(vcb), 1))) {
++	/*
++	 * SWEET: deferred ("loaned") allocation is off by default on this port.
++	 * With it on, a file written once keeps its blocks as loaned: they are never
++	 * marked in the allocation bitmap and the catalog records totalBlocks as 0, so
++	 * hfs_getnewvnode's sanity check marks the volume corrupt and a later unlink
++	 * fails in BlockMarkFreeInternal ("trying to free unallocated blocks", EIO) -
++	 * measured with keybagd/usermanagerd on 2026-10-30. Real allocation on every
++	 * extend costs a bitmap update per write but keeps the volume consistent.
++	 * sweetdeferalloc=1 restores the stock behaviour.
++	 */
++	{
++		static int sweet_defer = -1;
++
++		if (sweet_defer < 0) {
++			int on = 0;
++
++			sweet_defer = (PE_parse_boot_argn("sweetdeferalloc", &on, sizeof(on)) && on) ? 1 : 0;
++		}
++		if (sweet_defer &&
++		    (flags & kEFDeferMask)
++		&&  (vcb->vcbSigWord == kHFSPlusSigWord)
++		&&  (bytesToAdd < (int64_t)HFS_MAX_DEFERED_ALLOC)
++		&&  (blocksToAdd < hfs_freeblks(VCBTOHFS(vcb), 1))) {
+ 		hfs_lock_mount (hfsmp);
+ 		vcb->loanedBlocks += blocksToAdd;
+ 		hfs_unlock_mount(hfsmp);
+@@ -906,9 +925,10 @@
+ 		 * allocated and the volume will not be inconsistent if we
+ 		 * don't update the catalog record immediately.
+ 		 */
+-		FTOC(fcb)->c_flag |= C_MINOR_MOD;
+-		*actualBytesAdded = bytesToAdd;
+-		return (0);
++			FTOC(fcb)->c_flag |= C_MINOR_MOD;
++			*actualBytesAdded = bytesToAdd;
++			return (0);
++		}
+ 	}
+ 	/* 
+ 	 * Give back any unallocated blocks before doing real allocations.
+--- a/bsd/sweet_hfs/core/hfs_vnops.c
++++ b/bsd/sweet_hfs/core/hfs_vnops.c
+@@ -6393,6 +6393,39 @@
+ 	 */
+ 	lockflags = hfs_systemfile_lock(hfsmp, SFL_CATALOG, HFS_EXCLUSIVE_LOCK);
+ 
++	/*
++	 * SWEET: name the side that carries a zero block count into the catalog. A file
++	 * written by keybagd ends up as size N / totalBlocks 0 on disk, which makes
++	 * hfs_getnewvnode mark the volume corrupt and a later unlink fail with EIO in
++	 * BlockMarkFreeInternal. Print the cnode's live fork against what is passed to
++	 * cat_update, and record the mismatch in the block mark so it survives a wedge.
++	 */
++	{
++		extern void proc_selfname(char *buf, int size);
++		extern void sweet_ufs_panic_mark_at(const char *text, unsigned int back);
++		static int sweet_cu_prints = 120;
++
++		if (dataforkp != NULL && dataforkp->cf_size > 0 && dataforkp->cf_blocks == 0) {
++			char comm[24] = "?";
++			char t[220];
++
++			proc_selfname(comm, (int)sizeof(comm));
++			snprintf(t, sizeof(t),
++			    "UPDZERO comm %s cnid %u cflags 0x%x fileid %lld dp_size %lld dp_blocks %u "
++			    "ff_blocks %u ff_unalloc %u ffdata_size %lld ffdata_blocks %u",
++			    comm, (unsigned)cp->c_cnid, (unsigned)cp->c_flag,
++			    (long long)cp->c_attr.ca_fileid,
++			    (long long)dataforkp->cf_size, (unsigned)dataforkp->cf_blocks,
++			    cp->c_datafork ? (unsigned)cp->c_datafork->ff_blocks : 0u,
++			    cp->c_datafork ? (unsigned)cp->c_datafork->ff_unallocblocks : 0u,
++			    cp->c_datafork ? (long long)cp->c_datafork->ff_data.cf_size : 0ll,
++			    cp->c_datafork ? (unsigned)cp->c_datafork->ff_data.cf_blocks : 0u);
++			if (sweet_cu_prints-- > 0) {
++				printf("%s\n", t);
++			}
++			sweet_ufs_panic_mark_at(t, 2);
++		}
++	}
+ 	error = cat_update(hfsmp, &cp->c_desc, &cp->c_attr, dataforkp, rsrcforkp);
+ 
+ 	if (hfsmp->jnl)
