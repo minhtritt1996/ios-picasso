@@ -1,0 +1,12 @@
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -1009,7 +1009,8 @@
+ 		slide = sr->sr_slide;
+ 		vm_shared_region_deallocate(sr);
+ 	}
+-	printf("SMP %s[%d] slide 0x%llx mh 0x%llx\n", name, pid, slide, task->mach_header_vm_address);
++	printf("SMP %s[%d] slide 0x%llx mh 0x%llx suspend %d active %d\n", name, pid, slide,
++	    task->mach_header_vm_address, task->suspend_count, task->active);
+ 
+ 	task_lock(task);
+ 	queue_iterate(&task->threads, thread, thread_t, task_threads) {
