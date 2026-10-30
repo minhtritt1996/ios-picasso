@@ -6495,3 +6495,15 @@ Reading it: `hfs_release_storage()` fails because `TruncateFileC()` -> `BlockMar
   2. Instrument `BlockAllocate` (does it get called during a 5018-byte write? with what result?) and `ff_unallocblocks` at write end - one boot tells whether allocation is skipped or fails.
   3. Check whether the *unjournaled* volume changes the transaction path (our images ship with `vcbAtrb 0x80000100`, journaling off): if allocation is skipped when there is no journal, re-journaling the volume may be the cheaper fix.
 - Note: 0205 is still worthwhile (it keeps size/blocks consistent at catalog-update time) but it cannot fix records whose blocks were never allocated in the first place.
+
+### >>> UPDATE 2026-10-30 19:55 (0206 real allocation did not help: the catalog update is the side that carries totalBlocks = 0) <<<
+Boot t72 (0205 + 0206: deferred allocation disabled by default, `sweetdeferalloc=1` restores stock) produced the same picture as before, with a new CNID (so it is a different boot):
+```
+HFSBAD vtype 1 size 5018 cf_blocks 0 ca_blocks 0 bs 4096 comm keybagd      (hfs_cnode.c:967)
+SWEET HFSINC VolumeAllocation.c:3362 reason 0 comm usermanagerd            (BlockMarkFreeInternal, x2)
+SWEET HFSINC hfs_vnops.c:4340 reason 2 comm usermanagerd                   (HFS_OP_INCOMPLETE)
+RELSTG truncate_data err 5 blocks 1 fileid 321658                          (EIO)
+```
+- Conclusion: the allocation mode is **not** the missing piece - with real allocation the catalog still ends up with `totalBlocks = 0` for a file that has data. So the defect is in the path that carries the fork numbers into the catalog record: either `hfs_update()`'s `hfs_prepare_fork_for_update()` call still hands over the `ff_data` snapshot, or the record is written once at create time and never refreshed because only `C_MINOR_MOD` is set (the deferred path's flag) while the real-allocation path may need `C_MODIFIED`.
+- Next probe (one boot): at `CatUpdate`'s call site print `forkp->cf_size`, `forkp->cf_blocks`, `cp->c_datafork->ff_blocks`, `cp->c_datafork->ff_unallocblocks` and the cnode flags, so the zero side is named. Also confirm which of the two `hfs_update` paths runs for keybagd's write.
+- Both patches (0205, 0206) are harmless and stay: 0205 keeps size/blocks consistent whenever that branch is taken, 0206 removes the loaned-block state that makes the bitmap lie in the meantime.
