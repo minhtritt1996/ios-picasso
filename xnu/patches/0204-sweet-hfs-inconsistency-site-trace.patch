@@ -82,3 +82,54 @@
  		hfs_mark_inconsistent(hfsmp, HFS_INCONSISTENCY_DETECTED);
  		retval = EINVAL;
  		goto gnv_exit;
+--- a/bsd/sweet_hfs/core/hfs_readwrite.c
++++ b/bsd/sweet_hfs/core/hfs_readwrite.c
+@@ -4064,6 +4064,22 @@
+  * supplied as arguments must be valid even if the cnode is no longer valid.
+  */
+ 
++/*
++ * SWEET: say which step of the free-space release failed. hfs_vnop_remove() marks the
++ * volume inconsistent when hfs_release_storage() fails after the catalog entry is gone,
++ * and the stock code drops the error on the floor.
++ */
++static void
++sweet_relstg_mark(const char *what, int error, u_int32_t blocks, u_int32_t fileid)
++{
++	extern void sweet_ufs_panic_mark_at(const char *text, unsigned int back);
++	char t[160];
++
++	snprintf(t, sizeof(t), "RELSTG %s err %d blocks %u fileid %u", what, error, blocks, fileid);
++	printf("%s\n", t);
++	sweet_ufs_panic_mark_at(t, 2);
++}
++
+ int 
+ hfs_release_storage (struct hfsmount *hfsmp, struct filefork *datafork, 
+ 					 struct filefork *rsrcfork, u_int32_t fileid) {
+@@ -4098,6 +4114,7 @@
+ 			/* Start a transaction, and wipe out as many blocks as we can in this iteration */
+ 			if (hfs_start_transaction(hfsmp) != 0) {
+ 				error = EINVAL;
++				sweet_relstg_mark("start_txn", error, fileblocks, fileid);
+ 				break;
+ 			}
+ 			
+@@ -4109,6 +4126,9 @@
+ 				lockflags = hfs_systemfile_lock(hfsmp, lockflags, HFS_EXCLUSIVE_LOCK);
+ 				
+ 				error = MacToVFSError(TruncateFileC(HFSTOVCB(hfsmp), datafork, filebytes, 1, 0, fileid, false));
++				if (error) {
++					sweet_relstg_mark("truncate_data", error, fileblocks, fileid);
++				}
+ 				
+ 				hfs_systemfile_unlock(hfsmp, lockflags);
+ 			}
+@@ -4148,6 +4168,7 @@
+ 			/* Start a transaction, and wipe out as many blocks as we can in this iteration */
+ 			if (hfs_start_transaction(hfsmp) != 0) {
+ 				error = EINVAL;
++				sweet_relstg_mark("start_txn", error, fileblocks, fileid);
+ 				break;
+ 			}
+ 			
