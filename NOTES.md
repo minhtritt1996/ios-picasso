@@ -6404,3 +6404,9 @@ persisted tail can then show from recovery).
      the root under /usr/local/lib;
   4. boot and look for `sweet-ca: loading`, `sweet-gl:` lines and `SWEET FB: swap` in the ring.
   The real GPU (Adreno 620) can come later; the a6xx series from apollo is the closest reference.
+
+### >>> UPDATE 2026-10-30 13:40 (compared with ios-apollo: no XPC patch there; two concrete gaps found on our side) <<<
+- Cloned `aTechGeekDev/ios-apollo` (`/home/tritm/apollo`, 143 patches). **No patch touches xpcproxy/launchd/posix_spawn/bootstrap**; their GUI came from the CA bridge + a real GPU driver. So apollo does not hold a missing "xpcproxy fix" - the difference is either their **userland rootfs** (`research/ios-root/ios16-root.img`, not in the repo; iOS 16.7.x / 20H392) or kernel patches of a different kind.
+- Two concrete things their tree has that ours does not, worth testing next:
+  1. `0124-apollo-amfi-bootarg-state.patch`: sweet_amfi answers **AMFI policy syscall 0x60** (`amfi_interface_query_bootarg_state`) with `state = 0x86`, gated by `sweetamfistate`. Our `bsd/kern/sweet_amfi.c` returns `ENOPOLICY` for every call except `0x5a`; lsd/installd (and possibly the spawn path) ask about the signed `extensions.plist` policy. Our handler already prints the first use of each call number as `SWEET AMFI: <name> syscall <n>`, so the ring says whether 0x60 is asked at all.
+  2. Their launchd stack frames (from `l2 tdump 1`, slide `0xE98000`, `mh 0x100e98000`) resolve to launchd offsets 0x24ac0, 0x29474, 0x29340, 0x17e4c, 0x18d4c - launchd is parked in its own code (not in a syscall), and `launchd.log` stops being written at 16:00:08.48, right after the xpcproxy batch. So launchd itself stops making progress there.
