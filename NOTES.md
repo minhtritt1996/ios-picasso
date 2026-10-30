@@ -7,6 +7,15 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 09:20 (xpcproxy clones are NOT suspended; they spin in dyld init waiting on a flag) <<<
+Measured on t57 (slide 0x1fcd0000) and t58 (slide 0x246b0000), two independent boots:
+- `l2 tdump 62` -> `SMP xpcproxy[62] slide … mh … suspend 0 active 1` then `t0 pc 0x1c42ef610 lr 0x1c42ef60c` / `t0 pc 0x1c8ccf61c lr 0x1c8ccf618` (patch 0201 prints the counts).
+- Both unslid to **0x1a461f610 / 0x1a461f61c** (subtract the slide) - the same few bytes of **`/usr/lib/dyld` (+0xF610)**, i.e. deterministic, not random parking.
+- The code there is a spin on a dyld byte flag: `ldrb w8,[x19,#456]; tbnz w8,#0,<skip>; bl …`.
+- `suspend 0` kills the "spawned with POSIX_SPAWN_START_SUSPENDED and never resumed" theory, and the per-syscall trace for `xpcproxy` still prints nothing, so the loop is pure userland: dyld waits for state that never arrives on this port.
+- Offline symbolication recipe that produced this (no device needed): `tools/dsc-from-image.py work.img list|extract` (caches are 0-byte hardlink stubs; data lives in CNID 18 as `iNode<cnid>`), then find the payload whose mapping covers the unslid PC. For this PC it is `iNode817586835` (115,867,648 B, mapping 0x1a25e4000 + 0x6e3c000, file offset = 0x203b610 for 0x1a461f610). The image tables are easiest to find by scanning 32-byte records whose `pathFileOffset` points at a printable `/…` path: `below = /usr/lib/dyld @ 0x1a4610000`, `above = CalendarDatabase @ 0x1a468d000`.
+- Next: either find why dyld's flag is never set (its initialiser depends on something this port does not provide - candidates: `os_unfair_lock`/`__ulock_*`, `shared_region` state, or the launchd handshake that should have started xpcproxy *after* the job was delivered), or bypass dyld start for the daemons by shipping a patched `xpcproxy`.
+
 ### >>> UPDATE 2026-10-30 09:05 (launchd fixed; the remaining wall is xpcproxy: 40 clones, zero syscalls, PC captured) <<<
 1. **Restoring the stock `/usr/libexec/usermanagerd` fixed the panic** (it is the boot-task carrier that had no code-signing identity). With stock usermanagerd the boot reaches `Early boot complete`, execs `SpringBoard` (size 112960) and stays up; the ring shows `SWEET EXIT … cb 0x3 init 0` for the early boot tasks and `sweetnodaemonpanic=1` keeps them from panicking.
 2. **The wall: every XPC daemon stops at `service state: xpcproxy`.** Measured on t57 (k232):
