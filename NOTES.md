@@ -7,6 +7,18 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 07:45 (panic root cause: our usermanagerd carrier has no code-signing identity -> launchd SIGABRT) <<<
+1. **The panic was ours, not iOS.** The panic mark (one raw block at the end of `darwin`, written inside `panic()` from patch 0198/0199) read back from recovery:
+   `EXIT comm=launchd pid=1 rv=0x6 cb=0x0 init=1 ns=7 code=0x1 desc=failed to get the code signing identity for a boot-task (usermanagerd, /usr/libexec/usermanagerd) errno: 22`
+   and the panic site itself (`caller fffffe0007b18da8 fmt: %s %s -- exit reason namespace %d subcode 0x%llx description: %.*s`) is `proc_handle_critical_exit()`.
+   - So `rv=0x6` = SIGABRT: **launchd (PID 1) aborts** because the boot task `/usr/libexec/usermanagerd` we replaced with `carrier-um*` carries no code-signing identity. 44 ordinary daemon exits did NOT panic (`sweetnodaemonpanic=1` works); only initproc death does, correctly.
+   - Fix: keep `/usr/libexec/usermanagerd` **stock** and let launchd spawn the daemons; the carrier-as-boot-task vehicle is a dead end on this port (matches the 10-28 note "boot-task carriers still panic, a normal daemon is the carrier that works").
+2. **How to read a panic without any link.** `sweet_ufs_panic_mark[_at]()` (patch 0199) writes 4 KiB blocks at the end of the partition while the machine is dying: `back=0` -> block 5,243,130 (`SWEETPNC` + `caller ... fmt: ...`), `back=1` -> block 5,243,129 (`SWEETPNC` + `EXIT comm/pid/rv/cb/init/ns/code/desc`). Read them from recovery:
+   `adb shell "dd if=/dev/block/bootdevice/by-name/darwin bs=4096 skip=5243129 count=2" | ...`
+   This is required because the console shows only `panic(cpu N caller 0x...):` (the reason scrolls off) and the ring flush inside the console path can fail when the host was mid-command.
+3. **Ring offsets that are actually right.** The ring lives at `first_block + nblocks - 1025` of the *partition*: blocks 5,242,106..5,243,130 (`SWEETLOG` magic at 5,242,106). The volume end (4,193,279) is all zeros - reading there wasted a cycle. The ring wraps quickly because `SWEET UFS s3/s7` per-read traces are still emitted; `sweetufstrace=0` does not silence them in this build.
+4. **Still unproven: whether xpcproxy execs daemons.** `launchd.log` shows 39 services reaching `service state: xpcproxy` and none reaching `running`, but `exec configd argv /usr/libexec/configd -F size 561552` in the ring was *our carrier* exec'ing configd with dropbear's argv, not launchd. Re-test after restoring stock usermanagerd.
+
 ### >>> UPDATE 2026-10-29 21:20 (CoreAnimation bridge libs installed offline; VFS create wedges the mount) <<<
 1. **Installing files on a running boot is no longer possible - `mkdir`/`open(O_CREAT)` wedge the whole HFS+ mount.**
    - `l2 mkdir /usr/local` / `mkdir /usr/local/lib` returned `-> 0`, but the *next* lookup (`l2 stat`) hung: the L2 command thread never answers again, the files server (TCP 2223) stops accepting, while `ping 192.168.7.2` still works. `put` (which is `vnode_open(O_CREAT)`) wedges the same way, at offset 0.
