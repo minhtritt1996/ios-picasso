@@ -6446,3 +6446,17 @@ Fork `minhtritt1996/UniXNU-picasso` now carries (commits on `main`): iPhone10,3 
 6. **Blocking now**: `unixnu build kernel payload` links without their own package objects - `Undefined symbols: _armcpu_timer_interrupts, _native_ram_block_gpu_addon, _native_ram_block_volume_seed, _native_verified_block_manifest_sha384, _native_verified_block_root_authorized, _native_verified_block_volume_device, _sheng_pmgr_run`; and `scripts/build-picasso-aes.py` then dies with `KeyError: 'kernelcache_sha256'`. Their `package/` set is pinned to the 21H461 kernel tree, so moving the board to 20H392 is not a pin swap: the native driver packages have to be re-fitted to that kernel.
 - Assessment: the iPadOS->iPhoneOS switch is a porting project of its own (their port is also still pre-UI: "rebooting after a userspace watchdog timeout"). Our own port is meanwhile **past** that: with `xpcstub` backboardd runs and `libsweet-ca` is injected; its remaining wall is the HFS+ root corrupting under daemon writes. Recommend returning to that and attacking the HFS write path; keep this fork work as a branch for later.
 - Nothing on the phone was touched by this direction: `darwin` still holds the iOS-16 HFS root + `xpcstub`, and `userdata` was never written.
+
+### >>> UPDATE 2026-10-30 17:10 (HFS corruption pinned to one check: hfs_cnode.c:946, triggered by launchd_cache_loader) <<<
+Instrumented every `hfs_mark_inconsistent` call site (patch 0204: `SWEET HFSINC file:line reason comm`, plus the same line written to the block at the end of the partition, because with daemons running the ring dies with the wedge). First boot with daemons (xpcstub present) produced exactly one site:
+```
+HFSINC bsd/sweet_hfs/core/hfs_cnode.c:946 reason 0 comm launchd_cache_loader
+```
+That is the `hfs_getnewvnode` sanity check:
+- `vtype == VBAD`, or
+- `attrp->ca_blocks < forkp->cf_blocks`, or
+- `howmany(forkp->cf_size, hfsmp->blockSize) > forkp->cf_blocks`,
+- (or a symlink fork larger than PATH_MAX),
+so a catalog record whose **fork size and allocated block count disagree** makes HFS declare the volume corrupt and return EINVAL. `launchd_cache_loader` is the first process that writes a file after boot, which is why the corruption appears within seconds and why every later write path (and the USB L2 responder) then wedges.
+- This confirms bergamota's suspicion ("hfs_getnewvnode sanity check ... Not proven") and narrows our fix to the write/extend path: after extending a file, either `cf_blocks` (in-memory fork) or the record's `totalBlocks` written by `hfs_update`/`hfs_extendfile`/`CatUpdate` is wrong, or the order of "allocate blocks then update the catalog" leaves a window where the record is inconsistent.
+- Next: extend the trace at that site to print `vtype, cf_size, cf_blocks, ca_blocks, blockSize` (and ideally the file name via the cnode), so the arithmetic error is visible in one boot.
