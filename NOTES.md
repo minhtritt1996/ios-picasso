@@ -7,6 +7,19 @@ the boot image). `sweet*` names in it are historical (the port started on the Re
 0119, where the bootstrap console used sweet's framebuffer base instead of picasso's. `tools/mkadt.py` has
 both board profiles: `sweet` (fb 0x9c000000) and `picasso` (fb 0xa0000000, the one we boot).
 
+### >>> UPDATE 2026-10-30 09:50 (xpcproxy does run the Mach handshake: mach_msg2 round-trips return 0) <<<
+The BSD syscall trace never fired for `xpcproxy` because dyld/libsystem start-up uses **mach traps**. Patch 0202 traces them for `p_comm == "xpcproxy"` (must compare `proc_best_name`, `proc_name` does not match) and prints the trap name plus its return value. On t61 the ring shows 522 lines of a real sequence:
+```
+n=10 _kernelrpc_mach_vm_allocate_trap, n=14 _kernelrpc_mach_vm_protect_trap,
+n=15 _kernelrpc_mach_vm_map_trap, n=18 _kernelrpc_mach_port_deallocate_trap,
+n=19 _kernelrpc_mach_port_mod_refs_trap, n=24 _kernelrpc_mach_port_construct_trap,
+n=26 mach_reply_port -> ret 0x203/0x403 (port names), n=28 task_self_trap -> ret 0x203,
+n=47 mach_msg2_trap a1=<user msg> a2=0x200000003 -> ret 0
+```
+- So the clones are **not** stuck at spawn, not suspended, and the Mach messages they send/receive **succeed** (`mach_msg2` returns 0). The 40 processes are therefore looping through the xpcproxy<->launchd handshake (`mach_msg2` with option 3 = send|receive) without ever reaching the execve, and `launchd.log` still shows no service at `running`.
+- The earlier offline symbolication of the same PCs put the thread in `/usr/lib/dyld` +0xF610, a lazy-init block that calls `thread_self_trap` (28) then `mach_reply_port` (26) - consistent with libsystem port init, not with a random spin.
+- Next diagnostics that would close this: log the `mach_msg2` message id (first u32 of the user message = `msgh_id`, and `msgh_bits`), which names the launchd request being repeated; or trace `posix_spawn` port actions in the kernel so we see what launchd hands the child.
+
 ### >>> UPDATE 2026-10-30 09:20 (xpcproxy clones are NOT suspended; they spin in dyld init waiting on a flag) <<<
 Measured on t57 (slide 0x1fcd0000) and t58 (slide 0x246b0000), two independent boots:
 - `l2 tdump 62` -> `SMP xpcproxy[62] slide … mh … suspend 0 active 1` then `t0 pc 0x1c42ef610 lr 0x1c42ef60c` / `t0 pc 0x1c8ccf61c lr 0x1c8ccf618` (patch 0201 prints the counts).
