@@ -1,0 +1,36 @@
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -187,18 +187,28 @@
+ 	 * Log its first syscalls so the blocking call is visible (0 hits of EXECVP).
+ 	 */
+ 	if ((proc->p_comm[0] == 'x' && strcmp(proc->p_comm, "xpcproxy") == 0) ||
+-	    strcmp(proc->p_comm, "backboardd") == 0) {
++	    strcmp(proc->p_comm, "backboardd") == 0 ||
++	    strcmp(proc->p_comm, "SpringBoard") == 0) {
++		/*
++		 * SWEET: one budget per program. The single shared counter was consumed
++		 * by xpcproxy before backboardd started, which is why the frozen daemon
++		 * never appeared in this trace even with sweetsyscalltrace=1.
++		 */
+ 		static int sweet_xp_prints = -1;
++		static int sweet_bb_prints = -1;
++		static int sweet_sb_prints = -1;
++		int *budget = (proc->p_comm[0] == 'x') ? &sweet_xp_prints :
++		    (proc->p_comm[0] == 'b' ? &sweet_bb_prints : &sweet_sb_prints);
+ 
+-		if (sweet_xp_prints < 0) {
++		if (*budget < 0) {
+ 			/* Off by default: the trace fills the 4 MB ring in a few minutes and
+ 			 * evicts the evidence we are chasing. sweetsyscalltrace=1 enables it. */
+ 			uint32_t on = 0;
+ 			PE_parse_boot_argn("sweetsyscalltrace", &on, sizeof(on));
+-			sweet_xp_prints = on ? 400 : 0;
++			*budget = on ? 200 : 0;
+ 		}
+-		if (sweet_xp_prints > 0) {
+-			sweet_xp_prints--;
++		if (*budget > 0) {
++			(*budget)--;
+ 			if (error != 0 && (code == 5 || code == 33)) {
+ 				/* open/openat: name the path (lencopied must not be NULL) */
+ 				char sp[128];
