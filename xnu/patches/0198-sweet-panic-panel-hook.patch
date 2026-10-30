@@ -1,0 +1,18 @@
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1075,6 +1075,15 @@
+ #if defined(SWEET)
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
+ 	sweet_early_panic(panic_format_str, panic_args);
++	/*
++	 * The panel console scrolls upwards, so a multi-screen panic dump used to
++	 * leave only "panic(cpu N caller 0x...):" visible and the reason lost.
++	 * Switch it to top-down before the dump is printed.
++	 */
++	{
++		extern void sweet_panel_begin_panic(void);
++		sweet_panel_begin_panic();
++	}
+ #endif
+ 
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)

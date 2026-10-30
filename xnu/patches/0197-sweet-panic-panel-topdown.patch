@@ -25,7 +25,7 @@
  	if (sweet_panel_y < 16)
  		sweet_panel_y = sweet_panel_h - 16;
  	else
-@@ -328,7 +342,8 @@
+@@ -328,9 +342,24 @@
  			row[x] = 0;
  	}
  	sweet_panel_x = 0;
@@ -34,4 +34,29 @@
 +	sweet_panel_y = 0;
  }
  
++/*
++ * Called at the very start of a panic, before the panic dump is printed: put the
++ * panel into panic mode (top-down, no scrollback) so the reason line - the first
++ * one printed - stays on screen instead of being scrolled away.
++ */
++void
++sweet_panel_begin_panic(void)
++{
++	if (!sweet_panel_on || sweet_panel_panic) {
++		return;
++	}
++	sweet_panel_clear();
++}
++
  static void
+ sweet_panel_putc(char ch)
+ {
+@@ -345,7 +374,7 @@
+ 	}
+ 	if (sweet_panel_line_n < 8)
+ 		sweet_panel_line[sweet_panel_line_n++] = ch;
+-	if (sweet_panel_line_n == 6 &&
++	if (!sweet_panel_panic && sweet_panel_line_n == 6 &&
+ 	    sweet_panel_line[0] == 'p' && sweet_panel_line[1] == 'a' &&
+ 	    sweet_panel_line[2] == 'n' && sweet_panel_line[3] == 'i' &&
+ 	    sweet_panel_line[4] == 'c' && sweet_panel_line[5] == '(') {
