@@ -1,0 +1,54 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -51,7 +51,14 @@
+ {
+ 	char name[32];
+ 	proc_name(proc_pid(p), name, sizeof(name));
+-	if (sweet_sample_wanted(name)) {
++	/*
++	 * proc_name() returns the *long* name and does not match p_comm for the
++	 * xpcproxy clones, which made the sampler print nothing at all. Match on
++	 * p_comm as well, and say what was seen so a silent sample is diagnosable.
++	 */
++	if (sweet_sample_wanted(name) ||
++	    (p->p_comm[0] != 0 && sweet_sample_wanted(p->p_comm))) {
++		printf("SMP match %s comm %s pid %d\n", name, p->p_comm, proc_pid(p));
+ 		task_t task = proc_task(p);
+ 		if (task != TASK_NULL) {
+ 			sweet_sample_task(name, proc_pid(p), task);
+@@ -60,6 +67,24 @@
+ 	return PROC_RETURNED;
+ }
+ 
++static int
++sweet_sample_name_proc(proc_t p, __unused void *arg)
++{
++	static int n;
++	if (n++ < 60) {
++		printf("SMP proc %s comm %s pid %d stat %d\n", p->p_name[0] ? p->p_name : "?",
++		    p->p_comm[0] ? p->p_comm : "?", proc_pid(p), p->p_stat);
++	}
++	return PROC_RETURNED;
++}
++
++int
++sweet_sample_dump_names(void)
++{
++	proc_iterate(PROC_ALLPROCLIST, sweet_sample_name_proc, NULL, NULL, NULL);
++	return 0;
++}
++
+ static void
+ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+@@ -73,6 +98,10 @@
+ 	(void)tsleep(&chan, PZERO, "sweetsmp", 90 * hz);
+ 	for (int i = 0; i < 40; i++) {
+ 		printf("SMP --- sample %d\n", i);
++		if (i == 0) {
++			extern int sweet_sample_dump_names(void);
++			(void)sweet_sample_dump_names();
++		}
+ 		proc_iterate(PROC_ALLPROCLIST, sweet_sample_proc, NULL, NULL, NULL);
+ 		(void)tsleep(&chan, PZERO, "sweetsmp", 120 * hz);
+ 	}
