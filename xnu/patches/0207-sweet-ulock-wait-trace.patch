@@ -1,0 +1,32 @@
+--- a/bsd/kern/sys_ulock.c
++++ b/bsd/kern/sys_ulock.c
+@@ -481,6 +481,29 @@
+ int
+ sys_ulock_wait2(struct proc *p, struct ulock_wait2_args *args, int32_t *retval)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * SWEET: a freshly exec'd iOS daemon (backboardd, SpringBoard, xpcproxy)
++	 * freezes inside dyld with its saved pc unchanged across samples, which looks
++	 * like a lock wait. dyld4's runtime lock is an os_unfair_lock, i.e. these
++	 * syscalls; say which address and value they wait on, and stay quiet afterwards.
++	 */
++	{
++		extern void proc_selfname(char *buf, int size);
++		extern int proc_pid(struct proc *);
++		static int sweet_ul = 80;
++		char comm[24] = "?";
++
++		proc_selfname(comm, (int)sizeof(comm));
++		if (sweet_ul-- > 0 &&
++		    (strcmp(comm, "backboardd") == 0 || strcmp(comm, "SpringBoard") == 0 ||
++		    strcmp(comm, "xpcproxy") == 0)) {
++			printf("ULOCK %s pid %d op 0x%x addr %p value 0x%llx to 0x%llx\n",
++			    comm, proc_pid(p), (unsigned)args->operation, (void *)(uintptr_t)args->addr,
++			    (unsigned long long)args->value, (unsigned long long)args->timeout);
++		}
++	}
++#endif
+ 	uint8_t opcode = (uint8_t)(args->operation & UL_OPCODE_MASK);
+ 	uint flags = args->operation & UL_FLAGS_MASK;
+ 
