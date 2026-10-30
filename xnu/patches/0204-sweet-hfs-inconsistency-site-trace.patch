@@ -22,7 +22,7 @@
  int hfs_vfs_root(struct mount *mp, struct vnode **vpp, vfs_context_t context);
 --- a/bsd/sweet_hfs/core/hfs_vfsops.c
 +++ b/bsd/sweet_hfs/core/hfs_vfsops.c
-@@ -4433,9 +4433,17 @@
+@@ -4433,9 +4433,27 @@
   * a repair operation fails.  The bit should be cleared only from file system 
   * verify/repair utility like fsck_hfs when a verify/repair succeeds.
   */
@@ -34,10 +34,20 @@
  {
 +	{
 +		extern void proc_selfname(char *buf, int size);
++		extern void sweet_ufs_panic_mark_at(const char *text, unsigned int back);
 +		char comm[24] = "?";
++		char mark[160];
 +
 +		proc_selfname(comm, (int)sizeof(comm));
 +		printf("SWEET HFSINC %s:%d reason %d comm %s\n", file, line, (int)reason, comm);
++		/*
++		 * The console/ring path is not enough: with a daemon population running the
++		 * filesystem wedges (and the log with it) within seconds, so record this in
++		 * the block at the end of the partition, readable from recovery with a dd.
++		 */
++		snprintf(mark, sizeof(mark), "HFSINC %s:%d reason %d comm %s",
++		    file, line, (int)reason, comm);
++		sweet_ufs_panic_mark_at(mark, 2);
 +	}
  	hfs_lock_mount (hfsmp);
  	if ((hfsmp->vcbAtrb & kHFSVolumeInconsistentMask) == 0) {
